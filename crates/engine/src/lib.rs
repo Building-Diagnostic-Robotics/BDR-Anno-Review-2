@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod annotations;
 pub mod frame_sourcing;
 pub mod import_stage;
 pub mod review_generation;
 
+pub use annotations::{
+    get_annotations, set_annotations, AnnotationEdit, Provenance, ReviewEditsDocument,
+};
 pub use frame_sourcing::{
     build_frame_sourcing_report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
 };
@@ -65,6 +69,10 @@ pub enum EngineError {
     },
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),
+    #[error("unknown face_id: {0}")]
+    UnknownFaceId(String),
+    #[error("malformed payload: {0}")]
+    MalformedPayload(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
