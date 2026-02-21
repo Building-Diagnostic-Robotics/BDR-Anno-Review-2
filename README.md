@@ -11,6 +11,8 @@ This repository is bootstrapped with a lightweight scaffold aligned with `ARCHIT
 - **Desktop shell:** Tauri v2
 - **Backend:** Rust
 - **Frontend:** React + TypeScript + Vite
+- **Primary MVP input:** COCO `instances_default.json` + MP4
+- **Secondary input convenience:** frames directory (optional)
 - **Core manifest:** `annotations/view_manifest.json`
 - **Export contract:** single-category deterministic COCO
 

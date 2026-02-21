@@ -448,7 +448,7 @@ Planned future upgrades that this architecture supports cleanly:
 * Desktop app via **Tauri** for lightweight installers and low friction distribution.
 * **Rust engine** owns IO, rendering, projection, export, and LLM calls.
 * **React/TS UI** for fast development of a high-velocity annotation UX.
-* **Frames directory is the primary input**; MP4 support uses optional ffmpeg sidecar to avoid bloat.
+* **COCO `instances_default.json` + MP4 is the primary MVP input contract**; frames-directory input remains a secondary/optional convenience path.
 * `view_manifest.json` is canonical, stable, versioned, and drives determinism.
 * Export COCO normalized to a **single dummy category** with deterministic IDs.
 
