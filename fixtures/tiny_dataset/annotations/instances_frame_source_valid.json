@@ -1,0 +1,14 @@
+{
+  "images": [
+    { "id": 10, "file_name": "cam0_frame_000003.jpg" },
+    { "id": 20, "file_name": "cam0_frame_000007.jpg" },
+    { "id": 30, "file_name": "cam0_frame_000015.jpg" }
+  ],
+  "annotations": [
+    { "id": 100, "image_id": 10 },
+    { "id": 101, "image_id": 20 }
+  ],
+  "categories": [
+    { "id": 1, "name": "bbox" }
+  ]
+}
