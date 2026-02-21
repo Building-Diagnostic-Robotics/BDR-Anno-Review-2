@@ -21,12 +21,6 @@ This document is the canonical reference for:
 - **Deterministic outputs**: same inputs → same view manifest + export COCO (modulo explicit edits).
 - **Local-first**: work offline for everything except optional LLM suggestions.
 
-### Non-goals (initially)
-- Multi-user collaboration / server mode
-- Full COCO category taxonomy or segmentation/polygons
-- Cloud-hosted datasets and identity/auth
-- Video editing or timeline tooling
-
 ---
 
 ## Target platforms
@@ -61,8 +55,8 @@ The app is a **desktop application** with a **local backend** and **embedded web
 Inputs:
 - COCO `instances_default.json`
 - either:
-  - a frames directory (preferred), or
-  - an MP4 (optional convenience path)
+  - an MP4 (preferred), or
+  - a frames directory (optional convenience path)
 
 Rules:
 - Only frames referenced by COCO annotations are selected:
@@ -479,3 +473,4 @@ Planned future upgrades that this architecture supports cleanly:
 * Export COCO normalized to a **single dummy category** with deterministic IDs.
 
 ---
+
