@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   exportCoco,
   generateReviewDataset,
@@ -14,6 +15,36 @@ import "./styles.css";
 
 const nowIso = () => new Date().toISOString();
 
+type ImageViewport = {
+  naturalWidth: number;
+  naturalHeight: number;
+  displayWidth: number;
+  displayHeight: number;
+};
+
+type PointerMode = "idle" | "draw" | "move" | "resize";
+
+const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
+  const normalizedPath = imagePath.replace(/\\/g, "/");
+  if (normalizedPath.startsWith("/") || /^[A-Za-z]:\//.test(normalizedPath)) {
+    return normalizedPath;
+  }
+  return `${datasetRoot.replace(/\/$/, "")}/${normalizedPath}`;
+};
+
+const validateEdits = (entries: AnnotationEdit[]) => {
+  for (let index = 0; index < entries.length; index += 1) {
+    const [x, y, w, h] = entries[index].bbox;
+    if (![x, y, w, h].every((value) => Number.isFinite(value))) {
+      return `Box ${index + 1} has non-finite values.`;
+    }
+    if (w < 0 || h < 0) {
+      return `Box ${index + 1} has invalid size (width/height must be non-negative).`;
+    }
+  }
+  return "";
+};
+
 function App() {
   const [datasetRoot, setDatasetRoot] = useState("fixtures/tiny_dataset");
   const [cocoJsonPath, setCocoJsonPath] = useState("annotations/instances_default.json");
@@ -24,6 +55,20 @@ function App() {
   const [faces, setFaces] = useState<FaceListItem[]>([]);
   const [selectedFaceId, setSelectedFaceId] = useState<string>("");
   const [edits, setEdits] = useState<AnnotationEdit[]>([]);
+  const [activeBoxIndex, setActiveBoxIndex] = useState<number | null>(null);
+  const [editValidationError, setEditValidationError] = useState("");
+  const [imageViewport, setImageViewport] = useState<ImageViewport | null>(null);
+
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dragState = useRef({
+    mode: "idle" as PointerMode,
+    index: null as number | null,
+    startX: 0,
+    startY: 0,
+    offsetX: 0,
+    offsetY: 0,
+  });
 
   const [isBusy, setIsBusy] = useState(false);
   const [status, setStatus] = useState("Ready.");
@@ -33,6 +78,10 @@ function App() {
     () => faces.findIndex((face) => face.faceId === selectedFaceId),
     [faces, selectedFaceId]
   );
+  const selectedFace = selectedIndex < 0 ? undefined : faces[selectedIndex];
+  const imageSrc = selectedFace
+    ? convertFileSrc(resolveFaceImagePath(datasetRoot, selectedFace.imagePath))
+    : "";
 
   const progress = faces.length === 0 ? 0 : ((selectedIndex + 1) / faces.length) * 100;
 
@@ -150,6 +199,8 @@ function App() {
   const loadAnnotations = async (faceId: string) => {
     if (!faceId) {
       setEdits([]);
+      setActiveBoxIndex(null);
+      setEditValidationError("");
       return;
     }
 
@@ -157,6 +208,8 @@ function App() {
     try {
       const current = await getAnnotations(datasetRoot, faceId);
       setEdits(current);
+      setActiveBoxIndex(null);
+      setEditValidationError("");
       updateDiagnostics(`Loaded ${current.length} annotation(s) for ${faceId}`);
     } catch (cause) {
       updateDiagnostics("Load annotations failed", String(cause));
@@ -192,6 +245,59 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isBusy, faces, selectedIndex]);
 
+  useEffect(() => {
+    const onResize = () => {
+      const img = imageRef.current;
+      if (!img || !img.naturalWidth || !img.naturalHeight) {
+        return;
+      }
+      setImageViewport({
+        naturalWidth: img.naturalWidth,
+        naturalHeight: img.naturalHeight,
+        displayWidth: img.clientWidth,
+        displayHeight: img.clientHeight,
+      });
+    };
+
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imageViewport) {
+      return;
+    }
+
+    canvas.width = Math.max(1, Math.floor(imageViewport.displayWidth));
+    canvas.height = Math.max(1, Math.floor(imageViewport.displayHeight));
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    const scaleX = imageViewport.displayWidth / imageViewport.naturalWidth;
+    const scaleY = imageViewport.displayHeight / imageViewport.naturalHeight;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+
+    edits.forEach((entry, index) => {
+      const [x, y, w, h] = entry.bbox;
+      const isActive = activeBoxIndex === index;
+      context.strokeStyle = isActive ? "#dc2626" : "#2563eb";
+      context.fillStyle = isActive ? "rgba(220,38,38,0.15)" : "rgba(37,99,235,0.12)";
+      context.lineWidth = isActive ? 2.5 : 2;
+      context.fillRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+      context.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+      context.fillStyle = "#111827";
+      context.fillText(String(index + 1), x * scaleX + 4, y * scaleY + 14);
+
+      if (isActive) {
+        context.fillStyle = "#dc2626";
+        context.fillRect((x + w) * scaleX - 4, (y + h) * scaleY - 4, 8, 8);
+      }
+    });
+  }, [edits, imageViewport, activeBoxIndex]);
+
   const handleEditChange = (index: number, axis: number, rawValue: string) => {
     const value = Number(rawValue);
     if (Number.isNaN(value)) {
@@ -223,6 +329,27 @@ function App() {
         };
       })
     );
+    setEditValidationError("");
+  };
+
+  const updateBoxFromPointer = (index: number, nextBbox: [number, number, number, number]) => {
+    setEdits((previous) =>
+      previous.map((entry, entryIndex) => {
+        if (entryIndex !== index) {
+          return entry;
+        }
+        return {
+          ...entry,
+          bbox: nextBbox,
+          provenance: {
+            ...entry.provenance,
+            source: "ui_manual",
+            updatedAt: nowIso(),
+          },
+        };
+      })
+    );
+    setEditValidationError("");
   };
 
   const handleAddBox = () => {
@@ -233,6 +360,122 @@ function App() {
         provenance: { source: "ui_manual", updatedAt: nowIso() },
       },
     ]);
+    setEditValidationError("");
+  };
+
+  const getPointerInImageSpace = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imageViewport) {
+      return null;
+    }
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(
+        0,
+        Math.min(
+          imageViewport.naturalWidth,
+          ((event.clientX - rect.left) / rect.width) * imageViewport.naturalWidth
+        )
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          imageViewport.naturalHeight,
+          ((event.clientY - rect.top) / rect.height) * imageViewport.naturalHeight
+        )
+      ),
+    };
+  };
+
+  const handleCanvasPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const pointer = getPointerInImageSpace(event);
+    if (!pointer || isBusy) {
+      return;
+    }
+
+    const handleRadius = 8;
+    let mode: PointerMode = "draw";
+    let targetIndex: number | null = null;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    for (let index = edits.length - 1; index >= 0; index -= 1) {
+      const [x, y, w, h] = edits[index].bbox;
+      const inHandle =
+        Math.abs(pointer.x - (x + w)) <= handleRadius && Math.abs(pointer.y - (y + h)) <= handleRadius;
+      if (inHandle) {
+        mode = "resize";
+        targetIndex = index;
+        break;
+      }
+
+      const inBox = pointer.x >= x && pointer.x <= x + w && pointer.y >= y && pointer.y <= y + h;
+      if (inBox) {
+        mode = "move";
+        targetIndex = index;
+        offsetX = pointer.x - x;
+        offsetY = pointer.y - y;
+        break;
+      }
+    }
+
+    if (targetIndex === null) {
+      targetIndex = edits.length;
+      setEdits((previous) => [
+        ...previous,
+        {
+          bbox: [pointer.x, pointer.y, 0, 0],
+          provenance: { source: "ui_manual", updatedAt: nowIso() },
+        },
+      ]);
+    }
+
+    dragState.current = {
+      mode,
+      index: targetIndex,
+      startX: pointer.x,
+      startY: pointer.y,
+      offsetX,
+      offsetY,
+    };
+    setActiveBoxIndex(targetIndex);
+    setEditValidationError("");
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleCanvasPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const pointer = getPointerInImageSpace(event);
+    const state = dragState.current;
+    if (!pointer || state.mode === "idle" || state.index === null) {
+      return;
+    }
+
+    const box = edits[state.index];
+    if (!box) {
+      return;
+    }
+
+    const [x, y, w, h] = box.bbox;
+    if (state.mode === "move") {
+      updateBoxFromPointer(state.index, [Math.max(0, pointer.x - state.offsetX), Math.max(0, pointer.y - state.offsetY), w, h]);
+      return;
+    }
+
+    if (state.mode === "resize") {
+      updateBoxFromPointer(state.index, [x, y, Math.max(0, pointer.x - x), Math.max(0, pointer.y - y)]);
+      return;
+    }
+
+    updateBoxFromPointer(state.index, [
+      Math.min(state.startX, pointer.x),
+      Math.min(state.startY, pointer.y),
+      Math.max(0, Math.abs(pointer.x - state.startX)),
+      Math.max(0, Math.abs(pointer.y - state.startY)),
+    ]);
+  };
+
+  const handleCanvasPointerUp = () => {
+    dragState.current = { mode: "idle", index: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
   };
 
   const handleSave = async () => {
@@ -240,10 +483,18 @@ function App() {
       return;
     }
 
+    const validationError = validateEdits(edits);
+    if (validationError) {
+      setEditValidationError(validationError);
+      updateDiagnostics("Save blocked due to invalid edits", validationError);
+      return;
+    }
+
     setIsBusy(true);
     try {
       const saved = await setAnnotations(datasetRoot, selectedFaceId, edits);
       setEdits(saved);
+      setEditValidationError("");
       updateDiagnostics(`Saved ${saved.length} annotation(s) for ${selectedFaceId}`);
     } catch (cause) {
       updateDiagnostics("Save edits failed", String(cause));
@@ -335,8 +586,44 @@ function App() {
         <section className="card">
           <h3>BBox edit + save</h3>
           <p>Selected face: {selectedFaceId || "(none)"}</p>
+          <div className="preview-shell">
+            {selectedFace ? (
+              <>
+                <img
+                  ref={imageRef}
+                  className="face-preview"
+                  src={imageSrc}
+                  alt={`Face preview for ${selectedFace.faceId}`}
+                  onLoad={(event) => {
+                    setImageViewport({
+                      naturalWidth: event.currentTarget.naturalWidth,
+                      naturalHeight: event.currentTarget.naturalHeight,
+                      displayWidth: event.currentTarget.clientWidth,
+                      displayHeight: event.currentTarget.clientHeight,
+                    });
+                  }}
+                />
+                <canvas
+                  ref={canvasRef}
+                  className="bbox-canvas"
+                  onPointerDown={handleCanvasPointerDown}
+                  onPointerMove={handleCanvasPointerMove}
+                  onPointerUp={handleCanvasPointerUp}
+                  onPointerLeave={handleCanvasPointerUp}
+                />
+              </>
+            ) : (
+              <p className="empty-preview">Open a dataset and select a face to start reviewing.</p>
+            )}
+          </div>
+          <p className="hint">Canvas: drag to draw, drag inside to move, drag lower-right to resize.</p>
+
           {edits.map((edit, index) => (
-            <div className="row" key={`${selectedFaceId}-${index}`}>
+            <div
+              className={`row ${activeBoxIndex === index ? "active-row" : ""}`}
+              key={`${selectedFaceId}-${index}`}
+              onMouseEnter={() => setActiveBoxIndex(index)}
+            >
               {["x", "y", "w", "h"].map((axis, axisIndex) => (
                 <label key={axis}>
                   {axis}
@@ -348,6 +635,7 @@ function App() {
               ))}
             </div>
           ))}
+          {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
 
           <div className="row">
             <button onClick={handleAddBox} disabled={isBusy || !selectedFaceId}>
