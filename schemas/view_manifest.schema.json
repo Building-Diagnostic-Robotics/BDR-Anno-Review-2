@@ -3,10 +3,76 @@
   "$id": "https://example.com/schemas/view_manifest.schema.json",
   "title": "View Manifest",
   "type": "object",
-  "required": ["schema_version", "generated_at", "faces"],
+  "required": [
+    "schema_version",
+    "generated_at",
+    "inputs",
+    "render",
+    "projection",
+    "faces"
+  ],
   "properties": {
     "schema_version": { "type": "string", "const": "1" },
     "generated_at": { "type": "string" },
+    "inputs": {
+      "type": "object",
+      "required": ["coco_path", "frames_source"],
+      "properties": {
+        "coco_path": { "type": "string", "minLength": 1 },
+        "frames_source": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["type", "path"],
+              "properties": {
+                "type": { "const": "dir" },
+                "path": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["type", "path"],
+              "properties": {
+                "type": { "const": "mp4" },
+                "path": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "render": {
+      "type": "object",
+      "required": ["faces", "size"],
+      "properties": {
+        "faces": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["front", "right", "back", "left"]
+          }
+        },
+        "size": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "projection": {
+      "type": "object",
+      "required": ["horizontal_fov_degrees", "min_projected_box_area"],
+      "properties": {
+        "horizontal_fov_degrees": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 360
+        },
+        "min_projected_box_area": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
     "faces": {
       "type": "array",
       "items": {
