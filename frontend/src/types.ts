@@ -32,6 +32,18 @@ export type GenerateReviewDatasetReport = {
   filteredBoxCount: number;
 };
 
+export type ExtractFramesFromMp4Options = {
+  datasetRoot: string;
+  cocoJsonPath: string;
+  mp4Path: string;
+};
+
+export type ExtractFramesFromMp4Report = {
+  sourceFramesDir: string;
+  mp4FrameCount: number;
+  extractedFrameCount: number;
+};
+
 export type ImportStageReport = {
   datasetRoot: string;
   cocoJsonPath: string;

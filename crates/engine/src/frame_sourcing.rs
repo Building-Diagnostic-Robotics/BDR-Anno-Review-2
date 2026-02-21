@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
 use crate::EngineError;
 
-const FRAME_EXTRACTION_DIR: &str = "derived_frames/frame_sourcing";
+pub const FRAME_EXTRACTION_DIR: &str = "derived_frames/frame_sourcing";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct FrameSourcingOptions {
@@ -17,6 +18,17 @@ pub struct FrameSourcingOptions {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ExtractFramesFromMp4Options {
+    pub dataset_root: String,
+    pub coco_json_path: String,
+    pub mp4_path: String,
+    #[serde(default)]
+    pub ffmpeg_bin: Option<String>,
+    #[serde(default)]
+    pub ffprobe_bin: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct FrameSourcingReport {
     pub dataset_root: String,
     pub coco_json_path: String,
@@ -24,6 +36,14 @@ pub struct FrameSourcingReport {
     pub extraction_root: String,
     pub referenced_image_count: usize,
     pub resolved_frame_count: usize,
+    pub mappings: Vec<FrameMapping>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ExtractFramesFromMp4Report {
+    pub source_frames_dir: String,
+    pub mp4_frame_count: u64,
+    pub extracted_frame_count: usize,
     pub mappings: Vec<FrameMapping>,
 }
 
@@ -54,12 +74,52 @@ struct CocoAnnotation {
     image_id: Option<u64>,
 }
 
+pub fn extract_frames_from_mp4(
+    options: ExtractFramesFromMp4Options,
+) -> Result<ExtractFramesFromMp4Report, EngineError> {
+    let dataset_root = validate_and_resolve_dataset_root(&options.dataset_root)?;
+    let coco_path = resolve_path(&dataset_root, &options.coco_json_path);
+    let mp4_path = resolve_path(&dataset_root, &options.mp4_path);
+
+    ensure_extension(&coco_path, "json", "COCO annotation file")?;
+    ensure_extension(&mp4_path, "mp4", "video file")?;
+    ensure_file(&coco_path, "COCO annotation file")?;
+    ensure_file(&mp4_path, "MP4 video")?;
+
+    let ffprobe_bin = options.ffprobe_bin.as_deref().unwrap_or("ffprobe");
+    let ffmpeg_bin = options.ffmpeg_bin.as_deref().unwrap_or("ffmpeg");
+
+    let mp4_frame_count = probe_mp4_frame_count(ffprobe_bin, &mp4_path)?;
+    let plan = build_frame_sourcing_report(FrameSourcingOptions {
+        dataset_root: dataset_root.display().to_string(),
+        coco_json_path: coco_path.display().to_string(),
+        mp4_path: mp4_path.display().to_string(),
+        mp4_frame_count,
+    })?;
+
+    let extraction_root = PathBuf::from(&plan.extraction_root);
+    fs::create_dir_all(&extraction_root).map_err(|source| EngineError::UnreadableFile {
+        path: extraction_root.display().to_string(),
+        reason: format!("could not create frame extraction directory: {source}"),
+    })?;
+
+    for mapping in &plan.mappings {
+        let output_path = PathBuf::from(&mapping.extracted_frame_path);
+        extract_single_frame(ffmpeg_bin, &mp4_path, mapping.frame_index, &output_path)?;
+    }
+
+    Ok(ExtractFramesFromMp4Report {
+        source_frames_dir: extraction_root.display().to_string(),
+        mp4_frame_count,
+        extracted_frame_count: plan.mappings.len(),
+        mappings: plan.mappings,
+    })
+}
+
 pub fn build_frame_sourcing_report(
     options: FrameSourcingOptions,
 ) -> Result<FrameSourcingReport, EngineError> {
-    if options.dataset_root.trim().is_empty() {
-        return Err(EngineError::MissingInput("dataset_root"));
-    }
+    let dataset_root = validate_and_resolve_dataset_root(&options.dataset_root)?;
     if options.coco_json_path.trim().is_empty() {
         return Err(EngineError::MissingInput("coco_json_path"));
     }
@@ -68,14 +128,6 @@ pub fn build_frame_sourcing_report(
     }
     if options.mp4_frame_count == 0 {
         return Err(EngineError::MissingInput("mp4_frame_count"));
-    }
-
-    let dataset_root = PathBuf::from(&options.dataset_root);
-    if !dataset_root.is_dir() {
-        return Err(EngineError::MissingFile {
-            path: options.dataset_root,
-            reason: "dataset root directory does not exist".to_owned(),
-        });
     }
 
     let coco_path = resolve_path(&dataset_root, &options.coco_json_path);
@@ -156,7 +208,7 @@ pub fn build_frame_sourcing_report(
                 reason: format!("missing required field `file_name` for image id `{image_id}`"),
             })?;
 
-        let frame_index = resolve_frame_index(image, &file_name, image_id)?;
+        let frame_index = resolve_frame_index(image.frame_index, &file_name, image_id)?;
 
         if frame_index >= options.mp4_frame_count {
             return Err(EngineError::FrameIndexOutOfRange {
@@ -181,8 +233,6 @@ pub fn build_frame_sourcing_report(
         }
     }
 
-    mappings.sort_by_key(|mapping| (mapping.frame_index, mapping.image_id));
-
     Ok(FrameSourcingReport {
         dataset_root: dataset_root.display().to_string(),
         coco_json_path: coco_path.display().to_string(),
@@ -194,12 +244,12 @@ pub fn build_frame_sourcing_report(
     })
 }
 
-fn resolve_frame_index(
-    image: &CocoImage,
+pub fn resolve_frame_index(
+    frame_index: Option<u64>,
     file_name: &str,
     image_id: u64,
 ) -> Result<u64, EngineError> {
-    if let Some(frame_index) = image.frame_index {
+    if let Some(frame_index) = frame_index {
         return Ok(frame_index);
     }
 
@@ -239,6 +289,113 @@ fn resolve_frame_index(
             file_name: file_name.to_owned(),
             reason: format!("failed to parse frame index token `{last_digits}`: {parse_error}"),
         })
+}
+
+fn extract_single_frame(
+    ffmpeg_bin: &str,
+    mp4_path: &Path,
+    frame_index: u64,
+    output_path: &Path,
+) -> Result<(), EngineError> {
+    let ffmpeg_output = Command::new(ffmpeg_bin)
+        .arg("-v")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-i")
+        .arg(mp4_path)
+        .arg("-vf")
+        .arg(format!("select=eq(n\\,{frame_index})"))
+        .arg("-vframes")
+        .arg("1")
+        .arg("-y")
+        .arg(output_path)
+        .output()
+        .map_err(|source| EngineError::InvalidConfiguration(format!(
+            "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
+        )))?;
+
+    if !ffmpeg_output.status.success() {
+        return Err(EngineError::UnreadableFile {
+            path: mp4_path.display().to_string(),
+            reason: format!(
+                "ffmpeg failed to extract frame {frame_index}: {}",
+                String::from_utf8_lossy(&ffmpeg_output.stderr)
+            ),
+        });
+    }
+
+    if output_path.is_file() {
+        Ok(())
+    } else {
+        Err(EngineError::UnreadableFile {
+            path: mp4_path.display().to_string(),
+            reason: format!(
+                "ffmpeg did not produce output for frame index {frame_index}; frame may be outside MP4 bounds"
+            ),
+        })
+    }
+}
+
+fn probe_mp4_frame_count(ffprobe_bin: &str, mp4_path: &Path) -> Result<u64, EngineError> {
+    let output = Command::new(ffprobe_bin)
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-count_frames")
+        .arg("-show_entries")
+        .arg("stream=nb_read_frames")
+        .arg("-of")
+        .arg("default=nokey=1:noprint_wrappers=1")
+        .arg(mp4_path)
+        .output()
+        .map_err(|source| {
+            EngineError::InvalidConfiguration(format!(
+                "failed to run ffprobe for MP4 introspection; ensure ffprobe is installed and available on PATH: {source}"
+            ))
+        })?;
+
+    if !output.status.success() {
+        return Err(EngineError::UnreadableFile {
+            path: mp4_path.display().to_string(),
+            reason: format!(
+                "ffprobe failed to inspect MP4: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        });
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("N/A") {
+        return Err(EngineError::InvalidConfiguration(format!(
+            "ffprobe could not determine MP4 frame count for `{}`",
+            mp4_path.display()
+        )));
+    }
+
+    trimmed.parse::<u64>().map_err(|source| {
+        EngineError::InvalidConfiguration(format!(
+            "ffprobe returned invalid frame count `{trimmed}` for `{}`: {source}",
+            mp4_path.display()
+        ))
+    })
+}
+
+fn validate_and_resolve_dataset_root(dataset_root: &str) -> Result<PathBuf, EngineError> {
+    if dataset_root.trim().is_empty() {
+        return Err(EngineError::MissingInput("dataset_root"));
+    }
+
+    let root = PathBuf::from(dataset_root);
+    if !root.is_dir() {
+        return Err(EngineError::MissingFile {
+            path: dataset_root.to_owned(),
+            reason: "dataset root directory does not exist".to_owned(),
+        });
+    }
+
+    Ok(root)
 }
 
 fn resolve_path(dataset_root: &Path, path: &str) -> PathBuf {
@@ -298,9 +455,13 @@ fn require_section<T>(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{build_frame_sourcing_report, FrameSourcingOptions};
+    use super::{
+        build_frame_sourcing_report, extract_frames_from_mp4, ExtractFramesFromMp4Options,
+        FrameSourcingOptions,
+    };
 
     fn unique_temp_dir() -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -371,5 +532,48 @@ mod tests {
 
         assert!(message.contains("frame reference out of range for image_id 20 (`cam0_frame_000007.jpg`): frame index 7 is outside MP4 frame count 5"));
         assert!(message.contains("videos/source.mp4"));
+    }
+
+    #[test]
+    fn extraction_fails_loudly_when_ffmpeg_tools_are_missing() {
+        let options = setup_dataset("instances_frame_source_valid.json");
+        let err = extract_frames_from_mp4(ExtractFramesFromMp4Options {
+            dataset_root: options.dataset_root,
+            coco_json_path: options.coco_json_path,
+            mp4_path: options.mp4_path,
+            ffmpeg_bin: None,
+            ffprobe_bin: None,
+        })
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("failed to run ffprobe for MP4 introspection"));
+    }
+
+    #[test]
+    fn extraction_reports_out_of_range_frame_when_ffmpeg_produces_no_output() {
+        let options = setup_dataset("instances_frame_source_valid.json");
+        let tool_root = unique_temp_dir();
+        fs::create_dir_all(&tool_root).unwrap();
+
+        let ffprobe_script = tool_root.join("ffprobe");
+        fs::write(&ffprobe_script, "#!/usr/bin/env bash\necho 16\n").unwrap();
+        let ffmpeg_script = tool_root.join("ffmpeg");
+        fs::write(&ffmpeg_script, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        fs::set_permissions(&ffprobe_script, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&ffmpeg_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = extract_frames_from_mp4(ExtractFramesFromMp4Options {
+            dataset_root: options.dataset_root,
+            coco_json_path: options.coco_json_path,
+            mp4_path: options.mp4_path,
+            ffmpeg_bin: Some(ffmpeg_script.display().to_string()),
+            ffprobe_bin: Some(ffprobe_script.display().to_string()),
+        })
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("ffmpeg did not produce output for frame index"));
     }
 }
