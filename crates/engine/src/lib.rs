@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod import_stage;
+
+pub use import_stage::{run_import_stage, ImportStageOptions, ImportStageReport};
+
 pub const MANIFEST_VERSION: &str = "1";
 
 #[derive(Debug, Error)]
@@ -9,6 +13,34 @@ pub enum EngineError {
     MissingInput(&'static str),
     #[error("unsupported schema_version: {0}")]
     UnsupportedSchemaVersion(String),
+    #[error("missing file: {path} ({reason})")]
+    MissingFile { path: String, reason: String },
+    #[error("unsupported format for {field}: expected .{expected} file, got `{actual_path}`")]
+    UnsupportedFormat {
+        field: &'static str,
+        expected: &'static str,
+        actual_path: String,
+    },
+    #[error("could not read file `{path}`: {reason}")]
+    UnreadableFile { path: String, reason: String },
+    #[error("invalid COCO JSON at `{path}`: {reason}")]
+    InvalidCoco { path: String, reason: String },
+    #[error("required COCO section is missing: {0}")]
+    MissingCocoSection(&'static str),
+    #[error("required COCO section is empty: {0}")]
+    EmptyCocoSection(&'static str),
+    #[error("invalid COCO entry in section `{section}` at index {index}: {reason}")]
+    InvalidCocoEntry {
+        section: &'static str,
+        index: usize,
+        reason: String,
+    },
+    #[error("annotation reference is broken: annotation index {annotation_index} (id {annotation_id:?}) points to missing image_id {image_id}")]
+    BrokenAnnotationReference {
+        annotation_index: usize,
+        annotation_id: Option<u64>,
+        image_id: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
