@@ -270,26 +270,6 @@ Why:
 
 ---
 
-## MP4 support and “lightweight” constraint
-
-Default/primary ingestion path is **frames directory**.
-
-MP4 ingestion is optional and should not compromise lightweight distribution:
-
-* Use an **ffmpeg sidecar** invoked by the backend.
-* If bundling ffmpeg bloats the installer too much, provide:
-
-  * “MP4 Support” as an optional download/install step, or
-  * detect system ffmpeg first, then fall back to bundled sidecar if present.
-
-Rationale:
-
-* keeps the core app small
-* avoids Linux dependency surprises
-* reduces build complexity
-
----
-
 ## LLM suggestions design
 
 ### Backend-only provider calls
@@ -473,4 +453,5 @@ Planned future upgrades that this architecture supports cleanly:
 * Export COCO normalized to a **single dummy category** with deterministic IDs.
 
 ---
+
 
