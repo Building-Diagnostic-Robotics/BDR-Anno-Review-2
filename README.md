@@ -60,6 +60,38 @@ pnpm --dir frontend dev
 cargo test --workspace
 ```
 
+## Tester release builds
+
+Tagged releases (for example stable `v0.2.0` or prerelease `v0.2.0-rc.1`) trigger the GitHub Actions workflow `.github/workflows/release.yml`, which runs validation checks, builds Tauri bundles, and publishes release artifacts. Tags that include a hyphen (such as `-alpha`/`-rc`) are published as GitHub prereleases; plain SemVer tags are published as normal releases.
+
+### Download artifacts
+
+1. Open the repository's **Releases** page.
+2. Select the matching release tag (stable release or prerelease).
+3. Download your platform package:
+   - **Windows:** `*.nsis.zip` (contains the NSIS installer)
+   - **Linux:** `*.AppImage` and/or `*.deb`
+
+### Platform prerequisites
+
+- **Windows 10/11**
+  - Microsoft Edge WebView2 Runtime installed (usually preinstalled on modern Windows, otherwise install from Microsoft).
+- **Linux (Ubuntu/Debian family)**
+  - GTK/WebKit runtime libraries required by Tauri, including `libgtk-3-0` and `libwebkit2gtk-4.1-0`.
+
+### Install and run
+
+- **Windows (`.nsis`)**
+  1. Extract the downloaded `*.nsis.zip`.
+  2. Run the contained installer `.exe`.
+  3. Launch **bdr-anno-review** from the Start menu.
+- **Linux (`.AppImage`)**
+  1. Make executable: `chmod +x bdr-anno-review_*.AppImage`
+  2. Run: `./bdr-anno-review_*.AppImage`
+- **Linux (`.deb`)**
+  1. Install: `sudo apt install ./bdr-anno-review_*_amd64.deb`
+  2. Launch from your application menu or by running `bdr-anno-review`.
+
 ## Notes
 
 - Keep architecture-sensitive semantic edits consistent with `ARCHITECTURE.md`.

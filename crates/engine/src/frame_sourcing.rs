@@ -455,8 +455,10 @@ fn require_section<T>(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use super::{
         build_frame_sourcing_report, extract_frames_from_mp4, ExtractFramesFromMp4Options,
@@ -537,12 +539,13 @@ mod tests {
     #[test]
     fn extraction_fails_loudly_when_ffmpeg_tools_are_missing() {
         let options = setup_dataset("instances_frame_source_valid.json");
+        let missing_ffprobe = unique_temp_dir().join("missing-ffprobe-binary");
         let err = extract_frames_from_mp4(ExtractFramesFromMp4Options {
             dataset_root: options.dataset_root,
             coco_json_path: options.coco_json_path,
             mp4_path: options.mp4_path,
             ffmpeg_bin: None,
-            ffprobe_bin: None,
+            ffprobe_bin: Some(missing_ffprobe.display().to_string()),
         })
         .unwrap_err();
         assert!(err
@@ -550,25 +553,67 @@ mod tests {
             .contains("failed to run ffprobe for MP4 introspection"));
     }
 
-    #[test]
-    fn extraction_reports_out_of_range_frame_when_ffmpeg_produces_no_output() {
-        let options = setup_dataset("instances_frame_source_valid.json");
+    #[cfg(unix)]
+    fn create_test_tool_script(file_stem: &str, script: &str) -> String {
         let tool_root = unique_temp_dir();
         fs::create_dir_all(&tool_root).unwrap();
 
-        let ffprobe_script = tool_root.join("ffprobe");
-        fs::write(&ffprobe_script, "#!/usr/bin/env bash\necho 16\n").unwrap();
-        let ffmpeg_script = tool_root.join("ffmpeg");
-        fs::write(&ffmpeg_script, "#!/usr/bin/env bash\nexit 0\n").unwrap();
-        fs::set_permissions(&ffprobe_script, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&ffmpeg_script, fs::Permissions::from_mode(0o755)).unwrap();
+        let script_path = tool_root.join(file_stem);
+        fs::write(&script_path, script).unwrap();
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        script_path.display().to_string()
+    }
+
+    #[cfg(windows)]
+    fn create_test_tool_script(file_stem: &str, script: &str) -> String {
+        let tool_root = unique_temp_dir();
+        fs::create_dir_all(&tool_root).unwrap();
+
+        let script_path = tool_root.join(format!("{file_stem}.cmd"));
+        fs::write(&script_path, script).unwrap();
+        script_path.display().to_string()
+    }
+
+    #[test]
+    fn extraction_reports_out_of_range_frame_when_ffmpeg_produces_no_output() {
+        let options = setup_dataset("instances_frame_source_valid.json");
+
+        #[cfg(unix)]
+        let ffprobe_bin = create_test_tool_script(
+            "ffprobe",
+            "#!/usr/bin/env bash
+echo 16
+",
+        );
+        #[cfg(windows)]
+        let ffprobe_bin = create_test_tool_script(
+            "ffprobe",
+            "@echo off
+echo 16
+",
+        );
+
+        #[cfg(unix)]
+        let ffmpeg_bin = create_test_tool_script(
+            "ffmpeg",
+            "#!/usr/bin/env bash
+exit 0
+",
+        );
+        #[cfg(windows)]
+        let ffmpeg_bin = create_test_tool_script(
+            "ffmpeg",
+            "@echo off
+exit /b 0
+",
+        );
 
         let err = extract_frames_from_mp4(ExtractFramesFromMp4Options {
             dataset_root: options.dataset_root,
             coco_json_path: options.coco_json_path,
             mp4_path: options.mp4_path,
-            ffmpeg_bin: Some(ffmpeg_script.display().to_string()),
-            ffprobe_bin: Some(ffprobe_script.display().to_string()),
+            ffmpeg_bin: Some(ffmpeg_bin),
+            ffprobe_bin: Some(ffprobe_bin),
         })
         .unwrap_err();
 
