@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod frame_sourcing;
 pub mod import_stage;
 
+pub use frame_sourcing::{
+    build_frame_sourcing_report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
+};
 pub use import_stage::{run_import_stage, ImportStageOptions, ImportStageReport};
 
 pub const MANIFEST_VERSION: &str = "1";
@@ -40,6 +44,20 @@ pub enum EngineError {
         annotation_index: usize,
         annotation_id: Option<u64>,
         image_id: u64,
+    },
+    #[error("could not resolve frame reference for image_id {image_id} (`{file_name}`): {reason}")]
+    UnresolvableFrameReference {
+        image_id: u64,
+        file_name: String,
+        reason: String,
+    },
+    #[error("frame reference out of range for image_id {image_id} (`{file_name}`): frame index {frame_index} is outside MP4 frame count {mp4_frame_count} (`{mp4_path}`)")]
+    FrameIndexOutOfRange {
+        image_id: u64,
+        file_name: String,
+        frame_index: u64,
+        mp4_frame_count: u64,
+        mp4_path: String,
     },
 }
 
