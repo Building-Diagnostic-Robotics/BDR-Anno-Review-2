@@ -13,6 +13,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Clarified the MVP input contract across architecture and contributor docs: COCO `instances_default.json` + MP4 is primary/preferred, with frames-directory support documented as secondary/optional convenience.
 - Updated GitHub Actions CI to install required Linux GTK/GLib/WebKit system packages before Rust checks so Tauri-linked crates can compile on ubuntu runners.
 
+- Wired an end-to-end import-to-generation workflow into the app by adding a Tauri `generate_review_dataset_command`, frontend invoke wrapper, and import-section actions for generation-only or validate+generate flows with explicit diagnostics that distinguish validation failures vs generation failures and report manifest path + generated face counts.
+
 ### Added
 
 - Added an end-to-end MVP reviewer UI + Tauri command bridge for dataset open/import, face listing, annotation get/set/save, and COCO export, including keyboard face navigation, progress indicator, and clear backend status/error diagnostics (with optional LLM suggestions explicitly deferred), and configured Tauri bundling to avoid checked-in binary icon assets.

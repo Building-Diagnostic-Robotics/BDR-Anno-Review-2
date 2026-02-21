@@ -4,8 +4,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use engine::{
-    export_coco, get_annotations, run_import_stage, set_annotations, AnnotationEdit,
-    ExportCocoOptions, ExportCocoReport, ImportStageOptions, ImportStageReport, ViewManifest,
+    export_coco, generate_review_dataset, get_annotations, init_empty_manifest, run_import_stage,
+    set_annotations, AnnotationEdit, ExportCocoOptions, ExportCocoReport, FramesSource,
+    GenerateReviewDatasetOptions, GenerateReviewDatasetReport, ImportStageOptions,
+    ImportStageReport, ManifestInputs, ProjectionConfig, RenderConfig, ViewManifest,
 };
 
 const VIEW_MANIFEST_PATH: &str = "annotations/view_manifest.json";
@@ -61,6 +63,28 @@ struct ExportCocoResponse {
     output_path: String,
     image_count: usize,
     annotation_count: usize,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateReviewDatasetRequest {
+    dataset_root: String,
+    coco_json_path: String,
+    mp4_path: String,
+    source_frames_dir: String,
+    generated_at: String,
+    faces: Vec<String>,
+    render_size: u64,
+    horizontal_fov_degrees: f64,
+    min_projected_box_area: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateReviewDatasetResponse {
+    written_manifest_path: String,
+    face_count: usize,
+    filtered_box_count: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -168,6 +192,44 @@ fn export_coco_command(request: ExportCocoRequest) -> Result<ExportCocoResponse,
     })
 }
 
+#[tauri::command]
+fn generate_review_dataset_command(
+    request: GenerateReviewDatasetRequest,
+) -> Result<GenerateReviewDatasetResponse, String> {
+    let manifest = init_empty_manifest(
+        &request.generated_at,
+        ManifestInputs {
+            coco_path: request.coco_json_path,
+            frames_source: FramesSource::Mp4 {
+                path: request.mp4_path,
+            },
+        },
+        RenderConfig {
+            faces: request.faces,
+            size: request.render_size,
+        },
+        ProjectionConfig {
+            horizontal_fov_degrees: request.horizontal_fov_degrees,
+            min_projected_box_area: request.min_projected_box_area,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    let report: GenerateReviewDatasetReport =
+        generate_review_dataset(GenerateReviewDatasetOptions {
+            dataset_root: request.dataset_root,
+            source_frames_dir: request.source_frames_dir,
+            manifest,
+        })
+        .map_err(|error| error.to_string())?;
+
+    Ok(GenerateReviewDatasetResponse {
+        written_manifest_path: report.written_manifest_path,
+        face_count: report.rendered_face_count,
+        filtered_box_count: report.filtered_box_count,
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -176,7 +238,8 @@ fn main() {
             list_faces_command,
             get_annotations_command,
             set_annotations_command,
-            export_coco_command
+            export_coco_command,
+            generate_review_dataset_command
         ])
         .run(tauri::generate_context!())
         .expect("failed to run bdr-anno-review tauri app");

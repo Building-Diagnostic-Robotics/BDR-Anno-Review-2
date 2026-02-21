@@ -13,6 +13,25 @@ export type ImportStageOptions = {
   mp4Path: string;
 };
 
+
+export type GenerateReviewDatasetOptions = {
+  datasetRoot: string;
+  cocoJsonPath: string;
+  mp4Path: string;
+  sourceFramesDir: string;
+  generatedAt: string;
+  faces: string[];
+  renderSize: number;
+  horizontalFovDegrees: number;
+  minProjectedBoxArea: number;
+};
+
+export type GenerateReviewDatasetReport = {
+  writtenManifestPath: string;
+  faceCount: number;
+  filteredBoxCount: number;
+};
+
 export type ImportStageReport = {
   datasetRoot: string;
   cocoJsonPath: string;
