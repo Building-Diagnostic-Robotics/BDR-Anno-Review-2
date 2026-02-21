@@ -15,6 +15,7 @@ These instructions apply to automated agents working in this repository.
 - Keep dependencies and implementation weight minimal unless a change clearly requires more.
 - Never commit customer data, secrets, generated datasets, credentials, or session artifacts.
 - Track changes in `CHANGELOG.md` using formatting from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+- This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Security & privacy
 - Maintain a safe `.gitignore` to prevent committing:
