@@ -81,6 +81,8 @@ jobs:
             librsvg2-dev
       - name: Install frontend dependencies
         run: pnpm --dir frontend install --frozen-lockfile=false
+      - name: Build frontend assets
+        run: pnpm --dir frontend build
       - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@v0
         env:
