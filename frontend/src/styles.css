@@ -1,0 +1,112 @@
+:root {
+  font-family: Inter, system-ui, sans-serif;
+  color: #1f2937;
+}
+
+body {
+  margin: 0;
+  background: #f3f4f6;
+}
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 1rem;
+}
+
+.card {
+  background: white;
+  border-radius: 10px;
+  padding: 0.9rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+input,
+button,
+textarea {
+  font: inherit;
+}
+
+input,
+textarea {
+  width: 100%;
+  padding: 0.45rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+}
+
+button {
+  border: none;
+  background: #2563eb;
+  color: white;
+  border-radius: 6px;
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.face-list {
+  max-height: 45vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.face-item {
+  text-align: left;
+  background: #f8fafc;
+  color: #111827;
+}
+
+.face-item.active {
+  outline: 2px solid #2563eb;
+  background: #eff6ff;
+}
+
+.status {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.84rem;
+  background: #111827;
+  color: #e5e7eb;
+  padding: 0.75rem;
+  border-radius: 8px;
+  max-height: 24vh;
+  overflow: auto;
+}
+
+.error {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.progress {
+  height: 10px;
+  background: #e5e7eb;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: #10b981;
+}
