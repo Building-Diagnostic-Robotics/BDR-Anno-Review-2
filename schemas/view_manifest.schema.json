@@ -85,7 +85,27 @@
             "type": "string",
             "enum": ["front", "right", "back", "left"]
           },
-          "image_path": { "type": "string" }
+          "image_path": { "type": "string" },
+          "initial_boxes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["source_annotation_id", "bbox"],
+              "properties": {
+                "source_annotation_id": {
+                  "type": ["integer", "null"],
+                  "minimum": 1
+                },
+                "bbox": {
+                  "type": "array",
+                  "items": { "type": "number" },
+                  "minItems": 4,
+                  "maxItems": 4
+                }
+              },
+              "additionalProperties": false
+            }
+          }
         },
         "additionalProperties": false
       }

@@ -308,4 +308,57 @@ mod tests {
     fn schema_version_validation_accepts_current_version() {
         assert!(expect_supported_schema_version(MANIFEST_VERSION).is_ok());
     }
+
+    #[test]
+    fn face_view_deserialization_allows_missing_initial_boxes_for_backward_compatibility() {
+        let value = serde_json::json!({
+            "face_id": "img1_front",
+            "source_image_id": 1,
+            "face": "front",
+            "image_path": "raw_frames/img1_front.png"
+        });
+
+        let face: FaceView = serde_json::from_value(value).unwrap();
+        assert!(face.initial_boxes.is_empty());
+    }
+
+    #[test]
+    fn manifest_schema_declares_optional_initial_boxes_with_locked_structure() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schemas/view_manifest.schema.json"))
+                .unwrap();
+        let face_item = &schema["properties"]["faces"]["items"];
+
+        assert_eq!(face_item["additionalProperties"], serde_json::json!(false));
+        assert!(face_item["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|required| required != "initial_boxes"));
+
+        let initial_boxes = &face_item["properties"]["initial_boxes"];
+        assert_eq!(initial_boxes["type"], serde_json::json!("array"));
+
+        let initial_box_item = &initial_boxes["items"];
+        assert_eq!(
+            initial_box_item["additionalProperties"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            initial_box_item["required"],
+            serde_json::json!(["source_annotation_id", "bbox"])
+        );
+        assert_eq!(
+            initial_box_item["properties"]["source_annotation_id"]["type"],
+            serde_json::json!(["integer", "null"])
+        );
+        assert_eq!(
+            initial_box_item["properties"]["bbox"]["minItems"],
+            serde_json::json!(4)
+        );
+        assert_eq!(
+            initial_box_item["properties"]["bbox"]["maxItems"],
+            serde_json::json!(4)
+        );
+    }
 }
