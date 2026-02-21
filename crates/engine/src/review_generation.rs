@@ -3,6 +3,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use image::{ImageBuffer, Rgba};
 use serde::Deserialize;
 
 use crate::{EngineError, FaceView, ProjectedBox, ProjectionConfig, ViewManifest};
@@ -278,12 +279,13 @@ pub fn generate_review_dataset(
             );
             let image_file_name = format!("{face_id}.png");
             let face_image_path = raw_frames_dir.join(&image_file_name);
-            fs::copy(&source_frame_path, &face_image_path).map_err(|source| {
-                EngineError::UnreadableFile {
-                    path: face_image_path.display().to_string(),
-                    reason: format!("could not write rendered face image: {source}"),
-                }
-            })?;
+            render_face_projection(
+                &source_frame_path,
+                &face_image_path,
+                face,
+                manifest.render.size,
+                manifest.projection.horizontal_fov_degrees,
+            )?;
 
             manifest.faces.push(FaceView {
                 face_id,
@@ -309,6 +311,78 @@ pub fn generate_review_dataset(
         filtered_box_count,
         written_manifest_path: manifest_path.display().to_string(),
     })
+}
+
+fn render_face_projection(
+    source_frame_path: &Path,
+    face_image_path: &Path,
+    face: &str,
+    render_size: u64,
+    horizontal_fov_degrees: f64,
+) -> Result<(), EngineError> {
+    let source_image = image::open(source_frame_path)
+        .map_err(|source| EngineError::UnreadableFile {
+            path: source_frame_path.display().to_string(),
+            reason: format!("could not read source frame image: {source}"),
+        })?
+        .to_rgba8();
+    let source_width = source_image.width();
+    let source_height = source_image.height();
+
+    let render_size_u32 = u32::try_from(render_size).map_err(|_| {
+        EngineError::InvalidConfiguration(format!(
+            "render.size value `{render_size}` exceeds max supported size {}",
+            u32::MAX
+        ))
+    })?;
+
+    let face_center_yaw = face_center_yaw(face)?;
+    let mut face_pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(render_size_u32, render_size_u32);
+
+    let h_fov_rad = horizontal_fov_degrees.to_radians();
+    let tan_half_fov = (h_fov_rad / 2.0).tan();
+    let v_fov_rad = h_fov_rad;
+    let tan_half_v_fov = (v_fov_rad / 2.0).tan();
+    let yaw_rotation = face_center_yaw.to_radians();
+    let cos_yaw = yaw_rotation.cos();
+    let sin_yaw = yaw_rotation.sin();
+
+    let width_f = source_width as f64;
+    let height_f = source_height as f64;
+
+    for y in 0..render_size_u32 {
+        for x in 0..render_size_u32 {
+            let x_ndc = ((x as f64 + 0.5) / render_size as f64) * 2.0 - 1.0;
+            let y_ndc = 1.0 - ((y as f64 + 0.5) / render_size as f64) * 2.0;
+
+            let cam_x = x_ndc * tan_half_fov;
+            let cam_y = y_ndc * tan_half_v_fov;
+            let cam_z = 1.0;
+
+            let world_x = cos_yaw * cam_x + sin_yaw * cam_z;
+            let world_z = -sin_yaw * cam_x + cos_yaw * cam_z;
+            let world_y = cam_y;
+
+            let lon = world_x.atan2(world_z);
+            let hyp = (world_x * world_x + world_z * world_z).sqrt();
+            let lat = world_y.atan2(hyp);
+
+            let src_x = ((lon / (2.0 * std::f64::consts::PI)) + 0.5) * width_f;
+            let src_y = (0.5 - (lat / std::f64::consts::PI)) * height_f;
+
+            let src_x = src_x.rem_euclid(width_f).floor() as u32;
+            let src_y = src_y.clamp(0.0, height_f - 1.0).floor() as u32;
+
+            *face_pixels.get_pixel_mut(x, y) = *source_image.get_pixel(src_x, src_y);
+        }
+    }
+
+    face_pixels
+        .save(face_image_path)
+        .map_err(|source| EngineError::UnreadableFile {
+            path: face_image_path.display().to_string(),
+            reason: format!("could not write rendered face image: {source}"),
+        })
 }
 
 fn project_box_to_face(
@@ -376,6 +450,18 @@ fn face_orientation(face: &str) -> Result<FaceOrientation, EngineError> {
             yaw_start: -135.0,
             yaw_end: -45.0,
         }),
+        _ => Err(EngineError::InvalidConfiguration(format!(
+            "render.faces contains unsupported face `{face}`; expected one of front/right/back/left"
+        ))),
+    }
+}
+
+fn face_center_yaw(face: &str) -> Result<f64, EngineError> {
+    match face {
+        "front" => Ok(0.0),
+        "right" => Ok(90.0),
+        "back" => Ok(180.0),
+        "left" => Ok(-90.0),
         _ => Err(EngineError::InvalidConfiguration(format!(
             "render.faces contains unsupported face `{face}`; expected one of front/right/back/left"
         ))),
@@ -462,9 +548,13 @@ fn require_section<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
+    use std::hash::{Hash, Hasher};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use image::{ImageBuffer, Rgba};
 
     use crate::{
         init_empty_manifest, FramesSource, ManifestInputs, ProjectionConfig, RenderConfig,
@@ -503,8 +593,8 @@ mod tests {
         )
         .unwrap();
 
-        fs::write(source_frames_dir.join("frame_0001.png"), b"f1").unwrap();
-        fs::write(source_frames_dir.join("frame_0002.png"), b"f2").unwrap();
+        write_test_frame(&source_frames_dir.join("frame_0001.png"), 2048, 1024, 0);
+        write_test_frame(&source_frames_dir.join("frame_0002.png"), 2048, 1024, 37);
 
         let manifest = init_empty_manifest(
             "2026-01-01T00:00:00Z",
@@ -535,6 +625,19 @@ mod tests {
             source_frames_dir: "source_frames".to_owned(),
             manifest,
         }
+    }
+
+    fn write_test_frame(path: &PathBuf, width: u32, height: u32, phase: u32) {
+        let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let r = ((x + phase) % 256) as u8;
+                let g = ((y + phase * 2) % 256) as u8;
+                let b = (((x / 8) + (y / 4) + phase) % 256) as u8;
+                image.put_pixel(x, y, Rgba([r, g, b, 255]));
+            }
+        }
+        image.save(path).unwrap();
     }
 
     #[test]
@@ -575,7 +678,7 @@ mod tests {
             .map(|item| item.face_id.clone())
             .collect();
 
-        generate_review_dataset(options).unwrap();
+        generate_review_dataset(options.clone()).unwrap();
         let manifest_again_content = fs::read_to_string(&first.written_manifest_path).unwrap();
         let manifest_again: crate::ViewManifest =
             serde_json::from_str(&manifest_again_content).unwrap();
@@ -585,6 +688,26 @@ mod tests {
             .map(|item| item.face_id.clone())
             .collect();
         assert_eq!(ids_first, ids_second);
+
+        let mut hashes_by_face = BTreeMap::new();
+        for face in manifest
+            .faces
+            .iter()
+            .filter(|face| face.source_image_id == 1)
+        {
+            let image_path = PathBuf::from(&options.dataset_root).join(&face.image_path);
+            let rendered = image::open(image_path).unwrap().to_rgba8();
+            assert_eq!(rendered.width(), 1024);
+            assert_eq!(rendered.height(), 1024);
+
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            rendered.as_raw().hash(&mut hasher);
+            hashes_by_face.insert(face.face.clone(), hasher.finish());
+        }
+
+        assert_eq!(hashes_by_face.len(), 4);
+        let unique_hashes: BTreeSet<u64> = hashes_by_face.values().copied().collect();
+        assert_eq!(unique_hashes.len(), 4);
     }
 
     #[test]
