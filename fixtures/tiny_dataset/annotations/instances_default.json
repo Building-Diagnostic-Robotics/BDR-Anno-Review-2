@@ -1,0 +1,7 @@
+{
+  "images": [],
+  "annotations": [],
+  "categories": [
+    { "id": 1, "name": "bbox" }
+  ]
+}

@@ -1,0 +1,51 @@
+# Node / frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Tauri build outputs
+src-tauri/target/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Secrets and env
+.env
+.env.*
+*.key
+*.pem
+
+# Data artifacts and generated outputs
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.gif
+*.zip
+*.tar
+*.gz
+*.7z
+
+dataset_root/
+!dataset_root/.gitkeep
+
+dataset_root/annotations/sessions/
+raw_frames/
+derived_frames/
+exports/
