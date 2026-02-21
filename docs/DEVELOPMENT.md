@@ -3,6 +3,7 @@
 ## Core principles
 
 - Keep dataset semantics aligned with `ARCHITECTURE.md`.
+- Treat COCO `instances_default.json` + MP4 as the preferred/primary MVP input; keep frames-directory support secondary/optional convenience.
 - Prefer explicit validation errors on missing required inputs.
 - Keep implementation lightweight until complexity is proven necessary.
 
