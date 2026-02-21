@@ -29,6 +29,8 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install frontend dependencies
         run: pnpm --dir frontend install --frozen-lockfile=false
+      - name: Build frontend assets for Tauri context validation
+        run: pnpm --dir frontend build
       - name: Rust checks
         run: |
           cargo fmt --all -- --check
