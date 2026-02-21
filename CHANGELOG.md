@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Changed
+- Added reviewer-side bounding-box deletion controls (button + Delete/Backspace shortcut) with consistent active-selection/pointer-state updates, plus frontend roundtrip behavior checks covering delete → save → reload persistence through existing annotation APIs.
 - Wired MP4-first review generation end-to-end: added backend frame extraction before generation, connected it through a new Tauri command and frontend generate/validate+generate flows, aligned generation to deterministic `frame_######.png` mapping for MP4 inputs, and expanded engine coverage for MP4 happy-path plus explicit extraction-failure diagnostics.
 - Replaced review face generation's source-frame file copy placeholder with real equirectangular-to-perspective rendering per configured face (`front/right/back/left`), render size, and horizontal FOV so generated face images are distinct projections rather than duplicates.
 - Upgraded the reviewer UI from text-only bbox editing to include selected-face image preview rendering, a canvas-based bbox interaction layer (draw/move/resize) synchronized with existing annotation get/set/save flows, keyboard-driven face navigation continuity, and explicit client-side invalid-edit feedback with non-negative size safeguards before save.

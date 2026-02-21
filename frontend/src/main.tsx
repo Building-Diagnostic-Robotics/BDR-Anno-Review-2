@@ -13,6 +13,7 @@ import {
 } from "./api";
 import type { AnnotationEdit, FaceListItem } from "./types";
 import "./styles.css";
+import { removeEditAtIndex, validateEdits } from "./editing";
 
 const nowIso = () => new Date().toISOString();
 
@@ -33,20 +34,8 @@ const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   return `${datasetRoot.replace(/\/$/, "")}/${normalizedPath}`;
 };
 
-const validateEdits = (entries: AnnotationEdit[]) => {
-  for (let index = 0; index < entries.length; index += 1) {
-    const [x, y, w, h] = entries[index].bbox;
-    if (![x, y, w, h].every((value) => Number.isFinite(value))) {
-      return `Box ${index + 1} has non-finite values.`;
-    }
-    if (w < 0 || h < 0) {
-      return `Box ${index + 1} has invalid size (width/height must be non-negative).`;
-    }
-  }
-  return "";
-};
 
-function App() {
+export function App() {
   const [datasetRoot, setDatasetRoot] = useState("fixtures/tiny_dataset");
   const [cocoJsonPath, setCocoJsonPath] = useState("annotations/instances_default.json");
   const [mp4Path, setMp4Path] = useState("videos/source.mp4");
@@ -230,29 +219,6 @@ function App() {
   }, [selectedFaceId]);
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (isBusy || faces.length === 0) {
-        return;
-      }
-
-      if (event.key === "ArrowDown" || event.key === "j") {
-        event.preventDefault();
-        const next = Math.min(selectedIndex + 1, faces.length - 1);
-        setSelectedFaceId(faces[next].faceId);
-      }
-
-      if (event.key === "ArrowUp" || event.key === "k") {
-        event.preventDefault();
-        const next = Math.max(selectedIndex - 1, 0);
-        setSelectedFaceId(faces[next].faceId);
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isBusy, faces, selectedIndex]);
-
-  useEffect(() => {
     const onResize = () => {
       const img = imageRef.current;
       if (!img || !img.naturalWidth || !img.naturalHeight) {
@@ -369,6 +335,64 @@ function App() {
     ]);
     setEditValidationError("");
   };
+
+
+  const handleDeleteActiveBox = () => {
+    if (activeBoxIndex === null) {
+      return;
+    }
+
+    setEdits((previous) => {
+      const next = removeEditAtIndex(previous, activeBoxIndex, activeBoxIndex);
+      setActiveBoxIndex(next.activeBoxIndex);
+      if (dragState.current.index !== null) {
+        if (dragState.current.index === activeBoxIndex) {
+          dragState.current = { mode: "idle", index: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
+        } else if (dragState.current.index > activeBoxIndex) {
+          dragState.current = {
+            ...dragState.current,
+            index: dragState.current.index - 1,
+          };
+        }
+      }
+
+      const validationError = validateEdits(next.edits);
+      setEditValidationError(validationError);
+      return next.edits;
+    });
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isBusy || faces.length === 0) {
+        return;
+      }
+
+      if (event.key === "ArrowDown" || event.key === "j") {
+        event.preventDefault();
+        const next = Math.min(selectedIndex + 1, faces.length - 1);
+        setSelectedFaceId(faces[next].faceId);
+      }
+
+      if (event.key === "ArrowUp" || event.key === "k") {
+        event.preventDefault();
+        const next = Math.max(selectedIndex - 1, 0);
+        setSelectedFaceId(faces[next].faceId);
+      }
+
+      const target = event.target as HTMLElement | null;
+      const isTypingTarget =
+        !!target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (!isTypingTarget && (event.key === "Delete" || event.key === "Backspace")) {
+        event.preventDefault();
+        handleDeleteActiveBox();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isBusy, faces, selectedIndex, handleDeleteActiveBox]);
+
 
   const getPointerInImageSpace = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -623,7 +647,7 @@ function App() {
               <p className="empty-preview">Open a dataset and select a face to start reviewing.</p>
             )}
           </div>
-          <p className="hint">Canvas: drag to draw, drag inside to move, drag lower-right to resize.</p>
+          <p className="hint">Canvas: drag to draw, drag inside to move, drag lower-right to resize, Delete/Backspace to remove active.</p>
 
           {edits.map((edit, index) => (
             <div
@@ -648,6 +672,9 @@ function App() {
             <button onClick={handleAddBox} disabled={isBusy || !selectedFaceId}>
               Add box
             </button>
+            <button onClick={handleDeleteActiveBox} disabled={isBusy || !selectedFaceId || activeBoxIndex === null}>
+              Delete active box
+            </button>
             <button onClick={handleSave} disabled={isBusy || !selectedFaceId}>
               Save edits
             </button>
@@ -671,8 +698,11 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  ReactDOM.createRoot(rootElement).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}
