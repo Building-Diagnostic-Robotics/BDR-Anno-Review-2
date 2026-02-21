@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod annotations;
+pub mod export;
 pub mod frame_sourcing;
 pub mod import_stage;
 pub mod review_generation;
@@ -9,6 +10,7 @@ pub mod review_generation;
 pub use annotations::{
     get_annotations, set_annotations, AnnotationEdit, Provenance, ReviewEditsDocument,
 };
+pub use export::{export_coco, ExportCocoOptions, ExportCocoReport};
 pub use frame_sourcing::{
     build_frame_sourcing_report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
 };
