@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   extractFramesFromMp4,
   exportCoco,
@@ -10,6 +11,7 @@ import {
   openDataset,
   runImportStage,
   setAnnotations,
+  checkRuntimeDependencies,
 } from "./api";
 import type { AnnotationEdit, FaceListItem } from "./types";
 import "./styles.css";
@@ -36,11 +38,11 @@ const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
 
 
 export function App() {
-  const [datasetRoot, setDatasetRoot] = useState("fixtures/tiny_dataset");
-  const [cocoJsonPath, setCocoJsonPath] = useState("annotations/instances_default.json");
-  const [mp4Path, setMp4Path] = useState("videos/source.mp4");
+  const [datasetRoot, setDatasetRoot] = useState("");
+  const [cocoJsonPath, setCocoJsonPath] = useState("");
+  const [mp4Path, setMp4Path] = useState("");
   const [sourceFramesDir, setSourceFramesDir] = useState("derived_frames/frame_sourcing");
-  const [outputPath, setOutputPath] = useState("annotations/exported_instances.json");
+  const [outputPath, setOutputPath] = useState("");
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
   const [selectedFaceId, setSelectedFaceId] = useState<string>("");
@@ -75,9 +77,56 @@ export function App() {
 
   const progress = faces.length === 0 ? 0 : ((selectedIndex + 1) / faces.length) * 100;
 
+
+  const datasetRootError = datasetRoot.trim() ? "" : "Dataset root is required.";
+  const cocoPathError = cocoJsonPath.trim() ? "" : "COCO JSON path is required.";
+  const mp4PathError = mp4Path.trim()
+    ? mp4Path.toLowerCase().endsWith(".mp4")
+      ? ""
+      : "MP4 path must end with .mp4"
+    : "MP4 path is required.";
+  const outputPathError = outputPath.trim()
+    ? outputPath.toLowerCase().endsWith(".json")
+      ? ""
+      : "Export path must end with .json"
+    : "Export output path is required.";
+
+  const importInputError = datasetRootError || cocoPathError || mp4PathError;
+  const exportInputError = datasetRootError || outputPathError;
+
   const updateDiagnostics = (nextStatus: string, nextError = "") => {
     setStatus(nextStatus);
     setError(nextError);
+  };
+
+
+  const pickDirectory = async (setter: (value: string) => void) => {
+    const selected = await open({ directory: true, multiple: false });
+    if (typeof selected === "string") {
+      setter(selected);
+    }
+  };
+
+  const pickFile = async (setter: (value: string) => void, filters: { name: string; extensions: string[] }[]) => {
+    const selected = await open({ directory: false, multiple: false, filters });
+    if (typeof selected === "string") {
+      setter(selected);
+    }
+  };
+
+  const pickSaveFile = async () => {
+    const selected = await save({
+      filters: [{ name: "JSON", extensions: ["json"] }],
+      defaultPath: outputPath || "exported_instances.json",
+    });
+    if (selected) {
+      setOutputPath(selected);
+    }
+  };
+
+  const ensureRuntimeDependencies = async () => {
+    const report = await checkRuntimeDependencies();
+    return `ffmpeg: ${report.ffmpeg.resolvedPath}\nffprobe: ${report.ffprobe.resolvedPath}`;
   };
 
   const refreshFaces = async () => {
@@ -108,6 +157,11 @@ export function App() {
   };
 
   const handleImport = async () => {
+    if (importInputError) {
+      updateDiagnostics("Import validation blocked", importInputError);
+      return;
+    }
+
     setIsBusy(true);
     try {
       const report = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
@@ -122,8 +176,14 @@ export function App() {
   };
 
   const handleGenerate = async () => {
+    if (importInputError) {
+      updateDiagnostics("Review dataset generation blocked", importInputError);
+      return;
+    }
+
     setIsBusy(true);
     try {
+      const runtimeReport = await ensureRuntimeDependencies();
       const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
       setSourceFramesDir(extractionReport.sourceFramesDir);
 
@@ -141,7 +201,7 @@ export function App() {
 
       await refreshFaces();
       updateDiagnostics(
-        `Review dataset generation complete\nsourceFramesDir: ${extractionReport.sourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
+        `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir: ${extractionReport.sourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
       updateDiagnostics("Review dataset generation failed", String(cause));
@@ -151,10 +211,16 @@ export function App() {
   };
 
   const handleValidateAndGenerate = async () => {
+    if (importInputError) {
+      updateDiagnostics("Validate + generate blocked", importInputError);
+      return;
+    }
+
     setIsBusy(true);
     try {
       const importReport = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
 
+      const runtimeReport = await ensureRuntimeDependencies();
       const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
       setSourceFramesDir(extractionReport.sourceFramesDir);
 
@@ -183,7 +249,7 @@ export function App() {
 
       await refreshFaces();
       updateDiagnostics(
-        `Validation + generation complete\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nextraction: sourceFramesDir=${extractionReport.sourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
+        `Validation + generation complete\n${runtimeReport}\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nextraction: sourceFramesDir=${extractionReport.sourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
       );
     } catch (cause) {
       updateDiagnostics("Import validation failed", String(cause));
@@ -535,6 +601,11 @@ export function App() {
   };
 
   const handleExport = async () => {
+    if (exportInputError) {
+      updateDiagnostics("Export blocked", exportInputError);
+      return;
+    }
+
     setIsBusy(true);
     try {
       const report = await exportCoco({ datasetRoot, outputPath });
@@ -565,7 +636,17 @@ export function App() {
           <div className="row">
             <label>Dataset root</label>
           </div>
-          <input value={datasetRoot} onChange={(event) => setDatasetRoot(event.target.value)} />
+          <div className="row">
+            <input
+              value={datasetRoot}
+              placeholder="Select dataset directory"
+              onChange={(event) => setDatasetRoot(event.target.value)}
+            />
+            <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isBusy}>
+              Browse
+            </button>
+          </div>
+          {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
           <div className="row">
             <button onClick={handleOpen} disabled={isBusy}>
               Open dataset
@@ -575,11 +656,37 @@ export function App() {
           <div className="row">
             <label>COCO JSON</label>
           </div>
-          <input value={cocoJsonPath} onChange={(event) => setCocoJsonPath(event.target.value)} />
+          <div className="row">
+            <input
+              value={cocoJsonPath}
+              placeholder="Select instances_default.json"
+              onChange={(event) => setCocoJsonPath(event.target.value)}
+            />
+            <button
+              onClick={() => void pickFile(setCocoJsonPath, [{ name: "COCO JSON", extensions: ["json"] }])}
+              disabled={isBusy}
+            >
+              Browse
+            </button>
+          </div>
+          {cocoPathError ? <p className="error">{cocoPathError}</p> : null}
           <div className="row">
             <label>MP4</label>
           </div>
-          <input value={mp4Path} onChange={(event) => setMp4Path(event.target.value)} />
+          <div className="row">
+            <input
+              value={mp4Path}
+              placeholder="Select source .mp4"
+              onChange={(event) => setMp4Path(event.target.value)}
+            />
+            <button
+              onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])}
+              disabled={isBusy}
+            >
+              Browse
+            </button>
+          </div>
+          {mp4PathError ? <p className="error">{mp4PathError}</p> : null}
           <div className="row">
             <label>Source frames directory</label>
           </div>
@@ -681,7 +788,17 @@ export function App() {
           </div>
 
           <h3>Export trigger</h3>
-          <input value={outputPath} onChange={(event) => setOutputPath(event.target.value)} />
+          <div className="row">
+            <input
+              value={outputPath}
+              placeholder="Select export .json output"
+              onChange={(event) => setOutputPath(event.target.value)}
+            />
+            <button onClick={() => void pickSaveFile()} disabled={isBusy}>
+              Browse
+            </button>
+          </div>
+          {outputPathError ? <p className="error">{outputPathError}</p> : null}
           <div className="row">
             <button onClick={handleExport} disabled={isBusy}>
               Export COCO

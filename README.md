@@ -72,12 +72,20 @@ Tagged releases (for example stable `v0.2.0` or prerelease `v0.2.0-rc.1`) trigge
    - **Windows:** `*.nsis.zip` (contains the NSIS installer)
    - **Linux:** `*.AppImage` and/or `*.deb`
 
+### FFmpeg/FFprobe delivery strategy
+
+The app now targets **sidecar binaries** for `ffmpeg` and `ffprobe` (not embedded shared libraries). Sidecars keep runtime integration simple (`Command`-based invocation), preserve explicit failure diagnostics, and avoid adding codec/linker complexity to the Rust build.
+
+Release workflows fetch per-platform FFmpeg sidecar binaries and bundle them into installer artifacts. For local developer runs, the app falls back to `ffmpeg`/`ffprobe` on `PATH` when sidecars are not present.
+
 ### Platform prerequisites
 
 - **Windows 10/11**
   - Microsoft Edge WebView2 Runtime installed (usually preinstalled on modern Windows, otherwise install from Microsoft).
+  - `ffmpeg` + `ffprobe` available either from packaged sidecars or on `PATH` for developer/local runs.
 - **Linux (Ubuntu/Debian family)**
   - GTK/WebKit runtime libraries required by Tauri, including `libgtk-3-0` and `libwebkit2gtk-4.1-0`.
+  - `ffmpeg` + `ffprobe` available either from packaged sidecars or on `PATH` for developer/local runs.
 
 ### Install and run
 

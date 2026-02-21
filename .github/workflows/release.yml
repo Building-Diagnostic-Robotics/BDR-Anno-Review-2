@@ -37,6 +37,7 @@ jobs:
         run: pnpm --dir frontend install --frozen-lockfile=false
       - name: Build frontend assets
         run: pnpm --dir frontend build
+
       - name: Rust checks
         run: |
           cargo fmt --all -- --check
@@ -44,6 +45,8 @@ jobs:
           cargo test --workspace
       - name: Frontend lint
         run: pnpm --dir frontend lint
+      - name: Frontend tests
+        run: pnpm --dir frontend test
 
   build-and-upload:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -54,8 +57,10 @@ jobs:
         include:
           - platform: ubuntu-22.04
             bundle_filter: --bundles appimage,deb
+            rust_target: x86_64-unknown-linux-gnu
           - platform: windows-latest
             bundle_filter: --bundles nsis
+            rust_target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -83,10 +88,51 @@ jobs:
         run: pnpm --dir frontend install --frozen-lockfile=false
       - name: Build frontend assets
         run: pnpm --dir frontend build
+
+      - name: Prepare FFmpeg sidecar binaries (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/binaries
+          curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg.tar.xz
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
+          ffmpeg_root="$(find /tmp -maxdepth 1 -type d -name 'ffmpeg-*-amd64-static' | head -n 1)"
+          if [ -z "$ffmpeg_root" ]; then
+            echo "error: could not locate extracted ffmpeg static directory" >&2
+            exit 1
+          fi
+          cp "$ffmpeg_root/ffmpeg" "src-tauri/binaries/ffmpeg-${{ matrix.rust_target }}"
+          cp "$ffmpeg_root/ffprobe" "src-tauri/binaries/ffprobe-${{ matrix.rust_target }}"
+          chmod +x "src-tauri/binaries/ffmpeg-${{ matrix.rust_target }}" "src-tauri/binaries/ffprobe-${{ matrix.rust_target }}"
+
+      - name: Prepare FFmpeg sidecar binaries (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          $archivePath = Join-Path $env:RUNNER_TEMP 'ffmpeg.7z'
+          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z' -OutFile $archivePath
+          7z x $archivePath -o"$env:RUNNER_TEMP/ffmpeg" -y | Out-Null
+          $binDir = Get-ChildItem "$env:RUNNER_TEMP/ffmpeg" -Directory | Select-Object -First 1 | ForEach-Object { Join-Path $_.FullName 'bin' }
+          if (-not (Test-Path $binDir)) {
+            throw 'Could not locate extracted ffmpeg bin directory.'
+          }
+          Copy-Item (Join-Path $binDir 'ffmpeg.exe') "src-tauri/binaries/ffmpeg-${{ matrix.rust_target }}.exe"
+          Copy-Item (Join-Path $binDir 'ffprobe.exe') "src-tauri/binaries/ffprobe-${{ matrix.rust_target }}.exe"
+
+      - name: Verify prepared sidecar binaries (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: ls -la src-tauri/binaries
+      - name: Verify prepared sidecar binaries (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: Get-ChildItem src-tauri/binaries | Format-Table -AutoSize
       - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_CONFIG: >-
+            {"bundle":{"externalBin":["binaries/ffmpeg","binaries/ffprobe"]}}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Release ${{ github.ref_name }}

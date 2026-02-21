@@ -5,3 +5,4 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 pnpm --dir frontend lint
+pnpm --dir frontend test

@@ -1,7 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use tauri::{AppHandle, Manager};
 
 use engine::{
     export_coco, extract_frames_from_mp4, generate_review_dataset, get_annotations,
@@ -12,6 +15,20 @@ use engine::{
 };
 
 const VIEW_MANIFEST_PATH: &str = "annotations/view_manifest.json";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeDependencyStatus {
+    name: String,
+    resolved_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeDependencyReport {
+    ffmpeg: RuntimeDependencyStatus,
+    ffprobe: RuntimeDependencyStatus,
+}
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -249,14 +266,18 @@ fn generate_review_dataset_command(
 
 #[tauri::command]
 fn extract_frames_from_mp4_command(
+    app: AppHandle,
     request: ExtractFramesFromMp4Request,
 ) -> Result<ExtractFramesFromMp4Response, String> {
+    let ffmpeg_bin = resolve_ffmpeg_binary(&app, "ffmpeg")?;
+    let ffprobe_bin = resolve_ffmpeg_binary(&app, "ffprobe")?;
+
     let report: ExtractFramesFromMp4Report = extract_frames_from_mp4(ExtractFramesFromMp4Options {
         dataset_root: request.dataset_root,
         coco_json_path: request.coco_json_path,
         mp4_path: request.mp4_path,
-        ffmpeg_bin: None,
-        ffprobe_bin: None,
+        ffmpeg_bin: Some(ffmpeg_bin),
+        ffprobe_bin: Some(ffprobe_bin),
     })
     .map_err(|error| error.to_string())?;
 
@@ -267,8 +288,103 @@ fn extract_frames_from_mp4_command(
     })
 }
 
+#[tauri::command]
+fn check_runtime_dependencies_command(app: AppHandle) -> Result<RuntimeDependencyReport, String> {
+    let ffmpeg = resolve_ffmpeg_binary(&app, "ffmpeg")?;
+    let ffprobe = resolve_ffmpeg_binary(&app, "ffprobe")?;
+
+    Ok(RuntimeDependencyReport {
+        ffmpeg: RuntimeDependencyStatus {
+            name: "ffmpeg".to_owned(),
+            resolved_path: ffmpeg,
+        },
+        ffprobe: RuntimeDependencyStatus {
+            name: "ffprobe".to_owned(),
+            resolved_path: ffprobe,
+        },
+    })
+}
+
+fn resolve_ffmpeg_binary(app: &AppHandle, binary_name: &str) -> Result<String, String> {
+    if let Some(sidecar) = resolve_sidecar_binary(app, binary_name) {
+        if verify_binary_executable(&sidecar).is_ok() {
+            return Ok(sidecar.display().to_string());
+        }
+    }
+
+    let tool = binary_name.to_owned();
+    verify_binary_executable(Path::new(&tool))
+        .map_err(|source| format!(
+            "runtime dependency `{binary_name}` is unavailable: {source}. Install ffmpeg/ffprobe or include sidecar binaries in the app bundle"
+        ))?;
+    Ok(tool)
+}
+
+fn resolve_sidecar_binary(app: &AppHandle, binary_name: &str) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+
+    for sidecar_name in sidecar_binary_names(binary_name) {
+        if let Ok(sidecar_path) = app
+            .path()
+            .resolve(&sidecar_name, tauri::path::BaseDirectory::Resource)
+        {
+            candidates.push(sidecar_path);
+        }
+
+        if let Ok(current_exe) = std::env::current_exe() {
+            if let Some(exe_dir) = current_exe.parent() {
+                candidates.push(exe_dir.join(&sidecar_name));
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        candidates.push(PathBuf::from(format!(
+            "/usr/lib/bdr-anno-review/bin/{sidecar_name}"
+        )));
+    }
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn sidecar_binary_names(binary_name: &str) -> Vec<String> {
+    let mut names = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        names.push(format!("{binary_name}.exe"));
+        names.push(format!("{binary_name}-x86_64-pc-windows-msvc.exe"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        names.push(binary_name.to_owned());
+        names.push(format!("{binary_name}-x86_64-unknown-linux-gnu"));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        names.push(binary_name.to_owned());
+    }
+
+    names
+}
+
+fn verify_binary_executable(path_or_name: &Path) -> Result<(), String> {
+    let output = Command::new(path_or_name)
+        .arg("-version")
+        .output()
+        .map_err(|source| source.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             run_import_stage_command,
             open_dataset_command,
@@ -277,7 +393,8 @@ fn main() {
             set_annotations_command,
             export_coco_command,
             generate_review_dataset_command,
-            extract_frames_from_mp4_command
+            extract_frames_from_mp4_command,
+            check_runtime_dependencies_command
         ])
         .run(tauri::generate_context!())
         .expect("failed to run bdr-anno-review tauri app");
