@@ -3,11 +3,15 @@ use thiserror::Error;
 
 pub mod frame_sourcing;
 pub mod import_stage;
+pub mod review_generation;
 
 pub use frame_sourcing::{
     build_frame_sourcing_report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
 };
 pub use import_stage::{run_import_stage, ImportStageOptions, ImportStageReport};
+pub use review_generation::{
+    generate_review_dataset, GenerateReviewDatasetOptions, GenerateReviewDatasetReport,
+};
 
 pub const MANIFEST_VERSION: &str = "1";
 
@@ -59,6 +63,8 @@ pub enum EngineError {
         mp4_frame_count: u64,
         mp4_path: String,
     },
+    #[error("invalid configuration: {0}")]
+    InvalidConfiguration(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -108,12 +114,20 @@ pub fn expect_supported_schema_version(schema_version: &str) -> Result<(), Engin
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FaceView {
     pub face_id: String,
     pub source_image_id: u64,
     pub face: String,
     pub image_path: String,
+    #[serde(default)]
+    pub initial_boxes: Vec<ProjectedBox>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectedBox {
+    pub source_annotation_id: Option<u64>,
+    pub bbox: [f64; 4],
 }
 
 pub fn init_empty_manifest(
