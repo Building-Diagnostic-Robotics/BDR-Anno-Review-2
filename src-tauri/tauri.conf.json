@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "bdr-anno-review",
+  "version": "0.1.0",
+  "identifier": "com.example.bdrannoreview",
+  "build": {
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "bdr-anno-review",
+        "width": 1280,
+        "height": 800
+      }
+    ]
+  }
+}

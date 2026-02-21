@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/view_manifest.schema.json",
+  "title": "View Manifest",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "faces"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1" },
+    "generated_at": { "type": "string" },
+    "faces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["face_id", "source_image_id", "face", "image_path"],
+        "properties": {
+          "face_id": { "type": "string" },
+          "source_image_id": { "type": "integer", "minimum": 1 },
+          "face": {
+            "type": "string",
+            "enum": ["front", "right", "back", "left"]
+          },
+          "image_path": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
