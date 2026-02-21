@@ -110,3 +110,44 @@ button:disabled {
   height: 100%;
   background: #10b981;
 }
+
+.preview-shell {
+  position: relative;
+  width: 100%;
+  margin-bottom: 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.face-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.bbox-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.empty-preview {
+  margin: 0;
+  padding: 0.75rem;
+  color: #4b5563;
+}
+
+.hint {
+  font-size: 0.84rem;
+  color: #4b5563;
+}
+
+.active-row {
+  background: #eff6ff;
+  border-radius: 6px;
+  padding: 0.2rem;
+}
