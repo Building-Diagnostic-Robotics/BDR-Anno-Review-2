@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AnnotationEdit,
+  ExtractFramesFromMp4Options,
+  ExtractFramesFromMp4Report,
   ExportCocoOptions,
   ExportCocoReport,
   GenerateReviewDatasetOptions,
@@ -43,5 +45,10 @@ export const exportCoco = async (options: ExportCocoOptions) =>
 
 export const generateReviewDataset = async (options: GenerateReviewDatasetOptions) =>
   invoke<GenerateReviewDatasetReport>("generate_review_dataset_command", {
+    request: options,
+  });
+
+export const extractFramesFromMp4 = async (options: ExtractFramesFromMp4Options) =>
+  invoke<ExtractFramesFromMp4Report>("extract_frames_from_mp4_command", {
     request: options,
   });

@@ -12,7 +12,8 @@ pub use annotations::{
 };
 pub use export::{export_coco, ExportCocoOptions, ExportCocoReport};
 pub use frame_sourcing::{
-    build_frame_sourcing_report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
+    build_frame_sourcing_report, extract_frames_from_mp4, ExtractFramesFromMp4Options,
+    ExtractFramesFromMp4Report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
 };
 pub use import_stage::{run_import_stage, ImportStageOptions, ImportStageReport};
 pub use review_generation::{

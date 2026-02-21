@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use image::{ImageBuffer, Rgba};
 use serde::Deserialize;
 
-use crate::{EngineError, FaceView, ProjectedBox, ProjectionConfig, ViewManifest};
+use crate::{
+    frame_sourcing::resolve_frame_index, EngineError, FaceView, FramesSource, ProjectedBox,
+    ProjectionConfig, ViewManifest,
+};
 
 const RAW_FRAMES_DIR: &str = "raw_frames";
 
@@ -34,6 +37,7 @@ struct CocoDocument {
 struct CocoImage {
     id: Option<u64>,
     file_name: Option<String>,
+    frame_index: Option<u64>,
     width: Option<u64>,
     height: Option<u64>,
 }
@@ -48,6 +52,7 @@ struct CocoAnnotation {
 #[derive(Debug, Clone)]
 struct SourceImage {
     file_name: String,
+    frame_index: Option<u64>,
     width: u64,
     height: u64,
 }
@@ -154,6 +159,7 @@ pub fn generate_review_dataset(
                 image_id,
                 SourceImage {
                     file_name,
+                    frame_index: image.frame_index,
                     width,
                     height,
                 },
@@ -243,7 +249,12 @@ pub fn generate_review_dataset(
         let source_image = images_by_id
             .get(&image_id)
             .expect("referenced image should have been validated");
-        let source_frame_path = source_frames_dir.join(&source_image.file_name);
+        let source_frame_path = resolve_source_frame_path(
+            &manifest.inputs.frames_source,
+            &source_frames_dir,
+            source_image,
+            image_id,
+        )?;
         ensure_file(&source_frame_path, "source frame")?;
 
         let source_annotations = annotations_by_image_id
@@ -514,6 +525,22 @@ fn build_face_id(
     format!("face_{:016x}", hasher.finish())
 }
 
+fn resolve_source_frame_path(
+    frames_source: &FramesSource,
+    source_frames_dir: &Path,
+    source_image: &SourceImage,
+    image_id: u64,
+) -> Result<PathBuf, EngineError> {
+    match frames_source {
+        FramesSource::Dir { .. } => Ok(source_frames_dir.join(&source_image.file_name)),
+        FramesSource::Mp4 { .. } => {
+            let frame_index =
+                resolve_frame_index(source_image.frame_index, &source_image.file_name, image_id)?;
+            Ok(source_frames_dir.join(format!("frame_{frame_index:06}.png")))
+        }
+    }
+}
+
 fn resolve_path(dataset_root: &Path, path: &str) -> PathBuf {
     let path_buf = PathBuf::from(path);
     if path_buf.is_absolute() {
@@ -627,6 +654,63 @@ mod tests {
         }
     }
 
+    fn setup_dataset_mp4_frames() -> GenerateReviewDatasetOptions {
+        let root = unique_temp_dir();
+        let annotations_dir = root.join("annotations");
+        let source_frames_dir = root.join("derived_frames/frame_sourcing");
+
+        fs::create_dir_all(&annotations_dir).unwrap();
+        fs::create_dir_all(&source_frames_dir).unwrap();
+
+        fs::write(
+            annotations_dir.join("instances_default.json"),
+            r#"{
+                "images": [
+                    {"id": 1, "file_name": "cam0_frame_0001.jpg", "frame_index": 1, "width": 2048, "height": 1024},
+                    {"id": 2, "file_name": "cam0_frame_0002.jpg", "frame_index": 2, "width": 2048, "height": 1024}
+                ],
+                "annotations": [
+                    {"id": 11, "image_id": 1, "bbox": [100, 50, 300, 200]},
+                    {"id": 22, "image_id": 2, "bbox": [1500, 100, 200, 100]}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        write_test_frame(&source_frames_dir.join("frame_000001.png"), 2048, 1024, 0);
+        write_test_frame(&source_frames_dir.join("frame_000002.png"), 2048, 1024, 37);
+
+        let manifest = init_empty_manifest(
+            "2026-01-01T00:00:00Z",
+            ManifestInputs {
+                coco_path: "annotations/instances_default.json".to_owned(),
+                frames_source: FramesSource::Mp4 {
+                    path: "videos/source.mp4".to_owned(),
+                },
+            },
+            RenderConfig {
+                faces: vec![
+                    "front".to_owned(),
+                    "right".to_owned(),
+                    "back".to_owned(),
+                    "left".to_owned(),
+                ],
+                size: 1024,
+            },
+            ProjectionConfig {
+                horizontal_fov_degrees: 90.0,
+                min_projected_box_area: 4.0,
+            },
+        )
+        .unwrap();
+
+        GenerateReviewDatasetOptions {
+            dataset_root: root.display().to_string(),
+            source_frames_dir: "derived_frames/frame_sourcing".to_owned(),
+            manifest,
+        }
+    }
+
     fn write_test_frame(path: &PathBuf, width: u32, height: u32, phase: u32) {
         let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(width, height);
         for y in 0..height {
@@ -724,5 +808,33 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("source frame not found"));
         assert!(message.contains("frame_0001.png"));
+    }
+
+    #[test]
+    fn supports_mp4_frame_sourcing_convention() {
+        let options = setup_dataset_mp4_frames();
+
+        let report = generate_review_dataset(options.clone()).unwrap();
+        assert_eq!(report.rendered_face_count, 8);
+
+        let manifest_content = fs::read_to_string(&report.written_manifest_path).unwrap();
+        let manifest: crate::ViewManifest = serde_json::from_str(&manifest_content).unwrap();
+        assert_eq!(manifest.faces.len(), 8);
+    }
+
+    #[test]
+    fn reports_missing_extracted_mp4_frame_with_deterministic_name() {
+        let options = setup_dataset_mp4_frames();
+        fs::remove_file(
+            PathBuf::from(&options.dataset_root)
+                .join("derived_frames/frame_sourcing")
+                .join("frame_000001.png"),
+        )
+        .unwrap();
+
+        let err = generate_review_dataset(options).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("source frame not found"));
+        assert!(message.contains("frame_000001.png"));
     }
 }

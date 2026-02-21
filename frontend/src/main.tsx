@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
+  extractFramesFromMp4,
   exportCoco,
   generateReviewDataset,
   getAnnotations,
@@ -134,11 +135,14 @@ function App() {
   const handleGenerate = async () => {
     setIsBusy(true);
     try {
+      const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
+      setSourceFramesDir(extractionReport.sourceFramesDir);
+
       const report = await generateReviewDataset({
         datasetRoot,
         cocoJsonPath,
         mp4Path,
-        sourceFramesDir,
+        sourceFramesDir: extractionReport.sourceFramesDir,
         generatedAt: nowIso(),
         faces: ["front", "right", "back", "left"],
         renderSize: 1024,
@@ -148,7 +152,7 @@ function App() {
 
       await refreshFaces();
       updateDiagnostics(
-        `Review dataset generation complete\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
+        `Review dataset generation complete\nsourceFramesDir: ${extractionReport.sourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
       updateDiagnostics("Review dataset generation failed", String(cause));
@@ -162,13 +166,16 @@ function App() {
     try {
       const importReport = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
 
+      const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
+      setSourceFramesDir(extractionReport.sourceFramesDir);
+
       let generationReport;
       try {
         generationReport = await generateReviewDataset({
           datasetRoot,
           cocoJsonPath,
           mp4Path,
-          sourceFramesDir,
+          sourceFramesDir: extractionReport.sourceFramesDir,
           generatedAt: nowIso(),
           faces: ["front", "right", "back", "left"],
           renderSize: 1024,
@@ -178,7 +185,7 @@ function App() {
       } catch (generationError) {
         updateDiagnostics(
           "Generation failed after successful validation",
-          `Validation passed: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nGeneration error: ${String(
+          `Validation passed: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nExtraction: sourceFramesDir=${extractionReport.sourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nGeneration error: ${String(
             generationError
           )}`
         );
@@ -187,7 +194,7 @@ function App() {
 
       await refreshFaces();
       updateDiagnostics(
-        `Validation + generation complete\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
+        `Validation + generation complete\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nextraction: sourceFramesDir=${extractionReport.sourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
       );
     } catch (cause) {
       updateDiagnostics("Import validation failed", String(cause));

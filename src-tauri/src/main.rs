@@ -4,8 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use engine::{
-    export_coco, generate_review_dataset, get_annotations, init_empty_manifest, run_import_stage,
-    set_annotations, AnnotationEdit, ExportCocoOptions, ExportCocoReport, FramesSource,
+    export_coco, extract_frames_from_mp4, generate_review_dataset, get_annotations,
+    init_empty_manifest, run_import_stage, set_annotations, AnnotationEdit, ExportCocoOptions,
+    ExportCocoReport, ExtractFramesFromMp4Options, ExtractFramesFromMp4Report, FramesSource,
     GenerateReviewDatasetOptions, GenerateReviewDatasetReport, ImportStageOptions,
     ImportStageReport, ManifestInputs, ProjectionConfig, RenderConfig, ViewManifest,
 };
@@ -77,6 +78,22 @@ struct GenerateReviewDatasetRequest {
     render_size: u64,
     horizontal_fov_degrees: f64,
     min_projected_box_area: f64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtractFramesFromMp4Request {
+    dataset_root: String,
+    coco_json_path: String,
+    mp4_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtractFramesFromMp4Response {
+    source_frames_dir: String,
+    mp4_frame_count: u64,
+    extracted_frame_count: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -230,6 +247,26 @@ fn generate_review_dataset_command(
     })
 }
 
+#[tauri::command]
+fn extract_frames_from_mp4_command(
+    request: ExtractFramesFromMp4Request,
+) -> Result<ExtractFramesFromMp4Response, String> {
+    let report: ExtractFramesFromMp4Report = extract_frames_from_mp4(ExtractFramesFromMp4Options {
+        dataset_root: request.dataset_root,
+        coco_json_path: request.coco_json_path,
+        mp4_path: request.mp4_path,
+        ffmpeg_bin: None,
+        ffprobe_bin: None,
+    })
+    .map_err(|error| error.to_string())?;
+
+    Ok(ExtractFramesFromMp4Response {
+        source_frames_dir: report.source_frames_dir,
+        mp4_frame_count: report.mp4_frame_count,
+        extracted_frame_count: report.extracted_frame_count,
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -239,7 +276,8 @@ fn main() {
             get_annotations_command,
             set_annotations_command,
             export_coco_command,
-            generate_review_dataset_command
+            generate_review_dataset_command,
+            extract_frames_from_mp4_command
         ])
         .run(tauri::generate_context!())
         .expect("failed to run bdr-anno-review tauri app");
