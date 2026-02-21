@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
   exportCoco,
+  generateReviewDataset,
   getAnnotations,
   listFaces,
   openDataset,
@@ -17,6 +18,7 @@ function App() {
   const [datasetRoot, setDatasetRoot] = useState("fixtures/tiny_dataset");
   const [cocoJsonPath, setCocoJsonPath] = useState("annotations/instances_default.json");
   const [mp4Path, setMp4Path] = useState("videos/source.mp4");
+  const [sourceFramesDir, setSourceFramesDir] = useState("derived_frames/frame_sourcing");
   const [outputPath, setOutputPath] = useState("annotations/exported_instances.json");
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
@@ -39,14 +41,23 @@ function App() {
     setError(nextError);
   };
 
+  const refreshFaces = async () => {
+    const openReport = await openDataset(datasetRoot);
+    const faceReport = await listFaces(datasetRoot);
+    setFaces(faceReport.faces);
+
+    const nextSelectedFaceId = faceReport.faces.some((face) => face.faceId === selectedFaceId)
+      ? selectedFaceId
+      : faceReport.faces[0]?.faceId ?? "";
+    setSelectedFaceId(nextSelectedFaceId);
+
+    return { openReport, faceReport };
+  };
+
   const handleOpen = async () => {
     setIsBusy(true);
     try {
-      const openReport = await openDataset(datasetRoot);
-      const faceReport = await listFaces(datasetRoot);
-      setFaces(faceReport.faces);
-      const firstFace = faceReport.faces[0]?.faceId ?? "";
-      setSelectedFaceId(firstFace);
+      const { openReport } = await refreshFaces();
       updateDiagnostics(
         `Dataset opened\nmanifest: ${openReport.manifestPath}\nfaces: ${openReport.faceCount}`
       );
@@ -63,6 +74,71 @@ function App() {
       const report = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
       updateDiagnostics(
         `Import validation complete\nimages=${report.imageCount}, annotations=${report.annotationCount}, categories=${report.categoryCount}, referenced=${report.referencedImageCount}`
+      );
+    } catch (cause) {
+      updateDiagnostics("Import validation failed", String(cause));
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleGenerate = async () => {
+    setIsBusy(true);
+    try {
+      const report = await generateReviewDataset({
+        datasetRoot,
+        cocoJsonPath,
+        mp4Path,
+        sourceFramesDir,
+        generatedAt: nowIso(),
+        faces: ["front", "right", "back", "left"],
+        renderSize: 1024,
+        horizontalFovDegrees: 90,
+        minProjectedBoxArea: 1,
+      });
+
+      await refreshFaces();
+      updateDiagnostics(
+        `Review dataset generation complete\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
+      );
+    } catch (cause) {
+      updateDiagnostics("Review dataset generation failed", String(cause));
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleValidateAndGenerate = async () => {
+    setIsBusy(true);
+    try {
+      const importReport = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
+
+      let generationReport;
+      try {
+        generationReport = await generateReviewDataset({
+          datasetRoot,
+          cocoJsonPath,
+          mp4Path,
+          sourceFramesDir,
+          generatedAt: nowIso(),
+          faces: ["front", "right", "back", "left"],
+          renderSize: 1024,
+          horizontalFovDegrees: 90,
+          minProjectedBoxArea: 1,
+        });
+      } catch (generationError) {
+        updateDiagnostics(
+          "Generation failed after successful validation",
+          `Validation passed: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nGeneration error: ${String(
+            generationError
+          )}`
+        );
+        return;
+      }
+
+      await refreshFaces();
+      updateDiagnostics(
+        `Validation + generation complete\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
       );
     } catch (cause) {
       updateDiagnostics("Import validation failed", String(cause));
@@ -223,8 +299,21 @@ function App() {
           </div>
           <input value={mp4Path} onChange={(event) => setMp4Path(event.target.value)} />
           <div className="row">
+            <label>Source frames directory</label>
+          </div>
+          <input
+            value={sourceFramesDir}
+            onChange={(event) => setSourceFramesDir(event.target.value)}
+          />
+          <div className="row">
             <button onClick={handleImport} disabled={isBusy}>
               Validate import
+            </button>
+            <button onClick={handleGenerate} disabled={isBusy}>
+              Generate review dataset
+            </button>
+            <button onClick={handleValidateAndGenerate} disabled={isBusy}>
+              Validate + generate
             </button>
           </div>
 

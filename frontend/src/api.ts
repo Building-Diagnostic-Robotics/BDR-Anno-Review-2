@@ -3,6 +3,8 @@ import type {
   AnnotationEdit,
   ExportCocoOptions,
   ExportCocoReport,
+  GenerateReviewDatasetOptions,
+  GenerateReviewDatasetReport,
   ImportStageOptions,
   ImportStageReport,
   ListFacesReport,
@@ -38,3 +40,8 @@ export const setAnnotations = async (
 
 export const exportCoco = async (options: ExportCocoOptions) =>
   invoke<ExportCocoReport>("export_coco_command", { request: options });
+
+export const generateReviewDataset = async (options: GenerateReviewDatasetOptions) =>
+  invoke<GenerateReviewDatasetReport>("generate_review_dataset_command", {
+    request: options,
+  });
