@@ -309,6 +309,17 @@ pub fn generate_review_dataset(
     }
 
     let manifest_path = dataset_root.join("annotations/view_manifest.json");
+    let manifest_parent = manifest_path.parent().ok_or_else(|| {
+        EngineError::InvalidConfiguration(format!(
+            "invalid manifest output path `{}`",
+            manifest_path.display()
+        ))
+    })?;
+    fs::create_dir_all(manifest_parent).map_err(|source| EngineError::UnreadableFile {
+        path: manifest_parent.display().to_string(),
+        reason: format!("could not create manifest directory: {source}"),
+    })?;
+
     let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|source| {
         EngineError::InvalidConfiguration(format!("failed to serialize manifest JSON: {source}"))
     })?;
@@ -654,6 +665,53 @@ mod tests {
         }
     }
 
+    fn setup_dataset_without_annotations_dir() -> GenerateReviewDatasetOptions {
+        let root = unique_temp_dir();
+        let source_frames_dir = root.join("source_frames");
+        let metadata_dir = root.join("metadata");
+
+        fs::create_dir_all(&source_frames_dir).unwrap();
+        fs::create_dir_all(&metadata_dir).unwrap();
+        fs::write(
+            metadata_dir.join("instances_default.json"),
+            r#"{
+                "images": [
+                    {"id": 1, "file_name": "frame_0001.png", "width": 2048, "height": 1024}
+                ],
+                "annotations": [
+                    {"id": 11, "image_id": 1, "bbox": [100, 50, 300, 200]}
+                ]
+            }"#,
+        )
+        .unwrap();
+        write_test_frame(&source_frames_dir.join("frame_0001.png"), 2048, 1024, 0);
+
+        let manifest = init_empty_manifest(
+            "2026-01-01T00:00:00Z",
+            ManifestInputs {
+                coco_path: "metadata/instances_default.json".to_owned(),
+                frames_source: FramesSource::Dir {
+                    path: "source_frames".to_owned(),
+                },
+            },
+            RenderConfig {
+                faces: vec!["front".to_owned()],
+                size: 1024,
+            },
+            ProjectionConfig {
+                horizontal_fov_degrees: 90.0,
+                min_projected_box_area: 4.0,
+            },
+        )
+        .unwrap();
+
+        GenerateReviewDatasetOptions {
+            dataset_root: root.display().to_string(),
+            source_frames_dir: "source_frames".to_owned(),
+            manifest,
+        }
+    }
+
     fn setup_dataset_mp4_frames() -> GenerateReviewDatasetOptions {
         let root = unique_temp_dir();
         let annotations_dir = root.join("annotations");
@@ -792,6 +850,28 @@ mod tests {
         assert_eq!(hashes_by_face.len(), 4);
         let unique_hashes: BTreeSet<u64> = hashes_by_face.values().copied().collect();
         assert_eq!(unique_hashes.len(), 4);
+    }
+
+    #[test]
+    fn creates_annotations_dir_before_writing_manifest() {
+        let options = setup_dataset_without_annotations_dir();
+        let dataset_root = PathBuf::from(&options.dataset_root);
+
+        let report = generate_review_dataset(options).unwrap();
+
+        assert!(dataset_root.join("annotations").is_dir());
+        assert!(PathBuf::from(report.written_manifest_path).is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn supports_windows_style_relative_paths() {
+        let mut options = setup_dataset();
+        options.source_frames_dir = "source_frames\\".to_owned();
+        options.manifest.inputs.coco_path = "annotations\\instances_default.json".to_owned();
+
+        let report = generate_review_dataset(options).unwrap();
+        assert!(PathBuf::from(report.written_manifest_path).is_file());
     }
 
     #[test]
