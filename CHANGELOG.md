@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-22
+
 ### Changed
 - Removed the Tauri build-script fallback that generated a 1x1 placeholder icon and now require repository-provided icon assets for bundling.
 - Configured Tauri `bundle.icon` entries for standard Windows/macOS/Linux icon filenames so AppImage/deb/nsis packaging can resolve square icon assets from `src-tauri/icons/`.
