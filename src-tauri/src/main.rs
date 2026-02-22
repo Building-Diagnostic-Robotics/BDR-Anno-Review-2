@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -146,6 +147,21 @@ struct ImportStageResponse {
     annotation_count: usize,
     category_count: usize,
     referenced_image_count: usize,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StageDroppedInputsRequest {
+    paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StageDroppedInputsResponse {
+    workspace_root: String,
+    staged_dataset_root: Option<String>,
+    staged_coco_json_path: Option<String>,
+    staged_mp4_path: Option<String>,
 }
 
 #[tauri::command]
@@ -340,6 +356,132 @@ fn extract_frames_from_mp4_command(
 }
 
 #[tauri::command]
+fn stage_dropped_inputs_command(
+    request: StageDroppedInputsRequest,
+) -> Result<StageDroppedInputsResponse, String> {
+    if request.paths.is_empty() {
+        return Err("missing required input: paths".to_owned());
+    }
+
+    let workspace_root = create_staging_workspace()?;
+    let mut staged_dataset_root = None;
+    let mut staged_coco_json_path = None;
+    let mut staged_mp4_path = None;
+
+    for raw in request.paths {
+        let input = PathBuf::from(raw.trim());
+        if raw.trim().is_empty() {
+            continue;
+        }
+        if !input.exists() {
+            return Err(format!(
+                "dropped path does not exist: `{}`",
+                input.display()
+            ));
+        }
+
+        let file_name = input
+            .file_name()
+            .ok_or_else(|| format!("dropped path has no file name: `{}`", input.display()))?;
+        let target = unique_target_path(&workspace_root, file_name);
+
+        if input.is_dir() {
+            copy_dir_recursive(&input, &target).map_err(|source| {
+                format!(
+                    "failed to copy dropped directory `{}`: {source}",
+                    input.display()
+                )
+            })?;
+            if staged_dataset_root.is_none() {
+                staged_dataset_root = Some(target.display().to_string());
+            }
+            continue;
+        }
+
+        fs::copy(&input, &target).map_err(|source| {
+            format!(
+                "failed to copy dropped file `{}`: {source}",
+                input.display()
+            )
+        })?;
+        let lower = target.to_string_lossy().to_lowercase();
+        if lower.ends_with(".json") && staged_coco_json_path.is_none() {
+            staged_coco_json_path = Some(target.display().to_string());
+        } else if lower.ends_with(".mp4") && staged_mp4_path.is_none() {
+            staged_mp4_path = Some(target.display().to_string());
+        } else if staged_dataset_root.is_none() {
+            staged_dataset_root = Some(target.display().to_string());
+        }
+    }
+
+    Ok(StageDroppedInputsResponse {
+        workspace_root: workspace_root.display().to_string(),
+        staged_dataset_root,
+        staged_coco_json_path,
+        staged_mp4_path,
+    })
+}
+
+fn create_staging_workspace() -> Result<PathBuf, String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|source| source.to_string())?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("bdr-anno-review-drop-{nanos}"));
+    fs::create_dir_all(&root).map_err(|source| {
+        format!(
+            "failed to create staging workspace `{}`: {source}",
+            root.display()
+        )
+    })?;
+    Ok(root)
+}
+
+fn unique_target_path(root: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    let mut candidate = root.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("input");
+    let ext = Path::new(file_name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let mut index = 1usize;
+    loop {
+        let name = if ext.is_empty() {
+            format!("{stem}_{index}")
+        } else {
+            format!("{stem}_{index}.{ext}")
+        };
+        candidate = root.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn copy_dir_recursive(source: &Path, target: &Path) -> io::Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let destination = target.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &destination)?;
+        } else {
+            fs::copy(&path, &destination)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn check_runtime_dependencies_command(app: AppHandle) -> Result<RuntimeDependencyReport, String> {
     let ffmpeg = resolve_ffmpeg_binary(&app, "ffmpeg")?;
     let ffprobe = resolve_ffmpeg_binary(&app, "ffprobe")?;
@@ -508,7 +650,8 @@ fn main() {
             export_coco_command,
             generate_review_dataset_command,
             extract_frames_from_mp4_command,
-            check_runtime_dependencies_command
+            check_runtime_dependencies_command,
+            stage_dropped_inputs_command
         ])
         .run(tauri::generate_context!())
         .expect("failed to run bdr-anno-review tauri app");

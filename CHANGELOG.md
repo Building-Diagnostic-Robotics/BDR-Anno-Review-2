@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-22
+
+### Added
+- Added a discoverable **Drop input** workflow in the frontend with a dedicated button and modal popup so users can intentionally use drag-and-drop intake rather than relying on hidden window-drop behavior.
+- Added backend staging support via a new Tauri `stage_dropped_inputs_command` that copies dropped files/directories into an app-managed temporary workspace and returns staged paths for dataset root, COCO JSON, and MP4.
+
+### Changed
+- Updated drop ingestion to use staged temp-workspace paths before import/generation and improved diagnostics to report the staging workspace and ignored paths.
+- Bumped workspace, Tauri app config, and frontend package versions from `0.3.4` to `0.4.0` for the file-input schema and drop-staging UX release.
+
 ## [0.3.4] - 2026-02-22
 
 ### Fixed

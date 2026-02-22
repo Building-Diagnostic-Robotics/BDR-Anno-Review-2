@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   extractFramesFromMp4: vi.fn(),
   generateReviewDataset: vi.fn(),
   runImportStage: vi.fn(),
+  stageDroppedInputs: vi.fn(),
   setAnnotations: vi.fn(async (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) => edits),
 }));
 
@@ -38,6 +39,7 @@ vi.mock("./api", () => ({
   exportCoco: vi.fn(),
   generateReviewDataset: mocks.generateReviewDataset,
   runImportStage: mocks.runImportStage,
+  stageDroppedInputs: mocks.stageDroppedInputs,
   checkRuntimeDependencies: vi.fn(async () => ({
     ffmpeg: { name: "ffmpeg", resolvedPath: "ffmpeg" },
     ffprobe: { name: "ffprobe", resolvedPath: "ffprobe" },
@@ -70,6 +72,13 @@ beforeEach(() => {
     faceCount: 2,
     filteredBoxCount: 1,
   });
+  mocks.stageDroppedInputs.mockResolvedValue({
+    workspaceRoot: "/tmp/bdr-stage",
+    stagedDatasetRoot: "/tmp/bdr-stage/dataset",
+    stagedCocoJsonPath: "/tmp/bdr-stage/instances_default.json",
+    stagedMp4Path: "/tmp/bdr-stage/source.mp4",
+  });
+
   mocks.runImportStage.mockResolvedValue({
     imageCount: 2,
     annotationCount: 2,
@@ -86,6 +95,7 @@ beforeEach(() => {
   mocks.generateReviewDataset.mockClear();
   mocks.runImportStage.mockClear();
   mocks.setAnnotations.mockClear();
+  mocks.stageDroppedInputs.mockClear();
 });
 
 describe("bbox delete flow", () => {
@@ -168,5 +178,13 @@ describe("source frames directory behavior", () => {
     expect(sourceFramesInput.value).toBe("derived_frames/frame_sourcing");
 
     expect(api.generateReviewDataset).toBeDefined();
+  });
+});
+
+
+describe("drop input workflow", () => {
+  it("renders drop input button", () => {
+    render(<App />);
+    expect(screen.getByRole("button", { name: "Drop input" })).toBeTruthy();
   });
 });

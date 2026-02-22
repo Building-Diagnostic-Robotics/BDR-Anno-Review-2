@@ -12,6 +12,7 @@ import type {
   ListFacesReport,
   OpenDatasetReport,
   RuntimeDependencyReport,
+  StageDroppedInputsReport,
 } from "./types";
 
 export const runImportStage = async (options: ImportStageOptions) =>
@@ -56,3 +57,9 @@ export const extractFramesFromMp4 = async (options: ExtractFramesFromMp4Options)
 
 export const checkRuntimeDependencies = async () =>
   invoke<RuntimeDependencyReport>("check_runtime_dependencies_command");
+
+
+export const stageDroppedInputs = async (paths: string[]) =>
+  invoke<StageDroppedInputsReport>("stage_dropped_inputs_command", {
+    request: { paths },
+  });

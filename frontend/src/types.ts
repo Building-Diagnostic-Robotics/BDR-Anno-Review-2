@@ -92,3 +92,14 @@ export type ExportCocoReport = {
   imageCount: number;
   annotationCount: number;
 };
+
+export type StageDroppedInputsRequest = {
+  paths: string[];
+};
+
+export type StageDroppedInputsReport = {
+  workspaceRoot: string;
+  stagedDatasetRoot?: string;
+  stagedCocoJsonPath?: string;
+  stagedMp4Path?: string;
+};
