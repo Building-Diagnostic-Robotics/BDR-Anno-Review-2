@@ -114,6 +114,11 @@ Bundling is configured in checked-in release config (`src-tauri/tauri.release.co
   1. Install: `sudo apt install ./bdr-anno-review_*_amd64.deb`
   2. Launch from your application menu or by running `bdr-anno-review`.
 
+### Uninstall cleanup behavior
+
+- **Windows (`.nsis`)** uninstall removes app-owned dropped-input staging folders under `%LOCALAPPDATA%\Temp\bdr-anno-review-drop-*`.
+- **Linux (`.deb`)** package removal runs a post-remove script that deletes app-owned dropped-input staging folders under `/tmp/bdr-anno-review-drop-*`.
+- **Linux (`.AppImage`)** has no package-level uninstall hook; startup/exit cleanup in the app still removes app-owned registered staging folders.
 
 ### Tester validation checklist
 
