@@ -12,8 +12,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Added incremental extraction caching for `derived_frames/frame_sourcing/frame_######.png` so generation can skip already-materialized frames and only extract missing outputs, with surfaced skipped-frame counts in backend/frontend reports.
 - Optimized review generation to decode each source frame once per referenced image and reuse pixels across all requested face projections, reducing repeated image decode CPU work without changing rendered face semantics.
 
+### Fixed
+- Hardened batched MP4 extraction materialization to abort before renaming outputs when `ffmpeg` returns a mismatched output-count, preventing frame/index misalignment and stale-cache corruption on retry.
+
 ### Added
 - Added regression coverage for cached-frame extraction behavior to ensure existing frame outputs are reused and missing outputs are still extracted deterministically.
+- Added regression coverage that verifies batched extraction aborts without materializing outputs when `ffmpeg` emits fewer files than requested frame indices.
 
 ## [0.4.0] - 2026-02-22
 

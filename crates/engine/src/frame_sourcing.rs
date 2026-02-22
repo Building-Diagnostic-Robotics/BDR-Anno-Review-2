@@ -398,15 +398,27 @@ fn extract_frames_batch(
         .collect::<Vec<PathBuf>>();
     extracted.sort();
 
-    for (index, (_, output_path)) in pending.iter().enumerate() {
-        if let Some(extracted_path) = extracted.get(index) {
-            fs::rename(extracted_path, output_path).map_err(|source| {
-                EngineError::UnreadableFile {
-                    path: output_path.display().to_string(),
-                    reason: format!("could not materialize extracted frame file: {source}"),
-                }
-            })?;
-        }
+    if extracted.len() != pending.len() {
+        fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+            path: temp_batch_dir.display().to_string(),
+            reason: format!("could not clean temporary frame extraction directory: {source}"),
+        })?;
+
+        return Err(EngineError::UnreadableFile {
+            path: mp4_path.display().to_string(),
+            reason: format!(
+                "ffmpeg produced {} frame file(s) for {} requested frame index(es); extraction was aborted to avoid misaligned frame-to-index mapping",
+                extracted.len(),
+                pending.len()
+            ),
+        });
+    }
+
+    for (extracted_path, (_, output_path)) in extracted.iter().zip(pending.iter()) {
+        fs::rename(extracted_path, output_path).map_err(|source| EngineError::UnreadableFile {
+            path: output_path.display().to_string(),
+            reason: format!("could not materialize extracted frame file: {source}"),
+        })?;
     }
 
     fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
@@ -750,6 +762,44 @@ exit /b 0
 
         assert!(err
             .to_string()
-            .contains("ffmpeg did not produce output for frame index"));
+            .contains("extraction was aborted to avoid misaligned frame-to-index mapping"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extraction_aborts_without_materializing_when_batch_output_count_mismatches() {
+        let options = setup_dataset("instances_frame_source_valid.json");
+        let extraction_root =
+            std::path::PathBuf::from(&options.dataset_root).join("derived_frames/frame_sourcing");
+
+        let ffprobe_bin = create_test_tool_script(
+            "ffprobe",
+            "#!/usr/bin/env bash
+echo 16
+",
+        );
+        let ffmpeg_bin = create_test_tool_script(
+            "ffmpeg",
+            r#"#!/usr/bin/env bash
+out="${@: -1}"
+mkdir -p "$(dirname "$out")"
+printf png > "${out//%06d/000000}"
+"#,
+        );
+
+        let err = extract_frames_from_mp4(ExtractFramesFromMp4Options {
+            dataset_root: options.dataset_root,
+            coco_json_path: options.coco_json_path,
+            mp4_path: options.mp4_path,
+            ffmpeg_bin: Some(ffmpeg_bin),
+            ffprobe_bin: Some(ffprobe_bin),
+        })
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("extraction was aborted to avoid misaligned frame-to-index mapping"));
+        assert!(!extraction_root.join("frame_000003.png").is_file());
+        assert!(!extraction_root.join("frame_000007.png").is_file());
     }
 }
