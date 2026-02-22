@@ -69,11 +69,12 @@ type PointerMode = "idle" | "draw" | "move" | "resize";
 type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "done";
 
 const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
+  const normalizedRoot = datasetRoot.replace(/\\/g, "/").replace(/\/+$/, "");
   const normalizedPath = imagePath.replace(/\\/g, "/");
   if (normalizedPath.startsWith("/") || /^[A-Za-z]:\//.test(normalizedPath)) {
     return normalizedPath;
   }
-  return `${datasetRoot.replace(/\/$/, "")}/${normalizedPath}`;
+  return `${normalizedRoot}/${normalizedPath}`;
 };
 
 
@@ -91,6 +92,7 @@ export function App() {
   const [activeBoxIndex, setActiveBoxIndex] = useState<number | null>(null);
   const [editValidationError, setEditValidationError] = useState("");
   const [imageViewport, setImageViewport] = useState<ImageViewport | null>(null);
+  const [previewError, setPreviewError] = useState("");
 
   const imageRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -115,8 +117,11 @@ export function App() {
     [faces, selectedFaceId]
   );
   const selectedFace = selectedIndex < 0 ? undefined : faces[selectedIndex];
+  const selectedFaceImagePath = selectedFace
+    ? resolveFaceImagePath(datasetRoot, selectedFace.imagePath)
+    : "";
   const imageSrc = selectedFace
-    ? convertFileSrc(resolveFaceImagePath(datasetRoot, selectedFace.imagePath))
+    ? convertFileSrc(selectedFaceImagePath)
     : "";
 
   const progress = faces.length === 0 ? 0 : ((selectedIndex + 1) / faces.length) * 100;
@@ -849,12 +854,18 @@ Ignored paths: ${parsed.unsupported.join(", ")}` : "";
                   src={imageSrc}
                   alt={`Face preview for ${selectedFace.faceId}`}
                   onLoad={(event) => {
+                    setPreviewError("");
                     setImageViewport({
                       naturalWidth: event.currentTarget.naturalWidth,
                       naturalHeight: event.currentTarget.naturalHeight,
                       displayWidth: event.currentTarget.clientWidth,
                       displayHeight: event.currentTarget.clientHeight,
                     });
+                  }}
+                  onError={() => {
+                    setPreviewError(
+                      `Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}.`
+                    );
                   }}
                 />
                 <canvas
@@ -870,6 +881,7 @@ Ignored paths: ${parsed.unsupported.join(", ")}` : "";
               <p className="empty-preview">Open a dataset and select a face to start reviewing.</p>
             )}
           </div>
+          {previewError ? <p className="error">{previewError}</p> : null}
           <p className="hint">Canvas: drag to draw, drag inside to move, drag lower-right to resize, Delete/Backspace to remove active.</p>
 
           {edits.map((edit, index) => (

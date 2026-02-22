@@ -182,6 +182,35 @@ describe("source frames directory behavior", () => {
 });
 
 
+
+
+describe("face preview path behavior", () => {
+  it("normalizes windows dataset root when building face preview src", async () => {
+    render(<App />);
+
+    fireEvent.change(screen.getByPlaceholderText("Select dataset directory"), {
+      target: { value: String.raw`C:\Users\Kevin\Downloads\bdr-anno-review` },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    const preview = await screen.findByAltText("Face preview for face-1") as HTMLImageElement;
+    expect(preview.getAttribute("src")).toBe("C:/Users/Kevin/Downloads/bdr-anno-review/raw_frames/face-1.png");
+  });
+
+  it("shows explicit diagnostics when preview image fails to load", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    const preview = await screen.findByAltText("Face preview for face-1");
+    fireEvent.error(preview);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load face preview for face-1 from/)).toBeTruthy();
+    });
+  });
+});
 describe("drop input workflow", () => {
   it("renders drop input button", () => {
     render(<App />);
