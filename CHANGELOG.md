@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-02-22
+
+### Fixed
+- Added the missing `src-tauri/icons/512x512.ico` release icon asset and bumped workspace/Tauri/frontend versions to `0.2.2` so release tags can be cut with aligned metadata.
+
 ## [0.2.1] - 2026-02-22
 
 ### Changed
