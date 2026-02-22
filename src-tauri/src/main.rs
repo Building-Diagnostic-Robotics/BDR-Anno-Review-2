@@ -661,7 +661,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_manifest_request, ImportStageRequest};
+    use super::{validate_manifest_request, ImportStageRequest, SetAnnotationsRequest};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -684,6 +684,32 @@ mod tests {
         assert_eq!(parsed.mp4_path, "videos/source.mp4");
     }
 
+    #[test]
+    fn set_annotations_request_accepts_camel_case_provenance_fields() {
+        let raw = r#"{
+            "datasetRoot":"/tmp/dataset",
+            "faceId":"face-1",
+            "edits":[{
+                "bbox":[0.0,1.0,2.0,3.0],
+                "provenance":{
+                    "source":"ui_manual",
+                    "updatedAt":"2026-01-01T00:00:00Z",
+                    "sourceAnnotationId":42
+                }
+            }]
+        }"#;
+
+        let parsed: SetAnnotationsRequest = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(parsed.dataset_root, "/tmp/dataset");
+        assert_eq!(parsed.face_id, "face-1");
+        assert_eq!(parsed.edits.len(), 1);
+        assert_eq!(
+            parsed.edits[0].provenance.updated_at,
+            "2026-01-01T00:00:00Z"
+        );
+        assert_eq!(parsed.edits[0].provenance.source_annotation_id, Some(42));
+    }
     #[test]
     fn validate_manifest_request_reports_missing_manifest_with_actionable_message() {
         let dataset_root = unique_temp_dir();

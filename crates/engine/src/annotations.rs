@@ -19,7 +19,9 @@ pub struct AnnotationEdit {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Provenance {
     pub source: String,
+    #[serde(alias = "updatedAt")]
     pub updated_at: String,
+    #[serde(alias = "sourceAnnotationId")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_annotation_id: Option<u64>,
 }
@@ -422,5 +424,16 @@ mod tests {
 
         let err = set_annotations(root.to_str().unwrap(), "missing", Vec::new()).unwrap_err();
         assert_eq!(err.to_string(), "unknown face_id: missing");
+    }
+
+    #[test]
+    fn provenance_deserializes_frontend_camel_case_aliases() {
+        let raw =
+            r#"{"source":"ui_manual","updatedAt":"2026-01-01T00:00:00Z","sourceAnnotationId":77}"#;
+        let parsed: Provenance = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(parsed.source, "ui_manual");
+        assert_eq!(parsed.updated_at, "2026-01-01T00:00:00Z");
+        assert_eq!(parsed.source_annotation_id, Some(77));
     }
 }
