@@ -21,10 +21,27 @@ use engine::{
 const VIEW_MANIFEST_PATH: &str = "annotations/view_manifest.json";
 const STAGING_WORKSPACE_PREFIX: &str = "bdr-anno-review-drop-";
 const STAGING_REGISTRY_FILE: &str = "staging-workspaces.json";
+const STAGING_WORKSPACE_MARKER_FILE: &str = ".bdr-anno-review-owned";
 
 #[derive(Default)]
 struct AppState {
     annotation_cache: Mutex<HashMap<(String, String), Vec<AnnotationEdit>>>,
+}
+
+struct AppSession {
+    id: String,
+}
+
+impl AppSession {
+    fn new() -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        Self {
+            id: format!("{}-{nanos}", std::process::id()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -191,7 +208,34 @@ struct StageDroppedInputsResponse {
 
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 struct StagingWorkspaceRegistry {
-    workspaces: Vec<String>,
+    workspaces: Vec<StagingWorkspaceRegistration>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StagingWorkspaceRegistration {
+    path: String,
+    #[serde(default)]
+    owner_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum StagingWorkspaceRegistrationCompat {
+    LegacyPath(String),
+    Registration(StagingWorkspaceRegistration),
+}
+
+impl From<StagingWorkspaceRegistrationCompat> for StagingWorkspaceRegistration {
+    fn from(value: StagingWorkspaceRegistrationCompat) -> Self {
+        match value {
+            StagingWorkspaceRegistrationCompat::LegacyPath(path) => Self {
+                path,
+                owner_session_id: None,
+            },
+            StagingWorkspaceRegistrationCompat::Registration(registration) => registration,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -645,7 +689,8 @@ fn stage_dropped_inputs_inner(
 
     let workspace_root = create_staging_workspace()?;
     if let Some(app) = app {
-        register_staging_workspace(app, &workspace_root)?;
+        let session = app.state::<AppSession>();
+        register_staging_workspace(app, &workspace_root, &session.id)?;
     }
     let mut staged_dataset_root = None;
     let mut staged_coco_json_path = None;
@@ -710,8 +755,9 @@ fn stage_dropped_inputs_inner(
 #[tauri::command]
 fn cleanup_staging_workspaces_command(
     app: AppHandle,
+    session: State<'_, AppSession>,
 ) -> Result<CleanupStagingWorkspacesResponse, String> {
-    cleanup_registered_staging_workspaces(&app)
+    cleanup_registered_staging_workspaces(&app, &session.id)
 }
 
 fn create_staging_workspace() -> Result<PathBuf, String> {
@@ -724,6 +770,13 @@ fn create_staging_workspace() -> Result<PathBuf, String> {
         format!(
             "failed to create staging workspace `{}`: {source}",
             root.display()
+        )
+    })?;
+    let marker_path = root.join(STAGING_WORKSPACE_MARKER_FILE);
+    fs::write(&marker_path, b"bdr-anno-review staging workspace\n").map_err(|source| {
+        format!(
+            "failed to create staging workspace marker `{}`: {source}",
+            marker_path.display()
         )
     })?;
     Ok(root)
@@ -761,11 +814,27 @@ fn load_staging_registry(path: &Path) -> Result<StagingWorkspaceRegistry, String
             path.display()
         )
     })?;
-    serde_json::from_str(&raw).map_err(|source| {
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|source| {
         format!(
             "invalid staging registry JSON at `{}`: {source}",
             path.display()
         )
+    })?;
+
+    let workspaces_value = parsed
+        .get("workspaces")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let registrations: Vec<StagingWorkspaceRegistrationCompat> =
+        serde_json::from_value(workspaces_value).map_err(|source| {
+            format!(
+                "invalid staging workspace registry entries at `{}`: {source}",
+                path.display()
+            )
+        })?;
+
+    Ok(StagingWorkspaceRegistry {
+        workspaces: registrations.into_iter().map(Into::into).collect(),
     })
 }
 
@@ -785,22 +854,31 @@ fn is_owned_staging_workspace(path: &Path) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with(STAGING_WORKSPACE_PREFIX))
         .unwrap_or(false)
+        && path.join(STAGING_WORKSPACE_MARKER_FILE).is_file()
 }
 
-fn register_staging_workspace(app: &AppHandle, workspace_root: &Path) -> Result<(), String> {
+fn register_staging_workspace(
+    app: &AppHandle,
+    workspace_root: &Path,
+    owner_session_id: &str,
+) -> Result<(), String> {
     let registry_path = staging_registry_path(app)?;
     let mut registry = load_staging_registry(&registry_path)?;
-    registry
-        .workspaces
-        .retain(|entry| Path::new(entry).exists() && is_owned_staging_workspace(Path::new(entry)));
+    registry.workspaces.retain(|entry| {
+        let path = Path::new(&entry.path);
+        path.exists() && is_owned_staging_workspace(path)
+    });
 
     let workspace = workspace_root.display().to_string();
     if !registry
         .workspaces
         .iter()
-        .any(|candidate| candidate == &workspace)
+        .any(|candidate| candidate.path == workspace)
     {
-        registry.workspaces.push(workspace);
+        registry.workspaces.push(StagingWorkspaceRegistration {
+            path: workspace,
+            owner_session_id: Some(owner_session_id.to_owned()),
+        });
     }
 
     save_staging_registry(&registry_path, &registry)
@@ -808,31 +886,39 @@ fn register_staging_workspace(app: &AppHandle, workspace_root: &Path) -> Result<
 
 fn cleanup_registered_staging_workspaces(
     app: &AppHandle,
+    owner_session_id: &str,
 ) -> Result<CleanupStagingWorkspacesResponse, String> {
     let registry_path = staging_registry_path(app)?;
-    cleanup_registered_staging_workspaces_by_registry_path(&registry_path)
+    cleanup_registered_staging_workspaces_by_registry_path(&registry_path, owner_session_id)
 }
 
 fn cleanup_registered_staging_workspaces_by_registry_path(
     registry_path: &Path,
+    owner_session_id: &str,
 ) -> Result<CleanupStagingWorkspacesResponse, String> {
     let mut registry = load_staging_registry(registry_path)?;
     let mut removed_paths = Vec::new();
     let mut skipped_paths = Vec::new();
-    let mut retained_paths = Vec::new();
+    let mut retained_paths: Vec<StagingWorkspaceRegistration> = Vec::new();
     let mut errors = Vec::new();
 
     for entry in &registry.workspaces {
-        let path = PathBuf::from(entry);
-        if !is_owned_staging_workspace(&path) {
-            skipped_paths.push(entry.clone());
+        let path = PathBuf::from(&entry.path);
+        if entry.owner_session_id.as_deref() != Some(owner_session_id) {
+            retained_paths.push(entry.clone());
             continue;
         }
         if !path.exists() {
             continue;
         }
+        if !is_owned_staging_workspace(&path) {
+            skipped_paths.push(entry.path.clone());
+            retained_paths.push(entry.clone());
+            continue;
+        }
         if !path.is_dir() {
-            skipped_paths.push(entry.clone());
+            skipped_paths.push(entry.path.clone());
+            retained_paths.push(entry.clone());
             continue;
         }
 
@@ -844,7 +930,7 @@ fn cleanup_registered_staging_workspaces_by_registry_path(
             retained_paths.push(entry.clone());
             continue;
         }
-        removed_paths.push(entry.clone());
+        removed_paths.push(entry.path.clone());
     }
 
     registry.workspaces = retained_paths;
@@ -1072,9 +1158,11 @@ fn verify_binary_executable(path_or_name: &Path) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .manage(AppSession::new())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            if let Err(error) = cleanup_registered_staging_workspaces(&app.handle()) {
+            let session = app.state::<AppSession>();
+            if let Err(error) = cleanup_registered_staging_workspaces(app.handle(), &session.id) {
                 eprintln!("startup staging workspace cleanup failed: {error}");
             }
             Ok(())
@@ -1096,7 +1184,8 @@ fn main() {
         .expect("failed to build bdr-anno-review tauri app")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                if let Err(error) = cleanup_registered_staging_workspaces(app) {
+                let session = app.state::<AppSession>();
+                if let Err(error) = cleanup_registered_staging_workspaces(app, &session.id) {
                     eprintln!("exit staging workspace cleanup failed: {error}");
                 }
             }
@@ -1109,6 +1198,7 @@ mod tests {
         cleanup_registered_staging_workspaces_by_registry_path, copy_dir_recursive,
         stage_dropped_inputs_inner, validate_face_image_paths, validate_manifest_request,
         ImportStageRequest, SetAnnotationsRequest, StageDroppedInputsRequest,
+        STAGING_WORKSPACE_MARKER_FILE,
     };
     use engine::FaceView;
     use std::fs;
@@ -1272,22 +1362,26 @@ mod tests {
                 .as_nanos()
         ));
         let non_owned = fixture_root.join("not-owned");
+        let owner = "session-a";
         fs::create_dir_all(&owned).unwrap();
+        fs::write(owned.join(STAGING_WORKSPACE_MARKER_FILE), "owned").unwrap();
         fs::create_dir_all(&non_owned).unwrap();
 
         let registry_path = fixture_root.join("registry.json");
         fs::write(
             &registry_path,
             format!(
-                r#"{{"workspaces":["{}","{}"]}}"#,
+                r#"{{"workspaces":[{{"path":"{}","ownerSessionId":"{}"}},{{"path":"{}","ownerSessionId":"{}"}}]}}"#,
                 owned.display(),
-                non_owned.display()
+                owner,
+                non_owned.display(),
+                owner
             ),
         )
         .unwrap();
 
         let result =
-            cleanup_registered_staging_workspaces_by_registry_path(&registry_path).unwrap();
+            cleanup_registered_staging_workspaces_by_registry_path(&registry_path, owner).unwrap();
         assert_eq!(result.removed_paths, vec![owned.display().to_string()]);
         assert_eq!(result.skipped_paths, vec![non_owned.display().to_string()]);
         assert!(!owned.exists());
@@ -1301,15 +1395,20 @@ mod tests {
         let fixture_root = unique_temp_dir();
         fs::create_dir_all(&fixture_root).unwrap();
         let missing = std::env::temp_dir().join("bdr-anno-review-drop-does-not-exist");
+        let owner = "session-a";
         let registry_path = fixture_root.join("registry.json");
         fs::write(
             &registry_path,
-            format!(r#"{{"workspaces":["{}"]}}"#, missing.display()),
+            format!(
+                r#"{{"workspaces":[{{"path":"{}","ownerSessionId":"{}"}}]}}"#,
+                missing.display(),
+                owner
+            ),
         )
         .unwrap();
 
         let result =
-            cleanup_registered_staging_workspaces_by_registry_path(&registry_path).unwrap();
+            cleanup_registered_staging_workspaces_by_registry_path(&registry_path, owner).unwrap();
         assert!(result.removed_paths.is_empty());
         assert!(result.skipped_paths.is_empty());
         let rewritten = fs::read_to_string(&registry_path).unwrap();
