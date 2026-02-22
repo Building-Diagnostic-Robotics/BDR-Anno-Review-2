@@ -158,10 +158,28 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
-          if (-not $setup) {
-            throw 'Could not locate generated NSIS setup executable.'
+          $searchRoot = 'src-tauri/target'
+          if (-not (Test-Path $searchRoot)) {
+            throw "Expected Tauri target directory '$searchRoot' does not exist."
           }
+
+          $nsisCandidates = Get-ChildItem -Path $searchRoot -Recurse -File -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '[\\/]bundle[\\/]nsis[\\/]' }
+
+          Write-Host 'NSIS setup discovery diagnostics:'
+          if ($nsisCandidates) {
+            $nsisCandidates | ForEach-Object { Write-Host "- $($_.FullName)" }
+          } else {
+            Write-Host '- No NSIS setup candidates found.'
+          }
+
+          if ($nsisCandidates.Count -eq 0) {
+            throw "Could not locate generated NSIS setup executable under '$searchRoot' (searched recursively for '*-setup.exe' in bundle/nsis paths)."
+          }
+          if ($nsisCandidates.Count -gt 1) {
+            throw "Expected exactly one NSIS setup executable but found $($nsisCandidates.Count)."
+          }
+          $setup = $nsisCandidates | Select-Object -First 1
 
           $extractDir = Join-Path $env:RUNNER_TEMP 'nsis-inspect'
           if (Test-Path $extractDir) {
