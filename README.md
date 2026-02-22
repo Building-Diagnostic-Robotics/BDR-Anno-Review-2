@@ -90,6 +90,7 @@ On tag builds, CI runs `./scripts/check-tag-version.sh ${{ github.ref_name }}` a
 The app now targets **sidecar binaries** for `ffmpeg` and `ffprobe` (not embedded shared libraries). Sidecars keep runtime integration simple (`Command`-based invocation), preserve explicit failure diagnostics, and avoid adding codec/linker complexity to the Rust build.
 
 Release workflows fetch per-platform FFmpeg sidecar binaries and bundle them into installer artifacts. For local developer runs, the app falls back to `ffmpeg`/`ffprobe` on `PATH` when sidecars are not present.
+Bundling is configured in checked-in release config (`src-tauri/tauri.release.conf.json` `bundle.externalBin`) and passed to Tauri in CI via `--config`, so sidecar packaging rules are versioned in-repo instead of workflow inline JSON.
 
 ### Platform prerequisites
 

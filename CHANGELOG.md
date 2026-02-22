@@ -7,6 +7,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Updated release publishing flow so `tauri-action` creates/updates draft releases first, Windows NSIS sidecar verification runs before publication, and a final `gh release edit --draft=false` step publishes only fully validated tag artifacts.
+
+## [0.2.5] - 2026-02-22
+
+### Fixed
+- Hardened Windows release artifact verification in `.github/workflows/release.yml` by removing the brittle assumption of a fixed intermediate payload filename and instead checking both recursively extracted files and embedded executable payload listings for `ffmpeg-x86_64-pc-windows-msvc.exe` and `ffprobe-x86_64-pc-windows-msvc.exe`.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.2.4` to `0.2.5` for the Windows sidecar verification hardening release.
+
+## [0.2.4] - 2026-02-22
+
+### Fixed
+- Moved FFmpeg/FFprobe sidecar bundling to a checked-in Tauri release override config (`src-tauri/tauri.release.conf.json` `bundle.externalBin`) and switched CI to pass it with `--config`, so Windows/Linux bundles use versioned sidecar rules instead of workflow-inline JSON overrides.
+- Added post-build Windows NSIS artifact inspection in release CI to assert that `ffmpeg-x86_64-pc-windows-msvc.exe` and `ffprobe-x86_64-pc-windows-msvc.exe` are present in the packaged app payload.
+- Expanded runtime dependency diagnostics to include sidecar candidate paths checked before PATH fallback, making missing-sidecar packaging issues easier to debug from user reports.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.2.3` to `0.2.4` for the sidecar packaging reliability fix release.
+
 ## [0.2.3] - 2026-02-22
 
 ### Fixed

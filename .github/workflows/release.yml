@@ -146,12 +146,62 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_CONFIG: >-
-            {"bundle":{"externalBin":["binaries/ffmpeg","binaries/ffprobe"]}}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Release ${{ github.ref_name }}
           releaseBody: Automated release build for external tester validation.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          args: ${{ matrix.bundle_filter }}
+          args: ${{ matrix.bundle_filter }} --config src-tauri/tauri.release.conf.json
+
+      - name: Verify Windows NSIS bundle contains FFmpeg sidecars
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $setup) {
+            throw 'Could not locate generated NSIS setup executable.'
+          }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP 'nsis-inspect'
+          if (Test-Path $extractDir) {
+            Remove-Item -Recurse -Force $extractDir
+          }
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+
+          7z x $setup.FullName "-o$extractDir" -y | Out-Null
+
+          $ffmpegOnDisk = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'ffmpeg-x86_64-pc-windows-msvc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $ffprobeOnDisk = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'ffprobe-x86_64-pc-windows-msvc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($ffmpegOnDisk -and $ffprobeOnDisk) {
+            Write-Host "Found sidecars directly in extracted NSIS payload:"
+            Write-Host "- $($ffmpegOnDisk.FullName)"
+            Write-Host "- $($ffprobeOnDisk.FullName)"
+            exit 0
+          }
+
+          $embeddedListings = @()
+          Get-ChildItem -Path $extractDir -Recurse -File -Include '*.exe' -ErrorAction SilentlyContinue | ForEach-Object {
+            $targetExe = $_.FullName
+            $listingPath = "$targetExe.listing.txt"
+            7z l $targetExe | Out-File $listingPath
+            $embeddedListings += Get-Content $listingPath -Raw
+          }
+
+          $mergedListings = ($embeddedListings -join "`n")
+          if ($mergedListings -notmatch 'ffmpeg-x86_64-pc-windows-msvc\.exe') {
+            throw 'ffmpeg sidecar is missing from NSIS payload (direct files and embedded executable payloads checked).'
+          }
+          if ($mergedListings -notmatch 'ffprobe-x86_64-pc-windows-msvc\.exe') {
+            throw 'ffprobe sidecar is missing from NSIS payload (direct files and embedded executable payloads checked).'
+          }
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish validated release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false
