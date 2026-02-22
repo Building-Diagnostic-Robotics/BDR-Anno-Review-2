@@ -306,7 +306,9 @@ fn check_runtime_dependencies_command(app: AppHandle) -> Result<RuntimeDependenc
 }
 
 fn resolve_ffmpeg_binary(app: &AppHandle, binary_name: &str) -> Result<String, String> {
-    if let Some(sidecar) = resolve_sidecar_binary(app, binary_name) {
+    let sidecar_resolution = resolve_sidecar_binary(app, binary_name);
+
+    if let Some(sidecar) = sidecar_resolution.resolved_path {
         verify_binary_executable(&sidecar).map_err(|source| {
             format!(
                 "runtime dependency `{binary_name}` sidecar is present but unusable at `{}`: {source}. Repackage the app with a valid executable sidecar",
@@ -318,14 +320,22 @@ fn resolve_ffmpeg_binary(app: &AppHandle, binary_name: &str) -> Result<String, S
     }
 
     let tool = binary_name.to_owned();
-    verify_binary_executable(Path::new(&tool))
-        .map_err(|source| format!(
-            "runtime dependency `{binary_name}` is unavailable: {source}. Install ffmpeg/ffprobe or include sidecar binaries in the app bundle"
-        ))?;
+    verify_binary_executable(Path::new(&tool)).map_err(|source| {
+        format!(
+            "runtime dependency `{binary_name}` is unavailable: {source}. Install ffmpeg/ffprobe or include sidecar binaries in the app bundle. Sidecar lookup candidates checked: {}",
+            format_sidecar_candidates(&sidecar_resolution.candidate_paths)
+        )
+    })?;
     Ok(tool)
 }
 
-fn resolve_sidecar_binary(app: &AppHandle, binary_name: &str) -> Option<PathBuf> {
+#[derive(Debug)]
+struct SidecarResolution {
+    resolved_path: Option<PathBuf>,
+    candidate_paths: Vec<PathBuf>,
+}
+
+fn resolve_sidecar_binary(app: &AppHandle, binary_name: &str) -> SidecarResolution {
     let mut candidates = Vec::new();
 
     for sidecar_name in sidecar_binary_names(binary_name) {
@@ -356,7 +366,27 @@ fn resolve_sidecar_binary(app: &AppHandle, binary_name: &str) -> Option<PathBuf>
         }
     }
 
-    candidates.into_iter().find(|candidate| candidate.is_file())
+    let resolved_path = candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned();
+
+    SidecarResolution {
+        resolved_path,
+        candidate_paths: candidates,
+    }
+}
+
+fn format_sidecar_candidates(candidates: &[PathBuf]) -> String {
+    if candidates.is_empty() {
+        return "(none)".to_owned();
+    }
+
+    candidates
+        .iter()
+        .map(|path| format!("`{}`", path.display()))
+        .collect::<Vec<String>>()
+        .join(", ")
 }
 
 fn sidecar_resource_names(sidecar_name: &str) -> Vec<String> {
