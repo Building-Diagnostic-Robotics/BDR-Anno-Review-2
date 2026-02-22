@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-02-22
+
+### Fixed
+- Added Linux release-bundle sidecar verification in `.github/workflows/release.yml` so CI now inspects generated `.AppImage` and `.deb` artifacts and fails loudly when `ffmpeg`/`ffprobe` sidecars are missing from payload contents.
+- Added Linux bundle discovery diagnostics and strict single-artifact checks for AppImage/deb verification, including searched target roots and sidecar-name match diagnostics to make release failures actionable.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.3.0` to `0.3.1` for the Linux sidecar verification release-hardening update.
+
 ## [0.3.0] - 2026-02-22
 
 ### Added
