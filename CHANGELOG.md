@@ -28,6 +28,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Fixed dropped-input staging so `staged_dataset_root` is assigned only from dropped directories; unsupported non-JSON/non-MP4 files are now ignored and reported instead of being misclassified as dataset roots.
 - Hardened recursive dropped-directory staging to skip only symlinked directories (preventing recursive traversal of symlink cycles) while preserving symlinked files by materializing their file contents in the staging workspace.
 
+## [0.4.2] - 2026-02-22
+
+### Added
+- Added app-owned staging workspace tracking in the Tauri host and a cleanup command that removes only `bdr-anno-review-drop-*` temp directories while skipping non-owned paths.
+- Added startup/exit best-effort cleanup hooks so registered dropped-input staging workspaces are removed even when packaging uninstall hooks are unavailable (for example AppImage).
+- Added Linux `.deb` post-remove and Windows NSIS uninstall hooks that remove app-owned dropped-input temp directories during uninstall.
+- Added Tauri host regression tests for staging-workspace cleanup behavior, including owned-path deletion and non-owned path skipping.
+
+### Changed
+- Updated release docs with explicit uninstall cleanup behavior for Windows NSIS, Linux deb, and Linux AppImage installs.
+- Bumped workspace, Tauri app config, and frontend package versions from `0.4.1` to `0.4.2` for temp-workspace cleanup coverage and uninstall cleanup hooks.
+
 ## [0.4.1] - 2026-02-22
 
 ### Changed

@@ -19,6 +19,8 @@ use engine::{
 };
 
 const VIEW_MANIFEST_PATH: &str = "annotations/view_manifest.json";
+const STAGING_WORKSPACE_PREFIX: &str = "bdr-anno-review-drop-";
+const STAGING_REGISTRY_FILE: &str = "staging-workspaces.json";
 
 #[derive(Default)]
 struct AppState {
@@ -185,6 +187,18 @@ struct StageDroppedInputsResponse {
     staged_coco_json_path: Option<String>,
     staged_mp4_path: Option<String>,
     ignored_paths: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+struct StagingWorkspaceRegistry {
+    workspaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanupStagingWorkspacesResponse {
+    removed_paths: Vec<String>,
+    skipped_paths: Vec<String>,
 }
 
 #[tauri::command]
@@ -615,13 +629,24 @@ async fn extract_frames_from_mp4_command(
 
 #[tauri::command]
 fn stage_dropped_inputs_command(
+    app: AppHandle,
     request: StageDroppedInputsRequest,
+) -> Result<StageDroppedInputsResponse, String> {
+    stage_dropped_inputs_inner(request, Some(&app))
+}
+
+fn stage_dropped_inputs_inner(
+    request: StageDroppedInputsRequest,
+    app: Option<&AppHandle>,
 ) -> Result<StageDroppedInputsResponse, String> {
     if request.paths.is_empty() {
         return Err("missing required input: paths".to_owned());
     }
 
     let workspace_root = create_staging_workspace()?;
+    if let Some(app) = app {
+        register_staging_workspace(app, &workspace_root)?;
+    }
     let mut staged_dataset_root = None;
     let mut staged_coco_json_path = None;
     let mut staged_mp4_path = None;
@@ -682,12 +707,19 @@ fn stage_dropped_inputs_command(
     })
 }
 
+#[tauri::command]
+fn cleanup_staging_workspaces_command(
+    app: AppHandle,
+) -> Result<CleanupStagingWorkspacesResponse, String> {
+    cleanup_registered_staging_workspaces(&app)
+}
+
 fn create_staging_workspace() -> Result<PathBuf, String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|source| source.to_string())?
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("bdr-anno-review-drop-{nanos}"));
+    let root = std::env::temp_dir().join(format!("{STAGING_WORKSPACE_PREFIX}{nanos}"));
     fs::create_dir_all(&root).map_err(|source| {
         format!(
             "failed to create staging workspace `{}`: {source}",
@@ -695,6 +727,137 @@ fn create_staging_workspace() -> Result<PathBuf, String> {
         )
     })?;
     Ok(root)
+}
+
+fn staging_registry_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let path = app
+        .path()
+        .resolve(
+            STAGING_REGISTRY_FILE,
+            tauri::path::BaseDirectory::AppLocalData,
+        )
+        .map_err(|source| format!("failed to resolve staging registry path: {source}"))?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| {
+            format!(
+                "failed to create staging registry parent directory `{}`: {source}",
+                parent.display()
+            )
+        })?;
+    }
+
+    Ok(path)
+}
+
+fn load_staging_registry(path: &Path) -> Result<StagingWorkspaceRegistry, String> {
+    if !path.exists() {
+        return Ok(StagingWorkspaceRegistry::default());
+    }
+
+    let raw = fs::read_to_string(path).map_err(|source| {
+        format!(
+            "failed to read staging registry `{}`: {source}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&raw).map_err(|source| {
+        format!(
+            "invalid staging registry JSON at `{}`: {source}",
+            path.display()
+        )
+    })
+}
+
+fn save_staging_registry(path: &Path, registry: &StagingWorkspaceRegistry) -> Result<(), String> {
+    let raw = serde_json::to_string_pretty(registry)
+        .map_err(|source| format!("failed to serialize staging registry: {source}"))?;
+    fs::write(path, raw).map_err(|source| {
+        format!(
+            "failed to write staging registry `{}`: {source}",
+            path.display()
+        )
+    })
+}
+
+fn is_owned_staging_workspace(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with(STAGING_WORKSPACE_PREFIX))
+        .unwrap_or(false)
+}
+
+fn register_staging_workspace(app: &AppHandle, workspace_root: &Path) -> Result<(), String> {
+    let registry_path = staging_registry_path(app)?;
+    let mut registry = load_staging_registry(&registry_path)?;
+    registry
+        .workspaces
+        .retain(|entry| Path::new(entry).exists() && is_owned_staging_workspace(Path::new(entry)));
+
+    let workspace = workspace_root.display().to_string();
+    if !registry
+        .workspaces
+        .iter()
+        .any(|candidate| candidate == &workspace)
+    {
+        registry.workspaces.push(workspace);
+    }
+
+    save_staging_registry(&registry_path, &registry)
+}
+
+fn cleanup_registered_staging_workspaces(
+    app: &AppHandle,
+) -> Result<CleanupStagingWorkspacesResponse, String> {
+    let registry_path = staging_registry_path(app)?;
+    cleanup_registered_staging_workspaces_by_registry_path(&registry_path)
+}
+
+fn cleanup_registered_staging_workspaces_by_registry_path(
+    registry_path: &Path,
+) -> Result<CleanupStagingWorkspacesResponse, String> {
+    let mut registry = load_staging_registry(registry_path)?;
+    let mut removed_paths = Vec::new();
+    let mut skipped_paths = Vec::new();
+    let mut retained_paths = Vec::new();
+    let mut errors = Vec::new();
+
+    for entry in &registry.workspaces {
+        let path = PathBuf::from(entry);
+        if !is_owned_staging_workspace(&path) {
+            skipped_paths.push(entry.clone());
+            continue;
+        }
+        if !path.exists() {
+            continue;
+        }
+        if !path.is_dir() {
+            skipped_paths.push(entry.clone());
+            continue;
+        }
+
+        if let Err(source) = fs::remove_dir_all(&path) {
+            errors.push(format!(
+                "failed to remove staging workspace `{}`: {source}",
+                path.display()
+            ));
+            retained_paths.push(entry.clone());
+            continue;
+        }
+        removed_paths.push(entry.clone());
+    }
+
+    registry.workspaces = retained_paths;
+    save_staging_registry(registry_path, &registry)?;
+
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+
+    Ok(CleanupStagingWorkspacesResponse {
+        removed_paths,
+        skipped_paths,
+    })
 }
 
 fn unique_target_path(root: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
@@ -910,6 +1073,12 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            if let Err(error) = cleanup_registered_staging_workspaces(&app.handle()) {
+                eprintln!("startup staging workspace cleanup failed: {error}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             run_import_stage_command,
             open_dataset_command,
@@ -920,18 +1089,26 @@ fn main() {
             generate_review_dataset_command,
             extract_frames_from_mp4_command,
             check_runtime_dependencies_command,
-            stage_dropped_inputs_command
+            stage_dropped_inputs_command,
+            cleanup_staging_workspaces_command
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run bdr-anno-review tauri app");
+        .build(tauri::generate_context!())
+        .expect("failed to build bdr-anno-review tauri app")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Err(error) = cleanup_registered_staging_workspaces(app) {
+                    eprintln!("exit staging workspace cleanup failed: {error}");
+                }
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_dir_recursive, stage_dropped_inputs_command, validate_face_image_paths,
-        validate_manifest_request, ImportStageRequest, SetAnnotationsRequest,
-        StageDroppedInputsRequest,
+        cleanup_registered_staging_workspaces_by_registry_path, copy_dir_recursive,
+        stage_dropped_inputs_inner, validate_face_image_paths, validate_manifest_request,
+        ImportStageRequest, SetAnnotationsRequest, StageDroppedInputsRequest,
     };
     use engine::FaceView;
     use std::fs;
@@ -1057,12 +1234,15 @@ mod tests {
         fs::create_dir_all(&dataset_root).unwrap();
         fs::write(dataset_root.join("placeholder.txt"), "ok").unwrap();
 
-        let response = stage_dropped_inputs_command(StageDroppedInputsRequest {
-            paths: vec![
-                unsupported_path.display().to_string(),
-                dataset_root.display().to_string(),
-            ],
-        })
+        let response = stage_dropped_inputs_inner(
+            StageDroppedInputsRequest {
+                paths: vec![
+                    unsupported_path.display().to_string(),
+                    dataset_root.display().to_string(),
+                ],
+            },
+            None,
+        )
         .unwrap();
 
         assert!(response.staged_dataset_root.is_some());
@@ -1075,6 +1255,65 @@ mod tests {
             .to_lowercase()
             .ends_with("notes.txt"));
         assert!(PathBuf::from(response.workspace_root).is_dir());
+
+        fs::remove_dir_all(&fixture_root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_staging_workspaces_removes_owned_directories_and_skips_non_owned() {
+        let fixture_root = unique_temp_dir();
+        fs::create_dir_all(&fixture_root).unwrap();
+
+        let owned = std::env::temp_dir().join(format!(
+            "bdr-anno-review-drop-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let non_owned = fixture_root.join("not-owned");
+        fs::create_dir_all(&owned).unwrap();
+        fs::create_dir_all(&non_owned).unwrap();
+
+        let registry_path = fixture_root.join("registry.json");
+        fs::write(
+            &registry_path,
+            format!(
+                r#"{{"workspaces":["{}","{}"]}}"#,
+                owned.display(),
+                non_owned.display()
+            ),
+        )
+        .unwrap();
+
+        let result =
+            cleanup_registered_staging_workspaces_by_registry_path(&registry_path).unwrap();
+        assert_eq!(result.removed_paths, vec![owned.display().to_string()]);
+        assert_eq!(result.skipped_paths, vec![non_owned.display().to_string()]);
+        assert!(!owned.exists());
+        assert!(non_owned.exists());
+
+        fs::remove_dir_all(&fixture_root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_staging_workspaces_prunes_missing_registry_entries() {
+        let fixture_root = unique_temp_dir();
+        fs::create_dir_all(&fixture_root).unwrap();
+        let missing = std::env::temp_dir().join("bdr-anno-review-drop-does-not-exist");
+        let registry_path = fixture_root.join("registry.json");
+        fs::write(
+            &registry_path,
+            format!(r#"{{"workspaces":["{}"]}}"#, missing.display()),
+        )
+        .unwrap();
+
+        let result =
+            cleanup_registered_staging_workspaces_by_registry_path(&registry_path).unwrap();
+        assert!(result.removed_paths.is_empty());
+        assert!(result.skipped_paths.is_empty());
+        let rewritten = fs::read_to_string(&registry_path).unwrap();
+        assert_eq!(rewritten, "{\n  \"workspaces\": []\n}");
 
         fs::remove_dir_all(&fixture_root).unwrap();
     }
