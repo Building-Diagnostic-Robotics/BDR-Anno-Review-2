@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-02-22
+
+### Fixed
+- Added explicit Tauri capability permissions for dialog open/save in `src-tauri/capabilities/default.json` so Windows browse/save actions are allowed instead of failing with `plugin:dialog|open` ACL denial at runtime.
+- Improved frontend dialog failure diagnostics to surface ACL-specific remediation hints for missing `plugin:dialog|open` and `plugin:dialog|save` permissions, while preserving fail-loud behavior for other picker errors.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.3.2` to `0.3.3` for the Windows dialog ACL fix release.
+
 ## [0.3.2] - 2026-02-22
 
 ### Fixed

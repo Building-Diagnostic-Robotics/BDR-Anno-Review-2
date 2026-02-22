@@ -104,6 +104,27 @@ export function App() {
     setError(nextError);
   };
 
+  const formatDialogError = (scope: "folder" | "file" | "save", cause: unknown): string => {
+    const message = String(cause);
+    if (message.includes("plugin:dialog|open not allowed by ACL")) {
+      return "Could not open picker: dialog permission missing (`plugin:dialog|open`). Update Tauri capabilities for the active window and rebuild.";
+    }
+
+    if (message.includes("plugin:dialog|save not allowed by ACL")) {
+      return "Could not open save dialog: dialog permission missing (`plugin:dialog|save`). Update Tauri capabilities for the active window and rebuild.";
+    }
+
+    if (scope === "folder") {
+      return `Could not open folder picker: ${message}`;
+    }
+
+    if (scope === "save") {
+      return `Could not open save dialog: ${message}`;
+    }
+
+    return `Could not open file picker: ${message}`;
+  };
+
 
   const pickDirectory = async (setter: (value: string) => void) => {
     try {
@@ -112,7 +133,7 @@ export function App() {
         setter(selected);
       }
     } catch (cause) {
-      updateDiagnostics("Browse failed", `Could not open folder picker: ${String(cause)}`);
+      updateDiagnostics("Browse failed", formatDialogError("folder", cause));
     }
   };
 
@@ -123,17 +144,21 @@ export function App() {
         setter(selected);
       }
     } catch (cause) {
-      updateDiagnostics("Browse failed", `Could not open file picker: ${String(cause)}`);
+      updateDiagnostics("Browse failed", formatDialogError("file", cause));
     }
   };
 
   const pickSaveFile = async () => {
-    const selected = await save({
-      filters: [{ name: "JSON", extensions: ["json"] }],
-      defaultPath: outputPath || "exported_instances.json",
-    });
-    if (selected) {
-      setOutputPath(selected);
+    try {
+      const selected = await save({
+        filters: [{ name: "JSON", extensions: ["json"] }],
+        defaultPath: outputPath || "exported_instances.json",
+      });
+      if (selected) {
+        setOutputPath(selected);
+      }
+    } catch (cause) {
+      updateDiagnostics("Browse failed", formatDialogError("save", cause));
     }
   };
 
