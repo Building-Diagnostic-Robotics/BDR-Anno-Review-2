@@ -24,7 +24,8 @@
       "deb"
     ],
     "icon": [
-      "icons/512x512.png"
+      "icons/512x512.png",
+      "icons/512x512.ico"
     ]
   }
 }
