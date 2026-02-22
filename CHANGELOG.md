@@ -7,23 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-### Fixed
-- Fixed Windows face-preview path resolution in the reviewer so mixed path separators no longer produce broken preview image URLs when dataset roots contain backslashes.
-- Added explicit face-preview image load diagnostics in the bbox editor panel so preview failures surface actionable messages with face ID and resolved file path.
-- Fixed annotation-save IPC decoding by accepting frontend camelCase provenance keys (`updatedAt`, `sourceAnnotationId`) in backend deserialization, eliminating `missing field `updated_at`` save failures.
+### Added
+- Added Tauri-host regression tests for drop staging to ensure dataset root selection prefers dropped directories over unsupported files and to verify recursive staging skips symlinked directories on Unix.
 
+### Fixed
+- Fixed dropped-input staging so `staged_dataset_root` is assigned only from dropped directories; unsupported non-JSON/non-MP4 files are now ignored and reported instead of being misclassified as dataset roots.
+- Hardened recursive dropped-directory staging to skip only symlinked directories (preventing recursive traversal of symlink cycles) while preserving symlinked files by materializing their file contents in the staging workspace.
 
 ### Changed
-- Optimized MP4 frame extraction by switching to a batched `ffmpeg` extraction path instead of spawning one process per frame, significantly reducing repeated decoder/process overhead while preserving deterministic output naming and explicit diagnostics.
-- Added incremental extraction caching for `derived_frames/frame_sourcing/frame_######.png` so generation can skip already-materialized frames and only extract missing outputs, with surfaced skipped-frame counts in backend/frontend reports.
-- Optimized review generation to decode each source frame once per referenced image and reuse pixels across all requested face projections, reducing repeated image decode CPU work without changing rendered face semantics.
+- Drop-import diagnostics now report backend-provided ignored staged paths, and the staged-input response schema now includes `ignored_paths` / `ignoredPaths` for explicit UI messaging.
 
-### Fixed
-- Hardened batched MP4 extraction materialization to abort before renaming outputs when `ffmpeg` returns a mismatched output-count, preventing frame/index misalignment and stale-cache corruption on retry.
+## [0.4.1] - 2026-02-22
 
-### Added
-- Added regression coverage for cached-frame extraction behavior to ensure existing frame outputs are reused and missing outputs are still extracted deterministically.
-- Added regression coverage that verifies batched extraction aborts without materializing outputs when `ffmpeg` emits fewer files than requested frame indices.
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.4.0` to `0.4.1` for dropped-input staging correctness and symlink-safety hardening.
 
 ## [0.4.0] - 2026-02-22
 

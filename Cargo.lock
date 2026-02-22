@@ -96,7 +96,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bdr-anno-review-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "engine",
  "providers",
@@ -661,7 +661,7 @@ checksum = "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
 
 [[package]]
 name = "engine"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "image",
  "serde",
@@ -2463,7 +2463,7 @@ dependencies = [
 
 [[package]]
 name = "providers"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
 ]

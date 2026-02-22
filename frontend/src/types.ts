@@ -103,4 +103,5 @@ export type StageDroppedInputsReport = {
   stagedDatasetRoot?: string;
   stagedCocoJsonPath?: string;
   stagedMp4Path?: string;
+  ignoredPaths: string[];
 };
