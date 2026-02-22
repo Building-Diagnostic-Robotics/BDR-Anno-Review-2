@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-02-22
+
+### Fixed
+- Fixed runtime FFmpeg/FFprobe sidecar discovery in the Tauri host by searching both top-level and `binaries/`-prefixed resource paths (plus adjacent executable fallbacks), so tagged-release installers can resolve bundled sidecars consistently at runtime.
+- Kept release-time `bundle.externalBin` injection in `.github/workflows/release.yml` and added a filename guard so bundled sidecar expectations fail fast before Tauri packaging starts.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.2.2` to `0.2.3` for the packaging fix release.
+
 ## [0.2.2] - 2026-02-22
 
 ### Fixed

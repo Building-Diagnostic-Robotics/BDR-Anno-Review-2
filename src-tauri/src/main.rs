@@ -329,26 +329,38 @@ fn resolve_sidecar_binary(app: &AppHandle, binary_name: &str) -> Option<PathBuf>
     let mut candidates = Vec::new();
 
     for sidecar_name in sidecar_binary_names(binary_name) {
-        if let Ok(sidecar_path) = app
-            .path()
-            .resolve(&sidecar_name, tauri::path::BaseDirectory::Resource)
-        {
-            candidates.push(sidecar_path);
+        for resource_name in sidecar_resource_names(&sidecar_name) {
+            if let Ok(sidecar_path) = app
+                .path()
+                .resolve(&resource_name, tauri::path::BaseDirectory::Resource)
+            {
+                candidates.push(sidecar_path);
+            }
         }
 
         if let Ok(current_exe) = std::env::current_exe() {
             if let Some(exe_dir) = current_exe.parent() {
                 candidates.push(exe_dir.join(&sidecar_name));
+                candidates.push(exe_dir.join("binaries").join(&sidecar_name));
             }
         }
 
         #[cfg(not(target_os = "windows"))]
-        candidates.push(PathBuf::from(format!(
-            "/usr/lib/bdr-anno-review/bin/{sidecar_name}"
-        )));
+        {
+            candidates.push(PathBuf::from(format!(
+                "/usr/lib/bdr-anno-review/bin/{sidecar_name}"
+            )));
+            candidates.push(PathBuf::from(format!(
+                "/usr/lib/bdr-anno-review/bin/binaries/{sidecar_name}"
+            )));
+        }
     }
 
     candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn sidecar_resource_names(sidecar_name: &str) -> Vec<String> {
+    vec![sidecar_name.to_owned(), format!("binaries/{sidecar_name}")]
 }
 
 fn sidecar_binary_names(binary_name: &str) -> Vec<String> {
