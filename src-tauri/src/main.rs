@@ -307,9 +307,14 @@ fn check_runtime_dependencies_command(app: AppHandle) -> Result<RuntimeDependenc
 
 fn resolve_ffmpeg_binary(app: &AppHandle, binary_name: &str) -> Result<String, String> {
     if let Some(sidecar) = resolve_sidecar_binary(app, binary_name) {
-        if verify_binary_executable(&sidecar).is_ok() {
-            return Ok(sidecar.display().to_string());
-        }
+        verify_binary_executable(&sidecar).map_err(|source| {
+            format!(
+                "runtime dependency `{binary_name}` sidecar is present but unusable at `{}`: {source}. Repackage the app with a valid executable sidecar",
+                sidecar.display()
+            )
+        })?;
+
+        return Ok(sidecar.display().to_string());
     }
 
     let tool = binary_name.to_owned();
