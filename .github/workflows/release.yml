@@ -150,7 +150,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Release ${{ github.ref_name }}
           releaseBody: Automated release build for external tester validation.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.bundle_filter }} --config src-tauri/tauri.release.conf.json
 
@@ -195,3 +195,13 @@ jobs:
           if ($mergedListings -notmatch 'ffprobe-x86_64-pc-windows-msvc\.exe') {
             throw 'ffprobe sidecar is missing from NSIS payload (direct files and embedded executable payloads checked).'
           }
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish validated release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false

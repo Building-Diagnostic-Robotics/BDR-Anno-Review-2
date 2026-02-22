@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Updated release publishing flow so `tauri-action` creates/updates draft releases first, Windows NSIS sidecar verification runs before publication, and a final `gh release edit --draft=false` step publishes only fully validated tag artifacts.
+
 ## [0.2.5] - 2026-02-22
 
 ### Fixed
