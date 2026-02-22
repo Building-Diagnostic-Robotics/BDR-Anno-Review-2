@@ -416,8 +416,24 @@ fn sidecar_binary_names(binary_name: &str) -> Vec<String> {
     names
 }
 
+fn command_no_window(path_or_name: &Path) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut command = Command::new(path_or_name);
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new(path_or_name)
+    }
+}
+
 fn verify_binary_executable(path_or_name: &Path) -> Result<(), String> {
-    let output = Command::new(path_or_name)
+    let output = command_no_window(path_or_name)
         .arg("-version")
         .output()
         .map_err(|source| source.to_string())?;

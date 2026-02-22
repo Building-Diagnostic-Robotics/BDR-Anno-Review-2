@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-22
+
+### Added
+- Added drag-and-drop path intake in the desktop UI so dropped `.json` and `.mp4` files auto-fill COCO/MP4 fields and other dropped paths auto-fill dataset root with explicit diagnostics.
+- Added in-flow generation progress UI messaging that reports step-by-step status (`validating`, `dependencies`, `extracting`, `generating`) and completion percentage for review dataset generation.
+
+### Changed
+- Simplified import/generation UX by removing the confusing three-button split and keeping one primary `Generate review dataset` action plus a secondary `Validate inputs only` action.
+- Updated generation orchestration so the primary generate action always runs validation first, then dependency checks, frame extraction, and review dataset generation in one guided sequence with explicit stage diagnostics.
+- Added browse dialog failure handling in dataset input pickers so dialog failures are surfaced loudly instead of silently doing nothing.
+- Bumped workspace, Tauri app config, and frontend package versions from `0.2.9` to `0.3.0` for the dataset generation UX overhaul release.
+
+### Fixed
+- Prevented Windows FFmpeg/FFprobe terminal popups by launching subprocesses with `CREATE_NO_WINDOW` for frame extraction, MP4 probing, and runtime dependency verification command checks.
+
 ## [0.2.9] - 2026-02-22
 
 ### Fixed
