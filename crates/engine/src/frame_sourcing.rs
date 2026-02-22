@@ -44,6 +44,7 @@ pub struct ExtractFramesFromMp4Report {
     pub source_frames_dir: String,
     pub mp4_frame_count: u64,
     pub extracted_frame_count: usize,
+    pub skipped_existing_count: usize,
     pub mappings: Vec<FrameMapping>,
 }
 
@@ -103,15 +104,13 @@ pub fn extract_frames_from_mp4(
         reason: format!("could not create frame extraction directory: {source}"),
     })?;
 
-    for mapping in &plan.mappings {
-        let output_path = PathBuf::from(&mapping.extracted_frame_path);
-        extract_single_frame(ffmpeg_bin, &mp4_path, mapping.frame_index, &output_path)?;
-    }
+    let skipped_existing_count = extract_frames_batch(ffmpeg_bin, &mp4_path, &plan.mappings)?;
 
     Ok(ExtractFramesFromMp4Report {
         source_frames_dir: extraction_root.display().to_string(),
         mp4_frame_count,
         extracted_frame_count: plan.mappings.len(),
+        skipped_existing_count,
         mappings: plan.mappings,
     })
 }
@@ -307,12 +306,56 @@ fn command_for_tool(tool: &str) -> Command {
     }
 }
 
-fn extract_single_frame(
+fn extract_frames_batch(
     ffmpeg_bin: &str,
     mp4_path: &Path,
-    frame_index: u64,
-    output_path: &Path,
-) -> Result<(), EngineError> {
+    mappings: &[FrameMapping],
+) -> Result<usize, EngineError> {
+    let mut pending = Vec::new();
+    let mut skipped_existing_count = 0usize;
+
+    for mapping in mappings {
+        let output_path = PathBuf::from(&mapping.extracted_frame_path);
+        if output_path.is_file() {
+            skipped_existing_count += 1;
+            continue;
+        }
+
+        pending.push((mapping.frame_index, output_path));
+    }
+
+    if pending.is_empty() {
+        return Ok(skipped_existing_count);
+    }
+
+    pending.sort_by_key(|(frame_index, _)| *frame_index);
+    let select_filter = pending
+        .iter()
+        .map(|(frame_index, _)| format!("eq(n\\,{frame_index})"))
+        .collect::<Vec<String>>()
+        .join("+");
+
+    let extraction_dir = pending[0]
+        .1
+        .parent()
+        .ok_or_else(|| {
+            EngineError::InvalidConfiguration("invalid extraction output path".to_owned())
+        })?
+        .to_path_buf();
+    let temp_batch_dir = extraction_dir.join(".ffmpeg_batch_tmp");
+
+    if temp_batch_dir.exists() {
+        fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+            path: temp_batch_dir.display().to_string(),
+            reason: format!("could not reset temporary frame extraction directory: {source}"),
+        })?;
+    }
+
+    fs::create_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+        path: temp_batch_dir.display().to_string(),
+        reason: format!("could not create temporary frame extraction directory: {source}"),
+    })?;
+
     let ffmpeg_output = command_for_tool(ffmpeg_bin)
         .arg("-v")
         .arg("error")
@@ -320,36 +363,69 @@ fn extract_single_frame(
         .arg("-i")
         .arg(mp4_path)
         .arg("-vf")
-        .arg(format!("select=eq(n\\,{frame_index})"))
-        .arg("-vframes")
-        .arg("1")
+        .arg(format!("select={select_filter}"))
+        .arg("-vsync")
+        .arg("0")
+        .arg("-start_number")
+        .arg("0")
         .arg("-y")
-        .arg(output_path)
+        .arg(temp_batch_dir.join("frame_%06d.png"))
         .output()
-        .map_err(|source| EngineError::InvalidConfiguration(format!(
-            "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
-        )))?;
+        .map_err(|source| {
+            EngineError::InvalidConfiguration(format!(
+                "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
+            ))
+        })?;
 
     if !ffmpeg_output.status.success() {
         return Err(EngineError::UnreadableFile {
             path: mp4_path.display().to_string(),
             reason: format!(
-                "ffmpeg failed to extract frame {frame_index}: {}",
+                "ffmpeg failed to extract frames: {}",
                 String::from_utf8_lossy(&ffmpeg_output.stderr)
             ),
         });
     }
 
-    if output_path.is_file() {
-        Ok(())
-    } else {
-        Err(EngineError::UnreadableFile {
-            path: mp4_path.display().to_string(),
-            reason: format!(
-                "ffmpeg did not produce output for frame index {frame_index}; frame may be outside MP4 bounds"
-            ),
-        })
+    let mut extracted = fs::read_dir(&temp_batch_dir)
+        .map_err(|source| EngineError::UnreadableFile {
+            path: temp_batch_dir.display().to_string(),
+            reason: format!("could not enumerate extracted frames: {source}"),
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
+        .collect::<Vec<PathBuf>>();
+    extracted.sort();
+
+    for (index, (_, output_path)) in pending.iter().enumerate() {
+        if let Some(extracted_path) = extracted.get(index) {
+            fs::rename(extracted_path, output_path).map_err(|source| {
+                EngineError::UnreadableFile {
+                    path: output_path.display().to_string(),
+                    reason: format!("could not materialize extracted frame file: {source}"),
+                }
+            })?;
+        }
     }
+
+    fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+        path: temp_batch_dir.display().to_string(),
+        reason: format!("could not clean temporary frame extraction directory: {source}"),
+    })?;
+
+    for (frame_index, output_path) in pending {
+        if !output_path.is_file() {
+            return Err(EngineError::UnreadableFile {
+                path: mp4_path.display().to_string(),
+                reason: format!(
+                    "ffmpeg did not produce output for frame index {frame_index}; frame may be outside MP4 bounds"
+                ),
+            });
+        }
+    }
+
+    Ok(skipped_existing_count)
 }
 
 fn probe_mp4_frame_count(ffprobe_bin: &str, mp4_path: &Path) -> Result<u64, EngineError> {
@@ -590,6 +666,45 @@ mod tests {
         script_path.display().to_string()
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn extraction_skips_existing_cached_frames() {
+        let options = setup_dataset("instances_frame_source_valid.json");
+        let extraction_root =
+            std::path::PathBuf::from(&options.dataset_root).join("derived_frames/frame_sourcing");
+        fs::create_dir_all(&extraction_root).unwrap();
+        fs::write(extraction_root.join("frame_000003.png"), b"cached").unwrap();
+
+        let ffprobe_bin = create_test_tool_script(
+            "ffprobe",
+            "#!/usr/bin/env bash
+echo 16
+",
+        );
+        let ffmpeg_bin = create_test_tool_script(
+            "ffmpeg",
+            r#"#!/usr/bin/env bash
+out="${@: -1}"
+out="${out//%06d/000000}"
+mkdir -p "$(dirname "$out")"
+printf png > "$out"
+"#,
+        );
+
+        let report = extract_frames_from_mp4(ExtractFramesFromMp4Options {
+            dataset_root: options.dataset_root.clone(),
+            coco_json_path: options.coco_json_path.clone(),
+            mp4_path: options.mp4_path.clone(),
+            ffmpeg_bin: Some(ffmpeg_bin),
+            ffprobe_bin: Some(ffprobe_bin),
+        })
+        .unwrap();
+
+        assert_eq!(report.extracted_frame_count, 2);
+        assert_eq!(report.skipped_existing_count, 1);
+        assert!(extraction_root.join("frame_000003.png").is_file());
+        assert!(extraction_root.join("frame_000007.png").is_file());
+    }
     #[test]
     fn extraction_reports_out_of_range_frame_when_ffmpeg_produces_no_output() {
         let options = setup_dataset("instances_frame_source_valid.json");

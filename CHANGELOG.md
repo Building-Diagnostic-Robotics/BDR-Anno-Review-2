@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- Optimized MP4 frame extraction by switching to a batched `ffmpeg` extraction path instead of spawning one process per frame, significantly reducing repeated decoder/process overhead while preserving deterministic output naming and explicit diagnostics.
+- Added incremental extraction caching for `derived_frames/frame_sourcing/frame_######.png` so generation can skip already-materialized frames and only extract missing outputs, with surfaced skipped-frame counts in backend/frontend reports.
+- Optimized review generation to decode each source frame once per referenced image and reuse pixels across all requested face projections, reducing repeated image decode CPU work without changing rendered face semantics.
+
+### Added
+- Added regression coverage for cached-frame extraction behavior to ensure existing frame outputs are reused and missing outputs are still extracted deterministically.
+
 ## [0.4.0] - 2026-02-22
 
 ### Added

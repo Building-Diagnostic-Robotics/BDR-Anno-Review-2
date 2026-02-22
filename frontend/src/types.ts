@@ -52,6 +52,7 @@ export type ExtractFramesFromMp4Report = {
   sourceFramesDir: string;
   mp4FrameCount: number;
   extractedFrameCount: number;
+  skippedExistingCount: number;
 };
 
 export type ImportStageReport = {

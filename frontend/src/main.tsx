@@ -326,7 +326,7 @@ Ignored paths: ${parsed.unsupported.join(", ")}` : "";
       setSourceFramesDir(effectiveSourceFramesDir);
       setGenerationPercent(75);
       setGenerationDetail(
-        `Step 3/4: extracted ${extractionReport.extractedFrameCount} frame(s) from MP4`
+        `Step 3/4: extracted ${extractionReport.extractedFrameCount} frame(s) from MP4 (${extractionReport.skippedExistingCount} cached)`
       );
 
       setGenerationStep("generating");
@@ -349,7 +349,7 @@ Ignored paths: ${parsed.unsupported.join(", ")}` : "";
       setGenerationPercent(100);
       setGenerationDetail("Done: review dataset is ready.");
       updateDiagnostics(
-        `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir (auto-generated): ${effectiveSourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
+        `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir (auto-generated): ${effectiveSourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nskippedCachedFrames: ${extractionReport.skippedExistingCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
       setGenerationStep("idle");
