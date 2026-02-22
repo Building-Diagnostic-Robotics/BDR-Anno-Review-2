@@ -19,6 +19,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => undefined),
+}));
+
 const faces: FaceListItem[] = [
   { faceId: "face-1", face: "front", imagePath: "raw_frames/face-1.png", initialBoxCount: 2 },
   { faceId: "face-2", face: "right", imagePath: "raw_frames/face-2.png", initialBoxCount: 0 },
@@ -71,6 +75,8 @@ beforeEach(() => {
     writtenManifestPath: "annotations/view_manifest.json",
     faceCount: 2,
     filteredBoxCount: 1,
+    extractedFrameCount: 8,
+    skippedExistingCount: 2,
   });
   mocks.stageDroppedInputs.mockResolvedValue({
     workspaceRoot: "/tmp/bdr-stage",
@@ -150,7 +156,7 @@ describe("source frames directory behavior", () => {
     expect(screen.getByText(/manual overrides are disabled in MVP/i)).toBeTruthy();
   });
 
-  it("uses extracted sourceFramesDir in generation diagnostics and request payload", async () => {
+  it("runs unified generation pipeline and includes extraction stats in diagnostics", async () => {
     render(<App />);
 
     fireEvent.change(screen.getByPlaceholderText("Select dataset directory"), {
@@ -168,15 +174,14 @@ describe("source frames directory behavior", () => {
     expect(screen.getByText(/Step: validating/i)).toBeTruthy();
 
     await waitFor(() => {
-      expect(mocks.extractFramesFromMp4).toHaveBeenCalledTimes(1);
       expect(mocks.generateReviewDataset).toHaveBeenCalledTimes(1);
     });
 
     const request = mocks.generateReviewDataset.mock.calls[0][0];
-    expect(request.sourceFramesDir).toBe("derived_frames/frame_sourcing");
+    expect(request.qualityProfile).toBe("balanced");
 
     const sourceFramesInput = screen.getByLabelText("Source frames directory (auto-managed)") as HTMLInputElement;
-    expect(sourceFramesInput.value).toBe("derived_frames/frame_sourcing");
+    expect(sourceFramesInput.value).toBe("(auto-managed after extraction)");
 
     expect(api.generateReviewDataset).toBeDefined();
   });

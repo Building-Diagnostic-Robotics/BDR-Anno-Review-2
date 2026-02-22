@@ -1,21 +1,40 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::Instant;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use engine::{
-    export_coco, extract_frames_from_mp4, generate_review_dataset, get_annotations,
-    init_empty_manifest, run_import_stage, set_annotations, AnnotationEdit, ExportCocoOptions,
-    ExportCocoReport, ExtractFramesFromMp4Options, ExtractFramesFromMp4Report, FramesSource,
-    GenerateReviewDatasetOptions, GenerateReviewDatasetReport, ImportStageOptions, ManifestInputs,
+    export_coco, extract_frames_from_mp4_with_progress, generate_review_dataset_with_progress,
+    get_annotations, init_empty_manifest, run_import_stage, set_annotations, AnnotationEdit,
+    ExportCocoOptions, ExportCocoReport, ExtractFramesFromMp4Options, ExtractFramesFromMp4Report,
+    FramesSource, GenerateReviewDatasetOptions, ImportStageOptions, ManifestInputs,
     ProjectionConfig, RenderConfig, ViewManifest,
 };
 
 const VIEW_MANIFEST_PATH: &str = "annotations/view_manifest.json";
+
+#[derive(Default)]
+struct AppState {
+    annotation_cache: Mutex<HashMap<(String, String), Vec<AnnotationEdit>>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationProgressEvent {
+    phase: String,
+    detail: String,
+    completed: usize,
+    total: usize,
+    percent: u8,
+    elapsed_ms: u128,
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,12 +109,12 @@ struct GenerateReviewDatasetRequest {
     dataset_root: String,
     coco_json_path: String,
     mp4_path: String,
-    source_frames_dir: String,
     generated_at: String,
     faces: Vec<String>,
     render_size: u64,
     horizontal_fov_degrees: f64,
     min_projected_box_area: f64,
+    quality_profile: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -121,6 +140,8 @@ struct GenerateReviewDatasetResponse {
     written_manifest_path: String,
     face_count: usize,
     filtered_box_count: usize,
+    extracted_frame_count: usize,
+    skipped_existing_count: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -187,8 +208,12 @@ fn run_import_stage_command(options: ImportStageRequest) -> Result<ImportStageRe
 }
 
 #[tauri::command]
-fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport, String> {
+fn open_dataset_command(
+    state: State<AppState>,
+    request: DatasetOpenRequest,
+) -> Result<OpenDatasetReport, String> {
     let (dataset_root, manifest_path) = validate_manifest_request(&request.dataset_root)?;
+    clear_annotation_cache_for_dataset(&state, &dataset_root)?;
     let dataset_root_path = PathBuf::from(&dataset_root);
     let raw = fs::read_to_string(&manifest_path).map_err(|source| {
         format!(
@@ -210,6 +235,15 @@ fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport
         manifest_path: manifest_path.display().to_string(),
         face_count: manifest.faces.len(),
     })
+}
+
+fn clear_annotation_cache_for_dataset(state: &AppState, dataset_root: &str) -> Result<(), String> {
+    state
+        .annotation_cache
+        .lock()
+        .map_err(|_| "annotation cache lock poisoned".to_owned())?
+        .retain(|(cached_dataset_root, _), _| cached_dataset_root != dataset_root);
+    Ok(())
 }
 
 #[tauri::command]
@@ -333,14 +367,44 @@ fn is_windows_absolute_path(path: &str) -> bool {
 }
 
 #[tauri::command]
-fn get_annotations_command(request: GetAnnotationsRequest) -> Result<Vec<AnnotationEdit>, String> {
-    get_annotations(&request.dataset_root, &request.face_id).map_err(|error| error.to_string())
+fn get_annotations_command(
+    state: State<AppState>,
+    request: GetAnnotationsRequest,
+) -> Result<Vec<AnnotationEdit>, String> {
+    let key = (request.dataset_root.clone(), request.face_id.clone());
+    if let Some(cached) = state
+        .annotation_cache
+        .lock()
+        .map_err(|_| "annotation cache lock poisoned".to_owned())?
+        .get(&key)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    let edits = get_annotations(&request.dataset_root, &request.face_id)
+        .map_err(|error| error.to_string())?;
+    state
+        .annotation_cache
+        .lock()
+        .map_err(|_| "annotation cache lock poisoned".to_owned())?
+        .insert(key, edits.clone());
+    Ok(edits)
 }
 
 #[tauri::command]
-fn set_annotations_command(request: SetAnnotationsRequest) -> Result<Vec<AnnotationEdit>, String> {
-    set_annotations(&request.dataset_root, &request.face_id, request.edits)
-        .map_err(|error| error.to_string())
+fn set_annotations_command(
+    state: State<AppState>,
+    request: SetAnnotationsRequest,
+) -> Result<Vec<AnnotationEdit>, String> {
+    let edits = set_annotations(&request.dataset_root, &request.face_id, request.edits)
+        .map_err(|error| error.to_string())?;
+    state
+        .annotation_cache
+        .lock()
+        .map_err(|_| "annotation cache lock poisoned".to_owned())?
+        .insert((request.dataset_root, request.face_id), edits.clone());
+    Ok(edits)
 }
 
 #[tauri::command]
@@ -359,9 +423,96 @@ fn export_coco_command(request: ExportCocoRequest) -> Result<ExportCocoResponse,
 }
 
 #[tauri::command]
-fn generate_review_dataset_command(
+async fn generate_review_dataset_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
     request: GenerateReviewDatasetRequest,
 ) -> Result<GenerateReviewDatasetResponse, String> {
+    let ffmpeg_bin = resolve_ffmpeg_binary(&app, "ffmpeg")?;
+    let ffprobe_bin = resolve_ffmpeg_binary(&app, "ffprobe")?;
+    let started = Instant::now();
+
+    let profile_size = match request.quality_profile.as_deref() {
+        Some("low") => 512,
+        Some("balanced") => 768,
+        _ => request.render_size,
+    };
+
+    let emit_progress = |phase: &str,
+                         detail: &str,
+                         completed: usize,
+                         total: usize,
+                         started: Instant,
+                         app: &AppHandle| {
+        let percent = if total == 0 {
+            0
+        } else {
+            ((completed as f64 / total as f64) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8
+        };
+        let _ = app.emit(
+            "generation-progress",
+            GenerationProgressEvent {
+                phase: phase.to_owned(),
+                detail: detail.to_owned(),
+                completed,
+                total,
+                percent,
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+        );
+    };
+
+    emit_progress("validating", "Validating inputs", 0, 1, started, &app);
+    run_import_stage(ImportStageOptions {
+        dataset_root: request.dataset_root.clone(),
+        coco_json_path: request.coco_json_path.clone(),
+        mp4_path: request.mp4_path.clone(),
+    })
+    .map_err(|error| error.to_string())?;
+
+    let extraction_report = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        let dataset_root = request.dataset_root.clone();
+        let coco_json_path = request.coco_json_path.clone();
+        let mp4_path = request.mp4_path.clone();
+        move || {
+            extract_frames_from_mp4_with_progress(
+                ExtractFramesFromMp4Options {
+                    dataset_root,
+                    coco_json_path,
+                    mp4_path,
+                    ffmpeg_bin: Some(ffmpeg_bin),
+                    ffprobe_bin: Some(ffprobe_bin),
+                },
+                |completed, total, phase| {
+                    let detail = format!("Extracting source frames ({completed}/{total})");
+                    let _ = app.emit(
+                        "generation-progress",
+                        GenerationProgressEvent {
+                            phase: phase.to_owned(),
+                            detail,
+                            completed,
+                            total,
+                            percent: if total == 0 {
+                                0
+                            } else {
+                                ((completed as f64 / total as f64) * 100.0)
+                                    .round()
+                                    .clamp(0.0, 100.0) as u8
+                            },
+                            elapsed_ms: started.elapsed().as_millis(),
+                        },
+                    );
+                },
+            )
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+
     let manifest = init_empty_manifest(
         &request.generated_at,
         ManifestInputs {
@@ -372,7 +523,7 @@ fn generate_review_dataset_command(
         },
         RenderConfig {
             faces: request.faces,
-            size: request.render_size,
+            size: profile_size,
         },
         ProjectionConfig {
             horizontal_fov_degrees: request.horizontal_fov_degrees,
@@ -381,36 +532,77 @@ fn generate_review_dataset_command(
     )
     .map_err(|error| error.to_string())?;
 
-    let report: GenerateReviewDatasetReport =
-        generate_review_dataset(GenerateReviewDatasetOptions {
-            dataset_root: request.dataset_root,
-            source_frames_dir: request.source_frames_dir,
-            manifest,
-        })
-        .map_err(|error| error.to_string())?;
+    let source_frames_dir = extraction_report.source_frames_dir.clone();
+    let dataset_root = request.dataset_root.clone();
+    let report = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || {
+            generate_review_dataset_with_progress(
+                GenerateReviewDatasetOptions {
+                    dataset_root,
+                    source_frames_dir,
+                    manifest,
+                },
+                |completed, total, _phase| {
+                    let _ = app.emit(
+                        "generation-progress",
+                        GenerationProgressEvent {
+                            phase: "rendering".to_owned(),
+                            detail: format!("Rendering faces ({completed}/{total})"),
+                            completed,
+                            total,
+                            percent: if total == 0 {
+                                0
+                            } else {
+                                ((completed as f64 / total as f64) * 100.0)
+                                    .round()
+                                    .clamp(0.0, 100.0) as u8
+                            },
+                            elapsed_ms: started.elapsed().as_millis(),
+                        },
+                    );
+                },
+            )
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+
+    emit_progress("done", "Generation complete", 1, 1, started, &app);
+    clear_annotation_cache_for_dataset(&state, &request.dataset_root)?;
 
     Ok(GenerateReviewDatasetResponse {
         written_manifest_path: report.written_manifest_path,
         face_count: report.rendered_face_count,
         filtered_box_count: report.filtered_box_count,
+        extracted_frame_count: extraction_report.extracted_frame_count,
+        skipped_existing_count: extraction_report.skipped_existing_count,
     })
 }
 
 #[tauri::command]
-fn extract_frames_from_mp4_command(
+async fn extract_frames_from_mp4_command(
     app: AppHandle,
     request: ExtractFramesFromMp4Request,
 ) -> Result<ExtractFramesFromMp4Response, String> {
     let ffmpeg_bin = resolve_ffmpeg_binary(&app, "ffmpeg")?;
     let ffprobe_bin = resolve_ffmpeg_binary(&app, "ffprobe")?;
 
-    let report: ExtractFramesFromMp4Report = extract_frames_from_mp4(ExtractFramesFromMp4Options {
-        dataset_root: request.dataset_root,
-        coco_json_path: request.coco_json_path,
-        mp4_path: request.mp4_path,
-        ffmpeg_bin: Some(ffmpeg_bin),
-        ffprobe_bin: Some(ffprobe_bin),
+    let report: ExtractFramesFromMp4Report = tauri::async_runtime::spawn_blocking(move || {
+        extract_frames_from_mp4_with_progress(
+            ExtractFramesFromMp4Options {
+                dataset_root: request.dataset_root,
+                coco_json_path: request.coco_json_path,
+                mp4_path: request.mp4_path,
+                ffmpeg_bin: Some(ffmpeg_bin),
+                ffprobe_bin: Some(ffprobe_bin),
+            },
+            |_, _, _| {},
+        )
     })
+    .await
+    .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
 
     Ok(ExtractFramesFromMp4Response {
@@ -716,6 +908,7 @@ fn verify_binary_executable(path_or_name: &Path) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .manage(AppState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             run_import_stage_command,
