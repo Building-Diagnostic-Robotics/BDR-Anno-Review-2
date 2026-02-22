@@ -7,7 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-22
+
 ### Changed
+- Removed the Tauri build-script fallback that generated a 1x1 placeholder icon and now require repository-provided icon assets for bundling.
+- Configured Tauri `bundle.icon` entries for standard Windows/macOS/Linux icon filenames so AppImage/deb/nsis packaging can resolve square icon assets from `src-tauri/icons/`.
+- Bumped workspace/Tauri/frontend version metadata to `0.2.1` for the icon/bundling fix release.
+
 - Switched the Tauri bundle identifier from placeholder `com.example.bdrannoreview` to canonical reverse-DNS `io.bdr.annoreview` to stabilize installer/update identity across tester and production channels.
 - Updated the generation UI to treat source frame directory as MP4-extraction-managed output (read-only), and clarified diagnostics to label it as auto-generated.
 - Added release tag/version parity checks in CI (`scripts/check-tag-version.sh`) and release docs guidance so Cargo/Tauri/frontend versions stay aligned before tagging.

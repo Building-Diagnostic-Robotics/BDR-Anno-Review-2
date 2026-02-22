@@ -6,7 +6,6 @@ license.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-base64 = "0.22"
 
 [dependencies]
 tauri = { version = "2", features = [] }
