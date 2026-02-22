@@ -7,6 +7,16 @@ export type AnnotationEdit = {
   };
 };
 
+export type RuntimeDependencyStatus = {
+  name: string;
+  resolvedPath: string;
+};
+
+export type RuntimeDependencyReport = {
+  ffmpeg: RuntimeDependencyStatus;
+  ffprobe: RuntimeDependencyStatus;
+};
+
 export type ImportStageOptions = {
   datasetRoot: string;
   cocoJsonPath: string;

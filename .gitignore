@@ -49,3 +49,7 @@ dataset_root/annotations/sessions/
 raw_frames/
 derived_frames/
 exports/
+
+# Tauri sidecar binaries
+src-tauri/binaries/*
+!src-tauri/binaries/README.md

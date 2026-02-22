@@ -8,6 +8,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Changed
+- Expanded release workflow matrix jobs to fetch platform-specific FFmpeg sidecar binaries and pass Tauri `externalBin` configuration at bundle time so installers include working `ffmpeg`/`ffprobe` out of the box.
+- Surfaced invalid bundled FFmpeg sidecars as explicit runtime errors instead of silently falling back to PATH resolution, making packaging failures deterministic and actionable.
+- Decided FFmpeg delivery strategy for release builds: ship `ffmpeg`/`ffprobe` as sidecar binaries (with PATH fallback in local/dev), added runtime dependency preflight diagnostics in Tauri/frontend generation flows, and documented the rationale/prerequisites in architecture + README guides.
+- Improved dataset onboarding UX by replacing fixture defaults with empty-state inputs, adding Tauri file/folder/save pickers for dataset/COCO/MP4/export selection, and surfacing client-side required-field/extension validation before import, generation, and export actions.
+- Expanded quality gates to run frontend unit tests in local `scripts/check.sh`, CI, and release-check workflows in addition to existing type checks.
 - Hardened `frame_sourcing` extraction tests to be cross-platform and deterministic by gating Unix-specific permission usage and by forcing missing-ffprobe failures through an explicit nonexistent binary path.
 - Enabled Tauri bundling for distributable tester artifacts and set minimal Windows/Linux bundle targets (`nsis`, `appimage`, `deb`) for external delivery.
 - Added a tag-driven GitHub Actions release workflow that runs frontend/Rust checks, builds platform bundles, and publishes Windows/Linux artifacts for both stable and prerelease tags.

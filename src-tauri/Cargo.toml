@@ -10,6 +10,7 @@ base64 = "0.22"
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 engine = { path = "../crates/engine" }

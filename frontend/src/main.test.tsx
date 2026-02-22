@@ -7,6 +7,11 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (value: string) => value,
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+  save: vi.fn(),
+}));
+
 const faces: FaceListItem[] = [
   { faceId: "face-1", face: "front", imagePath: "raw_frames/face-1.png", initialBoxCount: 2 },
   { faceId: "face-2", face: "right", imagePath: "raw_frames/face-2.png", initialBoxCount: 0 },
@@ -23,6 +28,10 @@ vi.mock("./api", () => ({
   exportCoco: vi.fn(),
   generateReviewDataset: vi.fn(),
   runImportStage: vi.fn(),
+  checkRuntimeDependencies: vi.fn(async () => ({
+    ffmpeg: { name: "ffmpeg", resolvedPath: "ffmpeg" },
+    ffprobe: { name: "ffprobe", resolvedPath: "ffprobe" },
+  })),
   openDataset: vi.fn(async (datasetRoot: string) => ({
     datasetRoot,
     manifestPath: "annotations/view_manifest.json",

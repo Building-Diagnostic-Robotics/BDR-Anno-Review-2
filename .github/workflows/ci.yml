@@ -38,3 +38,5 @@ jobs:
           cargo test --workspace
       - name: Frontend typecheck
         run: pnpm --dir frontend lint
+      - name: Frontend tests
+        run: pnpm --dir frontend test

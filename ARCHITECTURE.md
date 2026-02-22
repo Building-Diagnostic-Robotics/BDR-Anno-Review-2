@@ -46,6 +46,11 @@ The app is a **desktop application** with a **local backend** and **embedded web
 - **Performance**: Rust for image transforms / projection math.
 - **Security**: LLM calls happen only in backend so API keys never touch the browser context.
 
+### Media tooling strategy
+- MP4 frame extraction uses `ffprobe`/`ffmpeg` process invocation from the Rust engine.
+- For distribution, prefer shipping `ffmpeg` + `ffprobe` as **sidecar binaries** instead of embedding FFmpeg libraries into the app process.
+- Local/dev runs may fall back to system `PATH` binaries when sidecars are absent, but validation must fail loudly with explicit diagnostics if neither is available.
+
 ---
 
 ## Key workflows
