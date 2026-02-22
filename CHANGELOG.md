@@ -8,6 +8,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- Added backend generation progress event streaming (`generation-progress`) with work-based payloads (`phase`, `completed/total`, percent, elapsed ms) so the UI can display live progress instead of static step percentages.
+- Added session-scoped annotation caching in the Tauri host for `get_annotations`/`set_annotations` to speed repeated face-to-face navigation within an open review session.
+
+### Changed
+- Collapsed frontend generation orchestration to a single backend generation command that performs validation, frame extraction, and review generation in one pipeline call.
+- Moved heavy generation/extraction work off the command thread by running engine work in Tauri `spawn_blocking` tasks, improving UI responsiveness during long-running operations.
+- Updated MP4 frame extraction to process referenced frames in bounded ffmpeg chunks instead of one unbounded select filter expression.
+- Updated review generation to skip rendering/writing face images when a face has no projected boxes, reducing unnecessary CPU and I/O work.
+- Added optional generation quality profiles (`high`/`balanced`/`low`) that tune render size for wider low-compute device support.
+- Replaced fixed frontend generation progress percentages with event-driven progress + heartbeat-style status updates.
+
+### Added
 - Added Tauri-host regression tests for drop staging to ensure dataset root selection prefers dropped directories over unsupported files and to verify recursive staging skips symlinked directories on Unix.
 
 ### Fixed

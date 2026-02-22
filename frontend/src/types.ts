@@ -28,18 +28,29 @@ export type GenerateReviewDatasetOptions = {
   datasetRoot: string;
   cocoJsonPath: string;
   mp4Path: string;
-  sourceFramesDir: string;
   generatedAt: string;
   faces: string[];
   renderSize: number;
   horizontalFovDegrees: number;
   minProjectedBoxArea: number;
+  qualityProfile?: "high" | "balanced" | "low";
 };
 
 export type GenerateReviewDatasetReport = {
   writtenManifestPath: string;
   faceCount: number;
   filteredBoxCount: number;
+  extractedFrameCount: number;
+  skippedExistingCount: number;
+};
+
+export type GenerationProgressEvent = {
+  phase: string;
+  detail: string;
+  completed: number;
+  total: number;
+  percent: number;
+  elapsedMs: number;
 };
 
 export type ExtractFramesFromMp4Options = {
@@ -49,7 +60,6 @@ export type ExtractFramesFromMp4Options = {
 };
 
 export type ExtractFramesFromMp4Report = {
-  sourceFramesDir: string;
   mp4FrameCount: number;
   extractedFrameCount: number;
   skippedExistingCount: number;

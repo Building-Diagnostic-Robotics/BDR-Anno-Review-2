@@ -72,6 +72,16 @@ struct FaceOrientation {
 pub fn generate_review_dataset(
     options: GenerateReviewDatasetOptions,
 ) -> Result<GenerateReviewDatasetReport, EngineError> {
+    generate_review_dataset_with_progress(options, |_, _, _| {})
+}
+
+pub fn generate_review_dataset_with_progress<F>(
+    options: GenerateReviewDatasetOptions,
+    mut on_progress: F,
+) -> Result<GenerateReviewDatasetReport, EngineError>
+where
+    F: FnMut(usize, usize, &str),
+{
     if options.dataset_root.trim().is_empty() {
         return Err(EngineError::MissingInput("dataset_root"));
     }
@@ -245,6 +255,10 @@ pub fn generate_review_dataset(
 
     let mut filtered_box_count = 0usize;
 
+    let total_work = referenced_image_ids.len() * manifest.render.faces.len();
+    let mut completed_work = 0usize;
+    on_progress(completed_work, total_work.max(1), "rendering");
+
     for image_id in referenced_image_ids {
         let source_image = images_by_id
             .get(&image_id)
@@ -295,6 +309,12 @@ pub fn generate_review_dataset(
                 manifest.render.size,
                 &manifest.projection,
             );
+            if initial_boxes.is_empty() {
+                completed_work += 1;
+                on_progress(completed_work, total_work.max(1), "rendering");
+                continue;
+            }
+
             let image_file_name = format!("{face_id}.png");
             let face_image_path = raw_frames_dir.join(&image_file_name);
             render_face_projection(
@@ -312,6 +332,8 @@ pub fn generate_review_dataset(
                 image_path: format!("{RAW_FRAMES_DIR}/{image_file_name}"),
                 initial_boxes,
             });
+            completed_work += 1;
+            on_progress(completed_work, total_work.max(1), "rendering");
         }
     }
 
@@ -334,6 +356,8 @@ pub fn generate_review_dataset(
         path: manifest_path.display().to_string(),
         reason: format!("could not write manifest file: {source}"),
     })?;
+
+    on_progress(total_work.max(1), total_work.max(1), "rendering");
 
     Ok(GenerateReviewDatasetReport {
         rendered_face_count: manifest.faces.len(),
@@ -789,7 +813,7 @@ mod tests {
         let first = generate_review_dataset(options.clone()).unwrap();
         let second = generate_review_dataset(options.clone()).unwrap();
 
-        assert_eq!(first.rendered_face_count, 8);
+        assert_eq!(first.rendered_face_count, 4);
         assert_eq!(first.filtered_box_count, 4);
         assert_eq!(first.written_manifest_path, second.written_manifest_path);
 
@@ -803,16 +827,7 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec![
-                (1, "front"),
-                (1, "right"),
-                (1, "back"),
-                (1, "left"),
-                (2, "front"),
-                (2, "right"),
-                (2, "back"),
-                (2, "left"),
-            ]
+            vec![(1, "back"), (1, "left"), (2, "right"), (2, "back"),]
         );
 
         let ids_first: Vec<String> = manifest
@@ -848,9 +863,9 @@ mod tests {
             hashes_by_face.insert(face.face.clone(), hasher.finish());
         }
 
-        assert_eq!(hashes_by_face.len(), 4);
+        assert_eq!(hashes_by_face.len(), 2);
         let unique_hashes: BTreeSet<u64> = hashes_by_face.values().copied().collect();
-        assert_eq!(unique_hashes.len(), 4);
+        assert_eq!(unique_hashes.len(), 2);
     }
 
     #[test]
@@ -896,11 +911,11 @@ mod tests {
         let options = setup_dataset_mp4_frames();
 
         let report = generate_review_dataset(options.clone()).unwrap();
-        assert_eq!(report.rendered_face_count, 8);
+        assert_eq!(report.rendered_face_count, 4);
 
         let manifest_content = fs::read_to_string(&report.written_manifest_path).unwrap();
         let manifest: crate::ViewManifest = serde_json::from_str(&manifest_content).unwrap();
-        assert_eq!(manifest.faces.len(), 8);
+        assert_eq!(manifest.faces.len(), 4);
     }
 
     #[test]

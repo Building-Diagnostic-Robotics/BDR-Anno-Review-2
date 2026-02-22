@@ -78,6 +78,16 @@ struct CocoAnnotation {
 pub fn extract_frames_from_mp4(
     options: ExtractFramesFromMp4Options,
 ) -> Result<ExtractFramesFromMp4Report, EngineError> {
+    extract_frames_from_mp4_with_progress(options, |_, _, _| {})
+}
+
+pub fn extract_frames_from_mp4_with_progress<F>(
+    options: ExtractFramesFromMp4Options,
+    mut on_progress: F,
+) -> Result<ExtractFramesFromMp4Report, EngineError>
+where
+    F: FnMut(usize, usize, &str),
+{
     let dataset_root = validate_and_resolve_dataset_root(&options.dataset_root)?;
     let coco_path = resolve_path(&dataset_root, &options.coco_json_path);
     let mp4_path = resolve_path(&dataset_root, &options.mp4_path);
@@ -91,6 +101,7 @@ pub fn extract_frames_from_mp4(
     let ffmpeg_bin = options.ffmpeg_bin.as_deref().unwrap_or("ffmpeg");
 
     let mp4_frame_count = probe_mp4_frame_count(ffprobe_bin, &mp4_path)?;
+    on_progress(0, 1, "planned");
     let plan = build_frame_sourcing_report(FrameSourcingOptions {
         dataset_root: dataset_root.display().to_string(),
         coco_json_path: coco_path.display().to_string(),
@@ -104,7 +115,11 @@ pub fn extract_frames_from_mp4(
         reason: format!("could not create frame extraction directory: {source}"),
     })?;
 
-    let skipped_existing_count = extract_frames_batch(ffmpeg_bin, &mp4_path, &plan.mappings)?;
+    let total = plan.mappings.len();
+    on_progress(0, total.max(1), "extracting");
+    let skipped_existing_count =
+        extract_frames_batch(ffmpeg_bin, &mp4_path, &plan.mappings, &mut on_progress)?;
+    on_progress(total, total.max(1), "extracting");
 
     Ok(ExtractFramesFromMp4Report {
         source_frames_dir: extraction_root.display().to_string(),
@@ -306,11 +321,17 @@ fn command_for_tool(tool: &str) -> Command {
     }
 }
 
-fn extract_frames_batch(
+const FRAME_EXTRACTION_CHUNK_SIZE: usize = 750;
+
+fn extract_frames_batch<F>(
     ffmpeg_bin: &str,
     mp4_path: &Path,
     mappings: &[FrameMapping],
-) -> Result<usize, EngineError> {
+    on_progress: &mut F,
+) -> Result<usize, EngineError>
+where
+    F: FnMut(usize, usize, &str),
+{
     let mut pending = Vec::new();
     let mut skipped_existing_count = 0usize;
 
@@ -329,12 +350,7 @@ fn extract_frames_batch(
     }
 
     pending.sort_by_key(|(frame_index, _)| *frame_index);
-    let select_filter = pending
-        .iter()
-        .map(|(frame_index, _)| format!("eq(n\\,{frame_index})"))
-        .collect::<Vec<String>>()
-        .join("+");
-
+    let total_pending = pending.len();
     let extraction_dir = pending[0]
         .1
         .parent()
@@ -342,99 +358,114 @@ fn extract_frames_batch(
             EngineError::InvalidConfiguration("invalid extraction output path".to_owned())
         })?
         .to_path_buf();
-    let temp_batch_dir = extraction_dir.join(".ffmpeg_batch_tmp");
 
-    if temp_batch_dir.exists() {
-        fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+    for (chunk_index, chunk) in pending.chunks(FRAME_EXTRACTION_CHUNK_SIZE).enumerate() {
+        let chunk_vec = chunk.to_vec();
+        let select_filter = chunk_vec
+            .iter()
+            .map(|(frame_index, _)| format!("eq(n\\,{frame_index})"))
+            .collect::<Vec<String>>()
+            .join("+");
+
+        let temp_batch_dir = extraction_dir.join(format!(".ffmpeg_batch_tmp_{chunk_index}"));
+
+        if temp_batch_dir.exists() {
+            fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+                path: temp_batch_dir.display().to_string(),
+                reason: format!("could not reset temporary frame extraction directory: {source}"),
+            })?;
+        }
+
+        fs::create_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
             path: temp_batch_dir.display().to_string(),
-            reason: format!("could not reset temporary frame extraction directory: {source}"),
-        })?;
-    }
-
-    fs::create_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
-        path: temp_batch_dir.display().to_string(),
-        reason: format!("could not create temporary frame extraction directory: {source}"),
-    })?;
-
-    let ffmpeg_output = command_for_tool(ffmpeg_bin)
-        .arg("-v")
-        .arg("error")
-        .arg("-nostdin")
-        .arg("-i")
-        .arg(mp4_path)
-        .arg("-vf")
-        .arg(format!("select={select_filter}"))
-        .arg("-vsync")
-        .arg("0")
-        .arg("-start_number")
-        .arg("0")
-        .arg("-y")
-        .arg(temp_batch_dir.join("frame_%06d.png"))
-        .output()
-        .map_err(|source| {
-            EngineError::InvalidConfiguration(format!(
-                "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
-            ))
+            reason: format!("could not create temporary frame extraction directory: {source}"),
         })?;
 
-    if !ffmpeg_output.status.success() {
-        return Err(EngineError::UnreadableFile {
-            path: mp4_path.display().to_string(),
-            reason: format!(
-                "ffmpeg failed to extract frames: {}",
-                String::from_utf8_lossy(&ffmpeg_output.stderr)
-            ),
-        });
-    }
+        let ffmpeg_output = command_for_tool(ffmpeg_bin)
+            .arg("-v")
+            .arg("error")
+            .arg("-nostdin")
+            .arg("-i")
+            .arg(mp4_path)
+            .arg("-vf")
+            .arg(format!("select={select_filter}"))
+            .arg("-vsync")
+            .arg("0")
+            .arg("-start_number")
+            .arg("0")
+            .arg("-y")
+            .arg(temp_batch_dir.join("frame_%06d.png"))
+            .output()
+            .map_err(|source| {
+                EngineError::InvalidConfiguration(format!(
+                    "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
+                ))
+            })?;
 
-    let mut extracted = fs::read_dir(&temp_batch_dir)
-        .map_err(|source| EngineError::UnreadableFile {
-            path: temp_batch_dir.display().to_string(),
-            reason: format!("could not enumerate extracted frames: {source}"),
-        })?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
-        .collect::<Vec<PathBuf>>();
-    extracted.sort();
+        if !ffmpeg_output.status.success() {
+            return Err(EngineError::UnreadableFile {
+                path: mp4_path.display().to_string(),
+                reason: format!(
+                    "ffmpeg failed to extract frames: {}",
+                    String::from_utf8_lossy(&ffmpeg_output.stderr)
+                ),
+            });
+        }
 
-    if extracted.len() != pending.len() {
+        let mut extracted = fs::read_dir(&temp_batch_dir)
+            .map_err(|source| EngineError::UnreadableFile {
+                path: temp_batch_dir.display().to_string(),
+                reason: format!("could not enumerate extracted frames: {source}"),
+            })?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
+            .collect::<Vec<PathBuf>>();
+        extracted.sort();
+
+        if extracted.len() != chunk_vec.len() {
+            fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+                path: temp_batch_dir.display().to_string(),
+                reason: format!("could not clean temporary frame extraction directory: {source}"),
+            })?;
+
+            return Err(EngineError::UnreadableFile {
+                path: mp4_path.display().to_string(),
+                reason: format!(
+                    "ffmpeg produced {} frame file(s) for {} requested frame index(es); extraction was aborted to avoid misaligned frame-to-index mapping",
+                    extracted.len(),
+                    chunk_vec.len()
+                ),
+            });
+        }
+
+        for (extracted_path, (_, output_path)) in extracted.iter().zip(chunk_vec.iter()) {
+            fs::rename(extracted_path, output_path).map_err(|source| {
+                EngineError::UnreadableFile {
+                    path: output_path.display().to_string(),
+                    reason: format!("could not materialize extracted frame file: {source}"),
+                }
+            })?;
+        }
+
         fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
             path: temp_batch_dir.display().to_string(),
             reason: format!("could not clean temporary frame extraction directory: {source}"),
         })?;
 
-        return Err(EngineError::UnreadableFile {
-            path: mp4_path.display().to_string(),
-            reason: format!(
-                "ffmpeg produced {} frame file(s) for {} requested frame index(es); extraction was aborted to avoid misaligned frame-to-index mapping",
-                extracted.len(),
-                pending.len()
-            ),
-        });
-    }
-
-    for (extracted_path, (_, output_path)) in extracted.iter().zip(pending.iter()) {
-        fs::rename(extracted_path, output_path).map_err(|source| EngineError::UnreadableFile {
-            path: output_path.display().to_string(),
-            reason: format!("could not materialize extracted frame file: {source}"),
-        })?;
-    }
-
-    fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
-        path: temp_batch_dir.display().to_string(),
-        reason: format!("could not clean temporary frame extraction directory: {source}"),
-    })?;
-
-    for (frame_index, output_path) in pending {
-        if !output_path.is_file() {
-            return Err(EngineError::UnreadableFile {
-                path: mp4_path.display().to_string(),
-                reason: format!(
-                    "ffmpeg did not produce output for frame index {frame_index}; frame may be outside MP4 bounds"
-                ),
-            });
+        for (frame_index, output_path) in chunk_vec {
+            if !output_path.is_file() {
+                return Err(EngineError::UnreadableFile {
+                    path: mp4_path.display().to_string(),
+                    reason: format!(
+                        "ffmpeg did not produce output for frame index {frame_index}; frame may be outside MP4 bounds"
+                    ),
+                });
+            }
         }
+
+        let completed = ((chunk_index + 1) * FRAME_EXTRACTION_CHUNK_SIZE).min(total_pending);
+        on_progress(completed, total_pending.max(1), "extracting");
     }
 
     Ok(skipped_existing_count)

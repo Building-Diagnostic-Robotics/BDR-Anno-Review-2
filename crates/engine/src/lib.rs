@@ -12,12 +12,14 @@ pub use annotations::{
 };
 pub use export::{export_coco, ExportCocoOptions, ExportCocoReport};
 pub use frame_sourcing::{
-    build_frame_sourcing_report, extract_frames_from_mp4, ExtractFramesFromMp4Options,
-    ExtractFramesFromMp4Report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
+    build_frame_sourcing_report, extract_frames_from_mp4, extract_frames_from_mp4_with_progress,
+    ExtractFramesFromMp4Options, ExtractFramesFromMp4Report, FrameMapping, FrameSourcingOptions,
+    FrameSourcingReport,
 };
 pub use import_stage::{run_import_stage, ImportStageOptions, ImportStageReport};
 pub use review_generation::{
-    generate_review_dataset, GenerateReviewDatasetOptions, GenerateReviewDatasetReport,
+    generate_review_dataset, generate_review_dataset_with_progress, GenerateReviewDatasetOptions,
+    GenerateReviewDatasetReport,
 };
 
 pub const MANIFEST_VERSION: &str = "1";

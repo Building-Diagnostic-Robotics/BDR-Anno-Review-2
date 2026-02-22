@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  extractFramesFromMp4,
   exportCoco,
   generateReviewDataset,
   getAnnotations,
@@ -74,6 +74,7 @@ export function App() {
   const [generationStep, setGenerationStep] = useState<GenerationStep>("idle");
   const [generationPercent, setGenerationPercent] = useState(0);
   const [generationDetail, setGenerationDetail] = useState("Idle.");
+  const [generationHeartbeat, setGenerationHeartbeat] = useState("Idle");
 
   const selectedIndex = useMemo(
     () => faces.findIndex((face) => face.faceId === selectedFaceId),
@@ -221,6 +222,41 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
       }
     };
   }, []);
+  useEffect(() => {
+    let disposed = false;
+    let unlistenProgress: (() => void) | undefined;
+
+    const attach = async () => {
+      unlistenProgress = await listen("generation-progress", (event) => {
+        if (disposed) return;
+        const payload = event.payload as {
+          phase: string;
+          detail: string;
+          percent: number;
+          elapsedMs: number;
+        };
+        const phase = payload.phase ?? "idle";
+        const nextStep: GenerationStep = phase === "rendering"
+          ? "generating"
+          : (["idle", "validating", "dependencies", "extracting", "generating", "done"].includes(phase)
+            ? (phase as GenerationStep)
+            : "generating");
+        setGenerationStep(nextStep);
+        setGenerationPercent(payload.percent ?? 0);
+        setGenerationDetail(payload.detail ?? "Working...");
+        setGenerationHeartbeat(`Last update ${Math.round((payload.elapsedMs ?? 0) / 1000)}s`);
+      });
+    };
+
+    void attach();
+    return () => {
+      disposed = true;
+      if (unlistenProgress) {
+        unlistenProgress();
+      }
+    };
+  }, []);
+
 
   const refreshFaces = async () => {
     const openReport = await openDataset(datasetRoot);
@@ -276,52 +312,44 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
 
     setIsBusy(true);
     setGenerationStep("validating");
-    setGenerationPercent(5);
-    setGenerationDetail("Step 1/4: validating input files");
+    setGenerationPercent(0);
+    setGenerationDetail("Starting generation pipeline...");
+    setGenerationHeartbeat("Live");
+
     try {
-      await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
-      setGenerationStep("dependencies");
-      setGenerationPercent(20);
-      setGenerationDetail("Step 2/4: checking ffmpeg/ffprobe runtime dependencies");
       const runtimeReport = await ensureRuntimeDependencies();
-
-      setGenerationStep("extracting");
-      setGenerationPercent(35);
-      setGenerationDetail("Step 3/4: extracting referenced frames from MP4");
-      const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
-      const effectiveSourceFramesDir = extractionReport.sourceFramesDir;
-      setSourceFramesDir(effectiveSourceFramesDir);
-      setGenerationPercent(75);
-      setGenerationDetail(
-        `Step 3/4: extracted ${extractionReport.extractedFrameCount} frame(s) from MP4 (${extractionReport.skippedExistingCount} cached)`
-      );
-
-      setGenerationStep("generating");
-      setGenerationPercent(85);
-      setGenerationDetail("Step 4/4: generating review dataset manifest and faces");
       const report = await generateReviewDataset({
         datasetRoot,
         cocoJsonPath,
         mp4Path,
-        sourceFramesDir: effectiveSourceFramesDir,
         generatedAt: nowIso(),
         faces: ["front", "right", "back", "left"],
         renderSize: 1024,
         horizontalFovDegrees: 90,
         minProjectedBoxArea: 1,
+        qualityProfile: "balanced",
       });
 
       await refreshFaces();
       setGenerationStep("done");
       setGenerationPercent(100);
       setGenerationDetail("Done: review dataset is ready.");
+      setGenerationHeartbeat("Complete");
       updateDiagnostics(
-        `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir (auto-generated): ${effectiveSourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nskippedCachedFrames: ${extractionReport.skippedExistingCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
+        `Review dataset generation complete
+${runtimeReport}
+sourceFramesDir (auto-generated): ${sourceFramesDir}
+extractedFrames: ${report.extractedFrameCount}
+skippedCachedFrames: ${report.skippedExistingCount}
+manifest: ${report.writtenManifestPath}
+faces: ${report.faceCount}
+filteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
       setGenerationStep("idle");
       setGenerationPercent(0);
       setGenerationDetail("Idle.");
+      setGenerationHeartbeat("Idle");
       updateDiagnostics("Review dataset generation failed", String(cause));
     } finally {
       setIsBusy(false);
@@ -779,7 +807,7 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
           <div className="progress" aria-label="generation progress">
             <span style={{ width: `${generationPercent}%` }} />
           </div>
-          <p className="hint">Step: {generationStep} • {generationDetail}</p>
+          <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
           <div className="row">
             <button onClick={handleGenerate} disabled={isBusy}>
               Generate review dataset
