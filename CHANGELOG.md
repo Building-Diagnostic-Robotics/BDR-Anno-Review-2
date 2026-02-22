@@ -7,20 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-### Changed
-- Collapsed frontend generation orchestration to a single backend generation command that performs validation, frame extraction, and review generation in one pipeline call.
-- Moved heavy generation/extraction work off the command thread by running engine work in Tauri `spawn_blocking` tasks, improving UI responsiveness during long-running operations.
-- Updated MP4 frame extraction to process referenced frames in bounded ffmpeg chunks instead of one unbounded select filter expression.
-- Updated review generation to skip rendering/writing face images when a face has no projected boxes, reducing unnecessary CPU and I/O work.
-- Added optional generation quality profiles (`high`/`balanced`/`low`) that tune render size for wider low-compute device support.
-- Replaced fixed frontend generation progress percentages with event-driven progress + heartbeat-style status updates.
-- Drop-import diagnostics now report backend-provided ignored staged paths, and the staged-input response schema now includes `ignored_paths` / `ignoredPaths` for explicit UI messaging.
+## [0.4.2] - 2026-02-22
 
-### Added
-- Added Tauri-host regression tests for drop staging to ensure dataset root selection prefers dropped directories over unsupported files and to verify recursive staging skips symlinked directories on Unix.
-- Added backend generation progress event streaming (`generation-progress`) with work-based payloads (`phase`, `completed/total`, percent, elapsed ms) so the UI can display live progress instead of static step percentages.
-- Added session-scoped annotation caching in the Tauri host for `get_annotations`/`set_annotations` to speed repeated face-to-face navigation within an open review session.
-  
 ### Fixed
 - Invalidated the in-memory annotation cache for a dataset when opening that dataset and after review-dataset regeneration completes, preventing stale cached edits from surviving manifest/regeneration changes.
 - Hardened dataset open/list preflight to validate every manifest `faces[].image_path` target exists on disk and fail loudly with sampled missing face IDs/paths, so preview-load issues are diagnosed before face selection.
@@ -28,18 +16,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Fixed dropped-input staging so `staged_dataset_root` is assigned only from dropped directories; unsupported non-JSON/non-MP4 files are now ignored and reported instead of being misclassified as dataset roots.
 - Hardened recursive dropped-directory staging to skip only symlinked directories (preventing recursive traversal of symlink cycles) while preserving symlinked files by materializing their file contents in the staging workspace.
 
-## [0.4.2] - 2026-02-22
-
 ### Added
 - Added app-owned staging workspace tracking in the Tauri host and a cleanup command that removes only `bdr-anno-review-drop-*` temp directories while skipping non-owned paths.
 - Added startup/exit best-effort cleanup hooks so registered dropped-input staging workspaces are removed even when packaging uninstall hooks are unavailable (for example AppImage).
 - Added Linux `.deb` post-remove and Windows NSIS uninstall hooks that remove app-owned dropped-input temp directories during uninstall.
 - Added Tauri host regression tests for staging-workspace cleanup behavior, including owned-path deletion and non-owned path skipping.
-
+- Added Tauri-host regression tests for drop staging to ensure dataset root selection prefers dropped directories over unsupported files and to verify recursive staging skips symlinked directories on Unix.
+- Added backend generation progress event streaming (`generation-progress`) with work-based payloads (`phase`, `completed/total`, percent, elapsed ms) so the UI can display live progress instead of static step percentages.
+- Added session-scoped annotation caching in the Tauri host for `get_annotations`/`set_annotations` to speed repeated face-to-face navigation within an open review session.
+  
 ### Changed
 - Updated release docs with explicit uninstall cleanup behavior for Windows NSIS, Linux deb, and Linux AppImage installs.
 - Bumped workspace, Tauri app config, and frontend package versions from `0.4.1` to `0.4.2` for temp-workspace cleanup coverage and uninstall cleanup hooks.
-
+- Collapsed frontend generation orchestration to a single backend generation command that performs validation, frame extraction, and review generation in one pipeline call.
+- Moved heavy generation/extraction work off the command thread by running engine work in Tauri `spawn_blocking` tasks, improving UI responsiveness during long-running operations.
+- Updated MP4 frame extraction to process referenced frames in bounded ffmpeg chunks instead of one unbounded select filter expression.
+- Updated review generation to skip rendering/writing face images when a face has no projected boxes, reducing unnecessary CPU and I/O work.
+- Added optional generation quality profiles (`high`/`balanced`/`low`) that tune render size for wider low-compute device support.
+- Replaced fixed frontend generation progress percentages with event-driven progress + heartbeat-style status updates.
+- Drop-import diagnostics now report backend-provided ignored staged paths, and the staged-input response schema now includes `ignored_paths` / `ignoredPaths` for explicit UI messaging.
+  
 ## [0.4.1] - 2026-02-22
 
 ### Changed
