@@ -158,15 +158,37 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $searchRoot = 'src-tauri/target'
-          if (-not (Test-Path $searchRoot)) {
-            throw "Expected Tauri target directory '$searchRoot' does not exist."
+          $candidateRoots = @()
+          if ($env:CARGO_TARGET_DIR) {
+            $candidateRoots += $env:CARGO_TARGET_DIR
+          }
+          $candidateRoots += @(
+            (Join-Path $env:GITHUB_WORKSPACE 'target'),
+            (Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target')
+          )
+
+          $candidateRoots = $candidateRoots |
+            Where-Object { $_ -and $_.Trim().Length -gt 0 } |
+            ForEach-Object { [System.IO.Path]::GetFullPath($_) } |
+            Select-Object -Unique
+
+          $existingRoots = $candidateRoots | Where-Object { Test-Path $_ }
+
+          if (-not $existingRoots) {
+            throw "Expected Tauri target directory does not exist. Searched: $($candidateRoots -join ', ')"
           }
 
-          $nsisCandidates = Get-ChildItem -Path $searchRoot -Recurse -File -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '[\\/]bundle[\\/]nsis[\\/]' }
+          $nsisCandidates = @()
+          foreach ($root in $existingRoots) {
+            $nsisCandidates += Get-ChildItem -Path $root -Recurse -File -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '[\\/]bundle[\\/]nsis[\\/]' }
+          }
+
+          $nsisCandidates = $nsisCandidates | Sort-Object -Property FullName -Unique
 
           Write-Host 'NSIS setup discovery diagnostics:'
+          Write-Host "- Searched roots: $($candidateRoots -join ', ')"
+          Write-Host "- Existing roots: $($existingRoots -join ', ')"
           if ($nsisCandidates) {
             $nsisCandidates | ForEach-Object { Write-Host "- $($_.FullName)" }
           } else {
@@ -174,7 +196,7 @@ jobs:
           }
 
           if ($nsisCandidates.Count -eq 0) {
-            throw "Could not locate generated NSIS setup executable under '$searchRoot' (searched recursively for '*-setup.exe' in bundle/nsis paths)."
+            throw "Could not locate generated NSIS setup executable under existing roots '$($existingRoots -join ', ')' (searched recursively for '*-setup.exe' in bundle/nsis paths)."
           }
           if ($nsisCandidates.Count -gt 1) {
             throw "Expected exactly one NSIS setup executable but found $($nsisCandidates.Count)."

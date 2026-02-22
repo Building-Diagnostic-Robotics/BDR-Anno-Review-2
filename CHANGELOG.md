@@ -7,8 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-02-22
+
 ### Fixed
-- Updated release publishing flow so `tauri-action` creates/updates draft releases first, Windows NSIS sidecar verification runs before publication, and a final `gh release edit --draft=false` step publishes only fully validated tag artifacts.
+- Hardened Windows NSIS sidecar verification in `.github/workflows/release.yml` by replacing the fixed `src-tauri/target` root assumption with dynamic target-root discovery across `$CARGO_TARGET_DIR`, `${{ github.workspace }}/target`, and `${{ github.workspace }}/src-tauri/target`, then recursively locating `bundle/nsis` setup executables from existing roots only.
+- Added explicit discovery diagnostics listing searched roots, existing roots, and discovered setup candidates, with fail-loud errors that include probed paths when no target root or NSIS installer is found.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.2.6` to `0.2.7` for the Windows release verification robustness fix.
 
 ## [0.2.6] - 2026-02-22
 
