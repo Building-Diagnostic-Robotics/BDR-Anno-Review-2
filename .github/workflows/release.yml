@@ -296,4 +296,6 @@ jobs:
       - name: Publish validated release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false
+        run: |
+          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}"
+          gh release edit "${{ github.ref_name }}" --draft=false --repo "${{ github.repository }}"
