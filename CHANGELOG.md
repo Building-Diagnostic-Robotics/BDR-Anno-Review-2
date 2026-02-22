@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Fixed Windows face-preview path resolution in the reviewer so mixed path separators no longer produce broken preview image URLs when dataset roots contain backslashes.
+- Added explicit face-preview image load diagnostics in the bbox editor panel so preview failures surface actionable messages with face ID and resolved file path.
+
+
 ### Changed
 - Optimized MP4 frame extraction by switching to a batched `ffmpeg` extraction path instead of spawning one process per frame, significantly reducing repeated decoder/process overhead while preserving deterministic output naming and explicit diagnostics.
 - Added incremental extraction caching for `derived_frames/frame_sourcing/frame_######.png` so generation can skip already-materialized frames and only extract missing outputs, with surfaced skipped-frame counts in backend/frontend reports.
