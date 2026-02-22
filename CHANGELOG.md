@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Fixed
 - Fixed Windows face-preview path resolution in the reviewer so mixed path separators no longer produce broken preview image URLs when dataset roots contain backslashes.
 - Added explicit face-preview image load diagnostics in the bbox editor panel so preview failures surface actionable messages with face ID and resolved file path.
+- Fixed annotation-save IPC decoding by accepting frontend camelCase provenance keys (`updatedAt`, `sourceAnnotationId`) in backend deserialization, eliminating `missing field `updated_at`` save failures.
 
 
 ### Changed
