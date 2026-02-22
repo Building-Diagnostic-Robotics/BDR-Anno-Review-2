@@ -62,7 +62,20 @@ cargo test --workspace
 
 ## Tester release builds
 
-Tagged releases (for example stable `v0.2.0` or prerelease `v0.2.0-rc.1`) trigger the GitHub Actions workflow `.github/workflows/release.yml`, which runs validation checks, builds Tauri bundles, and publishes release artifacts. Tags that include a hyphen (such as `-alpha`/`-rc`) are published as GitHub prereleases; plain SemVer tags are published as normal releases.
+Tagged releases (for example stable `v0.2.0` or prerelease `v0.2.0-rc.1`) trigger the GitHub Actions workflow `.github/workflows/release.yml`, which runs validation checks, enforces tag/version parity, builds Tauri bundles, and publishes release artifacts. Tags that include a hyphen (such as `-alpha`/`-rc`) are published as GitHub prereleases; plain SemVer tags are published as normal releases. The canonical Tauri app identifier is `io.bdr.annoreview` for installer/update identity continuity.
+
+
+### Release metadata checklist (before tagging)
+
+1. Choose the release version (for example `0.2.0`) and intended tag (`v0.2.0`).
+2. Update versions in this order:
+   - `Cargo.toml` `[workspace.package].version`
+   - `src-tauri/tauri.conf.json` `version`
+   - `frontend/package.json` `version`
+3. Move release-ready notes from `## [Unreleased]` into a dated version section in `CHANGELOG.md`.
+4. Create and push the tag (for example `git tag v0.2.0 && git push origin v0.2.0`).
+
+On tag builds, CI runs `./scripts/check-tag-version.sh ${{ github.ref_name }}` and fails if any version drifts from the tag value.
 
 ### Download artifacts
 
@@ -99,6 +112,15 @@ Release workflows fetch per-platform FFmpeg sidecar binaries and bundle them int
 - **Linux (`.deb`)**
   1. Install: `sudo apt install ./bdr-anno-review_*_amd64.deb`
   2. Launch from your application menu or by running `bdr-anno-review`.
+
+
+### Tester validation checklist
+
+- Open a known dataset and confirm manifest + face list load successfully.
+- Run **Validate import** and confirm reported image/annotation/category counts are sensible.
+- Run **Generate review dataset** and verify diagnostics report an **auto-generated** `sourceFramesDir`.
+- Edit at least one bbox (create/update/delete), save, switch faces, and return to confirm persistence.
+- Export COCO JSON and spot-check deterministic structure (`images`, `annotations`, single `bbox` category).
 
 ## Notes
 

@@ -38,6 +38,10 @@ jobs:
       - name: Build frontend assets
         run: pnpm --dir frontend build
 
+      - name: Validate in-repo versions match release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: ./scripts/check-tag-version.sh "${{ github.ref_name }}"
+
       - name: Rust checks
         run: |
           cargo fmt --all -- --check

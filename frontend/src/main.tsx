@@ -41,7 +41,7 @@ export function App() {
   const [datasetRoot, setDatasetRoot] = useState("");
   const [cocoJsonPath, setCocoJsonPath] = useState("");
   const [mp4Path, setMp4Path] = useState("");
-  const [sourceFramesDir, setSourceFramesDir] = useState("derived_frames/frame_sourcing");
+  const [sourceFramesDir, setSourceFramesDir] = useState("(auto-managed after extraction)");
   const [outputPath, setOutputPath] = useState("");
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
@@ -185,13 +185,14 @@ export function App() {
     try {
       const runtimeReport = await ensureRuntimeDependencies();
       const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
-      setSourceFramesDir(extractionReport.sourceFramesDir);
+      const effectiveSourceFramesDir = extractionReport.sourceFramesDir;
+      setSourceFramesDir(effectiveSourceFramesDir);
 
       const report = await generateReviewDataset({
         datasetRoot,
         cocoJsonPath,
         mp4Path,
-        sourceFramesDir: extractionReport.sourceFramesDir,
+        sourceFramesDir: effectiveSourceFramesDir,
         generatedAt: nowIso(),
         faces: ["front", "right", "back", "left"],
         renderSize: 1024,
@@ -201,7 +202,7 @@ export function App() {
 
       await refreshFaces();
       updateDiagnostics(
-        `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir: ${extractionReport.sourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
+        `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir (auto-generated): ${effectiveSourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
       updateDiagnostics("Review dataset generation failed", String(cause));
@@ -222,7 +223,8 @@ export function App() {
 
       const runtimeReport = await ensureRuntimeDependencies();
       const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
-      setSourceFramesDir(extractionReport.sourceFramesDir);
+      const effectiveSourceFramesDir = extractionReport.sourceFramesDir;
+      setSourceFramesDir(effectiveSourceFramesDir);
 
       let generationReport;
       try {
@@ -230,7 +232,7 @@ export function App() {
           datasetRoot,
           cocoJsonPath,
           mp4Path,
-          sourceFramesDir: extractionReport.sourceFramesDir,
+          sourceFramesDir: effectiveSourceFramesDir,
           generatedAt: nowIso(),
           faces: ["front", "right", "back", "left"],
           renderSize: 1024,
@@ -240,7 +242,7 @@ export function App() {
       } catch (generationError) {
         updateDiagnostics(
           "Generation failed after successful validation",
-          `Validation passed: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nExtraction: sourceFramesDir=${extractionReport.sourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nGeneration error: ${String(
+          `Validation passed: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nExtraction: sourceFramesDir (auto-generated)=${effectiveSourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nGeneration error: ${String(
             generationError
           )}`
         );
@@ -249,7 +251,7 @@ export function App() {
 
       await refreshFaces();
       updateDiagnostics(
-        `Validation + generation complete\n${runtimeReport}\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nextraction: sourceFramesDir=${extractionReport.sourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
+        `Validation + generation complete\n${runtimeReport}\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nextraction: sourceFramesDir (auto-generated)=${effectiveSourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
       );
     } catch (cause) {
       updateDiagnostics("Import validation failed", String(cause));
@@ -688,12 +690,15 @@ export function App() {
           </div>
           {mp4PathError ? <p className="error">{mp4PathError}</p> : null}
           <div className="row">
-            <label>Source frames directory</label>
+            <label>Source frames directory (auto-managed)</label>
           </div>
           <input
+            aria-label="Source frames directory (auto-managed)"
             value={sourceFramesDir}
-            onChange={(event) => setSourceFramesDir(event.target.value)}
+            readOnly
+            aria-readonly="true"
           />
+          <p className="hint">Generated from MP4 extraction; manual overrides are disabled in MVP.</p>
           <div className="row">
             <button onClick={handleImport} disabled={isBusy}>
               Validate import

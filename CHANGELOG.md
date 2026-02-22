@@ -8,6 +8,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Changed
+- Switched the Tauri bundle identifier from placeholder `com.example.bdrannoreview` to canonical reverse-DNS `io.bdr.annoreview` to stabilize installer/update identity across tester and production channels.
+- Updated the generation UI to treat source frame directory as MP4-extraction-managed output (read-only), and clarified diagnostics to label it as auto-generated.
+- Added release tag/version parity checks in CI (`scripts/check-tag-version.sh`) and release docs guidance so Cargo/Tauri/frontend versions stay aligned before tagging.
+
+## [0.2.0] - 2026-02-22
+
+### Tester Summary
+- **Supported platforms:** Windows (NSIS installer) and Linux (`.AppImage`, `.deb`).
+- **MVP capabilities:** validate import inputs, extract MP4 frames, generate deterministic review faces/manifest, edit bounding boxes, and export deterministic COCO.
+- **Known limitations / deferred scope:** MP4-first workflow (manual source-frame override disabled), optional provider integrations deferred, and external FFmpeg sidecar prerequisites remain explicit.
+
+### Changed
 - Expanded release workflow matrix jobs to fetch platform-specific FFmpeg sidecar binaries and pass Tauri `externalBin` configuration at bundle time so installers include working `ffmpeg`/`ffprobe` out of the box.
 - Surfaced invalid bundled FFmpeg sidecars as explicit runtime errors instead of silently falling back to PATH resolution, making packaging failures deterministic and actionable.
 - Decided FFmpeg delivery strategy for release builds: ship `ffmpeg`/`ffprobe` as sidecar binaries (with PATH fallback in local/dev), added runtime dependency preflight diagnostics in Tauri/frontend generation flows, and documented the rationale/prerequisites in architecture + README guides.
@@ -44,3 +56,4 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial architecture-aligned repository scaffold for frontend, Tauri host, Rust crates, schemas, fixtures, CI, and utility scripts.
 - Core project documents (`README.md`, docs contribution guide, schema and fixture readmes).
 - Safety-focused `.gitignore` rules for datasets, media, secrets, and session artifacts.
+
