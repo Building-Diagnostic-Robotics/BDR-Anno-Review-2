@@ -261,6 +261,13 @@ pub fn generate_review_dataset(
             .get(&image_id)
             .expect("referenced image annotations should exist");
 
+        let decoded_source_image = image::open(&source_frame_path)
+            .map_err(|source| EngineError::UnreadableFile {
+                path: source_frame_path.display().to_string(),
+                reason: format!("could not read source frame image: {source}"),
+            })?
+            .to_rgba8();
+
         for face in &manifest.render.faces {
             let orientation = face_orientation(face)?;
             let mut initial_boxes = Vec::new();
@@ -291,7 +298,7 @@ pub fn generate_review_dataset(
             let image_file_name = format!("{face_id}.png");
             let face_image_path = raw_frames_dir.join(&image_file_name);
             render_face_projection(
-                &source_frame_path,
+                &decoded_source_image,
                 &face_image_path,
                 face,
                 manifest.render.size,
@@ -336,18 +343,12 @@ pub fn generate_review_dataset(
 }
 
 fn render_face_projection(
-    source_frame_path: &Path,
+    source_image: &ImageBuffer<Rgba<u8>, Vec<u8>>,
     face_image_path: &Path,
     face: &str,
     render_size: u64,
     horizontal_fov_degrees: f64,
 ) -> Result<(), EngineError> {
-    let source_image = image::open(source_frame_path)
-        .map_err(|source| EngineError::UnreadableFile {
-            path: source_frame_path.display().to_string(),
-            reason: format!("could not read source frame image: {source}"),
-        })?
-        .to_rgba8();
     let source_width = source_image.width();
     let source_height = source_image.height();
 

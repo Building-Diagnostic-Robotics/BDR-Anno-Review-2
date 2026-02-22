@@ -112,6 +112,7 @@ struct ExtractFramesFromMp4Response {
     source_frames_dir: String,
     mp4_frame_count: u64,
     extracted_frame_count: usize,
+    skipped_existing_count: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -352,6 +353,7 @@ fn extract_frames_from_mp4_command(
         source_frames_dir: report.source_frames_dir,
         mp4_frame_count: report.mp4_frame_count,
         extracted_frame_count: report.extracted_frame_count,
+        skipped_existing_count: report.skipped_existing_count,
     })
 }
 
