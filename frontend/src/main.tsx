@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   extractFramesFromMp4,
@@ -27,6 +28,7 @@ type ImageViewport = {
 };
 
 type PointerMode = "idle" | "draw" | "move" | "resize";
+type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "done";
 
 const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   const normalizedPath = imagePath.replace(/\\/g, "/");
@@ -65,6 +67,9 @@ export function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [status, setStatus] = useState("Ready.");
   const [error, setError] = useState("");
+  const [generationStep, setGenerationStep] = useState<GenerationStep>("idle");
+  const [generationPercent, setGenerationPercent] = useState(0);
+  const [generationDetail, setGenerationDetail] = useState("Idle.");
 
   const selectedIndex = useMemo(
     () => faces.findIndex((face) => face.faceId === selectedFaceId),
@@ -101,16 +106,24 @@ export function App() {
 
 
   const pickDirectory = async (setter: (value: string) => void) => {
-    const selected = await open({ directory: true, multiple: false });
-    if (typeof selected === "string") {
-      setter(selected);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === "string") {
+        setter(selected);
+      }
+    } catch (cause) {
+      updateDiagnostics("Browse failed", `Could not open folder picker: ${String(cause)}`);
     }
   };
 
   const pickFile = async (setter: (value: string) => void, filters: { name: string; extensions: string[] }[]) => {
-    const selected = await open({ directory: false, multiple: false, filters });
-    if (typeof selected === "string") {
-      setter(selected);
+    try {
+      const selected = await open({ directory: false, multiple: false, filters });
+      if (typeof selected === "string") {
+        setter(selected);
+      }
+    } catch (cause) {
+      updateDiagnostics("Browse failed", `Could not open file picker: ${String(cause)}`);
     }
   };
 
@@ -128,6 +141,47 @@ export function App() {
     const report = await checkRuntimeDependencies();
     return `ffmpeg: ${report.ffmpeg.resolvedPath}\nffprobe: ${report.ffprobe.resolvedPath}`;
   };
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const attach = async () => {
+      unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+        if (event.payload.type !== "drop") {
+          return;
+        }
+
+        const [firstPath] = event.payload.paths;
+        if (!firstPath) {
+          return;
+        }
+
+        const normalized = firstPath.replace(/\\/g, "/");
+        if (normalized.toLowerCase().endsWith(".json")) {
+          setCocoJsonPath(firstPath);
+          updateDiagnostics("Drop imported", `COCO JSON set from drop: ${firstPath}`);
+          return;
+        }
+
+        if (normalized.toLowerCase().endsWith(".mp4")) {
+          setMp4Path(firstPath);
+          updateDiagnostics("Drop imported", `MP4 set from drop: ${firstPath}`);
+          return;
+        }
+
+        setDatasetRoot(firstPath);
+        updateDiagnostics("Drop imported", `Dataset root set from drop: ${firstPath}`);
+      });
+    };
+
+    void attach();
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
 
   const refreshFaces = async () => {
     const openReport = await openDataset(datasetRoot);
@@ -182,12 +236,30 @@ export function App() {
     }
 
     setIsBusy(true);
+    setGenerationStep("validating");
+    setGenerationPercent(5);
+    setGenerationDetail("Step 1/4: validating input files");
     try {
+      await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
+      setGenerationStep("dependencies");
+      setGenerationPercent(20);
+      setGenerationDetail("Step 2/4: checking ffmpeg/ffprobe runtime dependencies");
       const runtimeReport = await ensureRuntimeDependencies();
+
+      setGenerationStep("extracting");
+      setGenerationPercent(35);
+      setGenerationDetail("Step 3/4: extracting referenced frames from MP4");
       const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
       const effectiveSourceFramesDir = extractionReport.sourceFramesDir;
       setSourceFramesDir(effectiveSourceFramesDir);
+      setGenerationPercent(75);
+      setGenerationDetail(
+        `Step 3/4: extracted ${extractionReport.extractedFrameCount} frame(s) from MP4`
+      );
 
+      setGenerationStep("generating");
+      setGenerationPercent(85);
+      setGenerationDetail("Step 4/4: generating review dataset manifest and faces");
       const report = await generateReviewDataset({
         datasetRoot,
         cocoJsonPath,
@@ -201,60 +273,17 @@ export function App() {
       });
 
       await refreshFaces();
+      setGenerationStep("done");
+      setGenerationPercent(100);
+      setGenerationDetail("Done: review dataset is ready.");
       updateDiagnostics(
         `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir (auto-generated): ${effectiveSourceFramesDir}\nextractedFrames: ${extractionReport.extractedFrameCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
+      setGenerationStep("idle");
+      setGenerationPercent(0);
+      setGenerationDetail("Idle.");
       updateDiagnostics("Review dataset generation failed", String(cause));
-    } finally {
-      setIsBusy(false);
-    }
-  };
-
-  const handleValidateAndGenerate = async () => {
-    if (importInputError) {
-      updateDiagnostics("Validate + generate blocked", importInputError);
-      return;
-    }
-
-    setIsBusy(true);
-    try {
-      const importReport = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
-
-      const runtimeReport = await ensureRuntimeDependencies();
-      const extractionReport = await extractFramesFromMp4({ datasetRoot, cocoJsonPath, mp4Path });
-      const effectiveSourceFramesDir = extractionReport.sourceFramesDir;
-      setSourceFramesDir(effectiveSourceFramesDir);
-
-      let generationReport;
-      try {
-        generationReport = await generateReviewDataset({
-          datasetRoot,
-          cocoJsonPath,
-          mp4Path,
-          sourceFramesDir: effectiveSourceFramesDir,
-          generatedAt: nowIso(),
-          faces: ["front", "right", "back", "left"],
-          renderSize: 1024,
-          horizontalFovDegrees: 90,
-          minProjectedBoxArea: 1,
-        });
-      } catch (generationError) {
-        updateDiagnostics(
-          "Generation failed after successful validation",
-          `Validation passed: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nExtraction: sourceFramesDir (auto-generated)=${effectiveSourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nGeneration error: ${String(
-            generationError
-          )}`
-        );
-        return;
-      }
-
-      await refreshFaces();
-      updateDiagnostics(
-        `Validation + generation complete\n${runtimeReport}\nvalidation: images=${importReport.imageCount}, annotations=${importReport.annotationCount}, categories=${importReport.categoryCount}, referenced=${importReport.referencedImageCount}\nextraction: sourceFramesDir (auto-generated)=${effectiveSourceFramesDir}, extractedFrames=${extractionReport.extractedFrameCount}\nmanifest: ${generationReport.writtenManifestPath}\nfaces: ${generationReport.faceCount}\nfilteredBoxes: ${generationReport.filteredBoxCount}`
-      );
-    } catch (cause) {
-      updateDiagnostics("Import validation failed", String(cause));
     } finally {
       setIsBusy(false);
     }
@@ -699,15 +728,20 @@ export function App() {
             aria-readonly="true"
           />
           <p className="hint">Generated from MP4 extraction; manual overrides are disabled in MVP.</p>
+          <p className="hint">Tip: browse or drag-and-drop files/folders onto this window to auto-fill fields.</p>
           <div className="row">
-            <button onClick={handleImport} disabled={isBusy}>
-              Validate import
-            </button>
+            <label>Generation progress</label>
+          </div>
+          <div className="progress" aria-label="generation progress">
+            <span style={{ width: `${generationPercent}%` }} />
+          </div>
+          <p className="hint">Step: {generationStep} • {generationDetail}</p>
+          <div className="row">
             <button onClick={handleGenerate} disabled={isBusy}>
               Generate review dataset
             </button>
-            <button onClick={handleValidateAndGenerate} disabled={isBusy}>
-              Validate + generate
+            <button onClick={handleImport} disabled={isBusy}>
+              Validate inputs only
             </button>
           </div>
 

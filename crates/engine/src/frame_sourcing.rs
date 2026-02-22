@@ -291,13 +291,29 @@ pub fn resolve_frame_index(
         })
 }
 
+fn command_for_tool(tool: &str) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut command = Command::new(tool);
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new(tool)
+    }
+}
+
 fn extract_single_frame(
     ffmpeg_bin: &str,
     mp4_path: &Path,
     frame_index: u64,
     output_path: &Path,
 ) -> Result<(), EngineError> {
-    let ffmpeg_output = Command::new(ffmpeg_bin)
+    let ffmpeg_output = command_for_tool(ffmpeg_bin)
         .arg("-v")
         .arg("error")
         .arg("-nostdin")
@@ -337,7 +353,7 @@ fn extract_single_frame(
 }
 
 fn probe_mp4_frame_count(ffprobe_bin: &str, mp4_path: &Path) -> Result<u64, EngineError> {
-    let output = Command::new(ffprobe_bin)
+    let output = command_for_tool(ffprobe_bin)
         .arg("-v")
         .arg("error")
         .arg("-select_streams")

@@ -8,6 +8,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (value: string) => value,
 }));
 
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    onDragDropEvent: vi.fn(async () => () => undefined),
+  }),
+}));
+
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
   save: vi.fn(),
@@ -147,6 +153,8 @@ describe("source frames directory behavior", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Generate review dataset" }));
+
+    expect(screen.getByText(/Step: validating/i)).toBeTruthy();
 
     await waitFor(() => {
       expect(mocks.extractFramesFromMp4).toHaveBeenCalledTimes(1);
