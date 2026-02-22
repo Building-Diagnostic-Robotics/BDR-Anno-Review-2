@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Scoped staging-workspace lifecycle cleanup to the active app session so startup/exit cleanup no longer deletes temp workspaces created by other concurrently running app processes.
+- Hardened staging workspace ownership validation by requiring an app-owned marker file before cleanup removes a temp directory, preventing accidental deletion of similarly prefixed non-app directories.
+- Restricted Linux `.deb` uninstall cleanup to remove only marker-verified app-owned staging directories under `/tmp` instead of sweeping by name prefix alone.
+
+
 ## [0.4.2] - 2026-02-22
 
 ### Fixed
