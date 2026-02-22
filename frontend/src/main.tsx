@@ -13,12 +13,50 @@ import {
   runImportStage,
   setAnnotations,
   checkRuntimeDependencies,
+  stageDroppedInputs,
 } from "./api";
 import type { AnnotationEdit, FaceListItem } from "./types";
 import "./styles.css";
 import { removeEditAtIndex, validateEdits } from "./editing";
 
 const nowIso = () => new Date().toISOString();
+
+type DropParseResult = {
+  datasetRoot?: string;
+  cocoJsonPath?: string;
+  mp4Path?: string;
+  unsupported: string[];
+};
+
+const classifyDroppedPaths = (paths: string[]): DropParseResult => {
+  const result: DropParseResult = { unsupported: [] };
+
+  paths.forEach((path) => {
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    if (normalized.endsWith(".json")) {
+      if (!result.cocoJsonPath) {
+        result.cocoJsonPath = path;
+      }
+      return;
+    }
+
+    if (normalized.endsWith(".mp4")) {
+      if (!result.mp4Path) {
+        result.mp4Path = path;
+      }
+      return;
+    }
+
+    if (!result.datasetRoot) {
+      result.datasetRoot = path;
+      return;
+    }
+
+    result.unsupported.push(path);
+  });
+
+  return result;
+};
 
 type ImageViewport = {
   naturalWidth: number;
@@ -45,6 +83,7 @@ export function App() {
   const [mp4Path, setMp4Path] = useState("");
   const [sourceFramesDir, setSourceFramesDir] = useState("(auto-managed after extraction)");
   const [outputPath, setOutputPath] = useState("");
+  const [dropModalOpen, setDropModalOpen] = useState(false);
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
   const [selectedFaceId, setSelectedFaceId] = useState<string>("");
@@ -167,6 +206,33 @@ export function App() {
     return `ffmpeg: ${report.ffmpeg.resolvedPath}\nffprobe: ${report.ffprobe.resolvedPath}`;
   };
 
+  const applyDroppedPaths = async (paths: string[]) => {
+    if (paths.length === 0) {
+      updateDiagnostics("Drop ignored", "No paths were provided.");
+      return;
+    }
+
+    try {
+      const report = await stageDroppedInputs(paths);
+      if (report.stagedDatasetRoot) {
+        setDatasetRoot(report.stagedDatasetRoot);
+      }
+      if (report.stagedCocoJsonPath) {
+        setCocoJsonPath(report.stagedCocoJsonPath);
+      }
+      if (report.stagedMp4Path) {
+        setMp4Path(report.stagedMp4Path);
+      }
+
+      const parsed = classifyDroppedPaths(paths);
+      const ignored = parsed.unsupported.length > 0 ? `
+Ignored paths: ${parsed.unsupported.join(", ")}` : "";
+      updateDiagnostics("Drop imported", `Staged under: ${report.workspaceRoot}${ignored}`);
+    } catch (cause) {
+      updateDiagnostics("Drop import failed", String(cause));
+    }
+  };
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -176,26 +242,7 @@ export function App() {
           return;
         }
 
-        const [firstPath] = event.payload.paths;
-        if (!firstPath) {
-          return;
-        }
-
-        const normalized = firstPath.replace(/\\/g, "/");
-        if (normalized.toLowerCase().endsWith(".json")) {
-          setCocoJsonPath(firstPath);
-          updateDiagnostics("Drop imported", `COCO JSON set from drop: ${firstPath}`);
-          return;
-        }
-
-        if (normalized.toLowerCase().endsWith(".mp4")) {
-          setMp4Path(firstPath);
-          updateDiagnostics("Drop imported", `MP4 set from drop: ${firstPath}`);
-          return;
-        }
-
-        setDatasetRoot(firstPath);
-        updateDiagnostics("Drop imported", `Dataset root set from drop: ${firstPath}`);
+        void applyDroppedPaths(event.payload.paths);
       });
     };
 
@@ -753,7 +800,12 @@ export function App() {
             aria-readonly="true"
           />
           <p className="hint">Generated from MP4 extraction; manual overrides are disabled in MVP.</p>
-          <p className="hint">Tip: browse or drag-and-drop files/folders onto this window to auto-fill fields.</p>
+          <div className="row">
+            <button onClick={() => setDropModalOpen(true)} disabled={isBusy}>
+              Drop input
+            </button>
+          </div>
+          <p className="hint">Use Browse or Drop input to stage files/folders into app temp workspace.</p>
           <div className="row">
             <label>Generation progress</label>
           </div>
@@ -875,6 +927,17 @@ export function App() {
           <small>LLM suggestion helpers are intentionally deferred from this MVP path.</small>
         </section>
       </div>
+      {dropModalOpen ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Drop input files">
+          <div className="modal-card">
+            <h3>Drop input files</h3>
+            <p className="hint">Drop dataset directory, COCO JSON, and MP4 anywhere on this window.</p>
+            <div className="row">
+              <button onClick={() => setDropModalOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
