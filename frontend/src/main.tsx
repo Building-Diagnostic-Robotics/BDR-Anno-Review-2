@@ -826,7 +826,7 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
                   }}
                   onError={() => {
                     setPreviewError(
-                      `Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}.`
+                      `Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}. Resolved src: ${imageSrc}. Dataset root: ${datasetRoot || "(empty)"}.`
                     );
                   }}
                 />

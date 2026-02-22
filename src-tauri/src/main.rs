@@ -189,6 +189,7 @@ fn run_import_stage_command(options: ImportStageRequest) -> Result<ImportStageRe
 #[tauri::command]
 fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport, String> {
     let (dataset_root, manifest_path) = validate_manifest_request(&request.dataset_root)?;
+    let dataset_root_path = PathBuf::from(&dataset_root);
     let raw = fs::read_to_string(&manifest_path).map_err(|source| {
         format!(
             "could not read file `{}`: {source}",
@@ -202,6 +203,7 @@ fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport
             manifest_path.display()
         )
     })?;
+    validate_face_image_paths(&dataset_root_path, &manifest.faces)?;
 
     Ok(OpenDatasetReport {
         dataset_root,
@@ -213,6 +215,7 @@ fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport
 #[tauri::command]
 fn list_faces_command(request: DatasetOpenRequest) -> Result<ListFacesReport, String> {
     let (dataset_root, manifest_path) = validate_manifest_request(&request.dataset_root)?;
+    let dataset_root_path = PathBuf::from(&dataset_root);
     let raw = fs::read_to_string(&manifest_path).map_err(|source| {
         format!(
             "could not read file `{}`: {source}",
@@ -225,6 +228,7 @@ fn list_faces_command(request: DatasetOpenRequest) -> Result<ListFacesReport, St
             manifest_path.display()
         )
     })?;
+    validate_face_image_paths(&dataset_root_path, &manifest.faces)?;
 
     let faces = manifest
         .faces
@@ -267,6 +271,53 @@ fn validate_manifest_request(dataset_root_input: &str) -> Result<(String, PathBu
     }
 
     Ok((dataset_root.to_owned(), manifest_path))
+}
+
+fn validate_face_image_paths(
+    dataset_root: &Path,
+    faces: &[engine::FaceView],
+) -> Result<(), String> {
+    const SAMPLE_LIMIT: usize = 5;
+
+    let mut missing = Vec::new();
+    for face in faces {
+        let image_path = PathBuf::from(&face.image_path);
+        let resolved = if image_path.is_absolute() {
+            image_path
+        } else {
+            dataset_root.join(&face.image_path)
+        };
+
+        if !resolved.is_file() {
+            missing.push((face.face_id.clone(), resolved.display().to_string()));
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let sample = missing
+        .iter()
+        .take(SAMPLE_LIMIT)
+        .map(|(face_id, path)| format!("{face_id} -> `{path}`"))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    let omitted_count = missing.len().saturating_sub(SAMPLE_LIMIT);
+    let omitted_suffix = if omitted_count > 0 {
+        format!("; ... and {omitted_count} more")
+    } else {
+        String::new()
+    };
+
+    Err(format!(
+        "dataset preview files are missing: {} missing `faces[].image_path` target(s) under dataset root `{}`. Sample: {}{}",
+        missing.len(),
+        dataset_root.display(),
+        sample,
+        omitted_suffix
+    ))
 }
 
 #[tauri::command]
@@ -673,9 +724,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_dir_recursive, stage_dropped_inputs_command, validate_manifest_request,
-        ImportStageRequest, SetAnnotationsRequest, StageDroppedInputsRequest,
+        copy_dir_recursive, stage_dropped_inputs_command, validate_face_image_paths,
+        validate_manifest_request, ImportStageRequest, SetAnnotationsRequest,
+        StageDroppedInputsRequest,
     };
+    use engine::FaceView;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -732,6 +785,38 @@ mod tests {
         let err = validate_manifest_request(dataset_root.to_str().unwrap()).unwrap_err();
         assert!(err.contains("missing `annotations/view_manifest.json`"));
         assert!(err.contains("Run Generate review dataset first"));
+
+        fs::remove_dir_all(&dataset_root).unwrap();
+    }
+
+    #[test]
+    fn validate_face_image_paths_reports_missing_files_with_samples() {
+        let dataset_root = unique_temp_dir();
+        fs::create_dir_all(dataset_root.join("raw_frames")).unwrap();
+        fs::write(dataset_root.join("raw_frames/face-ok.png"), "ok").unwrap();
+
+        let faces = vec![
+            FaceView {
+                face_id: "face-ok".to_owned(),
+                source_image_id: 1,
+                face: "front".to_owned(),
+                image_path: "raw_frames/face-ok.png".to_owned(),
+                initial_boxes: Vec::new(),
+            },
+            FaceView {
+                face_id: "face-missing".to_owned(),
+                source_image_id: 1,
+                face: "right".to_owned(),
+                image_path: "raw_frames/face-missing.png".to_owned(),
+                initial_boxes: Vec::new(),
+            },
+        ];
+
+        let err = validate_face_image_paths(&dataset_root, &faces).unwrap_err();
+        assert!(err.contains("dataset preview files are missing"));
+        assert!(err.contains("1 missing `faces[].image_path` target(s)"));
+        assert!(err.contains("face-missing ->"));
+        assert!(err.contains("raw_frames/face-missing.png"));
 
         fs::remove_dir_all(&dataset_root).unwrap();
     }
