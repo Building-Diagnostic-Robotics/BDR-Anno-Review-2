@@ -211,6 +211,22 @@ describe("face preview path behavior", () => {
       expect(screen.getByText(/Failed to load face preview for face-1 from/)).toBeTruthy();
     });
   });
+
+
+  it("shows backend diagnostics when listFaces fails with missing preview files", async () => {
+    vi.mocked(api.listFaces).mockRejectedValueOnce(
+      "dataset preview files are missing: 1 missing `faces[].image_path` target(s) under dataset root `/tmp/dataset`. Sample: face-1 -> `/tmp/dataset/raw_frames/face-1.png`"
+    );
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Open dataset failed")).toBeTruthy();
+      expect(screen.getByText(/dataset preview files are missing/)).toBeTruthy();
+      expect(screen.getByText(/face-1 ->/)).toBeTruthy();
+    });
+  });
 });
 describe("drop input workflow", () => {
   it("renders drop input button", () => {
