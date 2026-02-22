@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-02-22
+
+### Fixed
+- Fixed the `publish-release` job in `.github/workflows/release.yml` to make GitHub CLI release publishing independent of local `.git` metadata by passing an explicit `--repo "${{ github.repository }}"` target.
+- Added a pre-edit `gh release view` diagnostic in `publish-release` with explicit `--repo` scope so missing tag/repo context fails early with actionable output before toggling draft state.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.2.8` to `0.2.9` for the release publishing context fix.
+
 ## [0.2.8] - 2026-02-22
 
 ### Fixed
