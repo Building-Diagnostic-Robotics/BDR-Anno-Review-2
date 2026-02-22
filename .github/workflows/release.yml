@@ -211,8 +211,17 @@ jobs:
 
           7z x $setup.FullName "-o$extractDir" -y | Out-Null
 
-          $ffmpegOnDisk = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'ffmpeg-x86_64-pc-windows-msvc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          $ffprobeOnDisk = Get-ChildItem -Path $extractDir -Recurse -File -Filter 'ffprobe-x86_64-pc-windows-msvc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          # Tauri sidecars can appear as target-suffixed names or normalized executable names in installer payloads.
+          $ffmpegAllowedNames = @('ffmpeg-x86_64-pc-windows-msvc.exe', 'ffmpeg.exe')
+          $ffprobeAllowedNames = @('ffprobe-x86_64-pc-windows-msvc.exe', 'ffprobe.exe')
+          $allowedNameSet = @($ffmpegAllowedNames + $ffprobeAllowedNames)
+          $allowedPattern = '(?i)(ffmpeg(?:-x86_64-pc-windows-msvc)?\.exe|ffprobe(?:-x86_64-pc-windows-msvc)?\.exe)'
+
+          $directSidecars = Get-ChildItem -Path $extractDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $allowedNameSet -contains $_.Name }
+
+          $ffmpegOnDisk = $directSidecars | Where-Object { $ffmpegAllowedNames -contains $_.Name } | Select-Object -First 1
+          $ffprobeOnDisk = $directSidecars | Where-Object { $ffprobeAllowedNames -contains $_.Name } | Select-Object -First 1
           if ($ffmpegOnDisk -and $ffprobeOnDisk) {
             Write-Host "Found sidecars directly in extracted NSIS payload:"
             Write-Host "- $($ffmpegOnDisk.FullName)"
@@ -220,20 +229,63 @@ jobs:
             exit 0
           }
 
+          Write-Host "NSIS sidecar direct-file check did not find both tools. Setup: $($setup.FullName)"
+          Write-Host "Allowed FFmpeg names: $($ffmpegAllowedNames -join ', ')"
+          Write-Host "Allowed FFprobe names: $($ffprobeAllowedNames -join ', ')"
+          if ($directSidecars) {
+            Write-Host 'Observed sidecar-like files in extracted payload:'
+            $directSidecars | ForEach-Object { Write-Host "- $($_.FullName)" }
+          } else {
+            Write-Host 'Observed sidecar-like files in extracted payload: none'
+          }
+
           $embeddedListings = @()
-          Get-ChildItem -Path $extractDir -Recurse -File -Include '*.exe' -ErrorAction SilentlyContinue | ForEach-Object {
-            $targetExe = $_.FullName
+          $embeddedListingCandidates = Get-ChildItem -Path $extractDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.Extension -in @('.exe', '.7z', '.zip') -or
+              [string]::IsNullOrWhiteSpace($_.Extension)
+            }
+
+          if (-not $embeddedListingCandidates) {
+            Write-Host 'No embedded listing candidates were found in extracted NSIS payload.'
+          } else {
+            Write-Host 'Embedded listing candidate files:'
+            $embeddedListingCandidates | ForEach-Object { Write-Host "- $($_.FullName)" }
+          }
+
+          foreach ($candidate in $embeddedListingCandidates) {
+            $targetExe = $candidate.FullName
             $listingPath = "$targetExe.listing.txt"
-            7z l $targetExe | Out-File $listingPath
-            $embeddedListings += Get-Content $listingPath -Raw
+            $listingOutput = & 7z l $targetExe 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Skipping unreadable embedded listing candidate: $targetExe"
+              continue
+            }
+
+            $listingOutput | Out-File $listingPath
+            $embeddedListings += (Get-Content $listingPath -Raw)
           }
 
           $mergedListings = ($embeddedListings -join "`n")
-          if ($mergedListings -notmatch 'ffmpeg-x86_64-pc-windows-msvc\.exe') {
-            throw 'ffmpeg sidecar is missing from NSIS payload (direct files and embedded executable payloads checked).'
+          $sidecarHits = @()
+          if ($mergedListings) {
+            $sidecarHits = [regex]::Matches($mergedListings, '(?im)^.*(?:ffmpeg|ffprobe).*$') |
+              ForEach-Object { $_.Value.Trim() } |
+              Select-Object -Unique
           }
-          if ($mergedListings -notmatch 'ffprobe-x86_64-pc-windows-msvc\.exe') {
-            throw 'ffprobe sidecar is missing from NSIS payload (direct files and embedded executable payloads checked).'
+
+          if ($sidecarHits) {
+            Write-Host 'Embedded listing sidecar-like entries:'
+            $sidecarHits | ForEach-Object { Write-Host "- $_" }
+          } else {
+            Write-Host 'Embedded listing sidecar-like entries: none'
+          }
+
+          if ($mergedListings -notmatch '(?i)(ffmpeg(?:-x86_64-pc-windows-msvc)?\.exe)') {
+            throw "ffmpeg sidecar is missing from NSIS payload (accepted names: $($ffmpegAllowedNames -join ', '); direct files and embedded payloads checked)."
+          }
+          if ($mergedListings -notmatch '(?i)(ffprobe(?:-x86_64-pc-windows-msvc)?\.exe)') {
+            throw "ffprobe sidecar is missing from NSIS payload (accepted names: $($ffprobeAllowedNames -join ', '); direct files and embedded payloads checked)."
           }
 
   publish-release:

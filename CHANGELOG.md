@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-02-22
+
+### Fixed
+- Fixed Windows NSIS sidecar verification in `.github/workflows/release.yml` to accept both target-suffixed sidecar filenames (`ffmpeg-x86_64-pc-windows-msvc.exe`, `ffprobe-x86_64-pc-windows-msvc.exe`) and normalized names (`ffmpeg.exe`, `ffprobe.exe`) when validating installer payload contents.
+- Expanded embedded NSIS payload inspection beyond only `*.exe` files to also inspect `.7z`, `.zip`, and extensionless artifacts, while gracefully skipping unreadable candidates and preserving fail-loud behavior.
+- Added richer diagnostics for NSIS verification failures, including selected setup path, allowed sidecar names, extracted sidecar-like file hits, embedded listing candidates, and sidecar-like listing lines to make CI triage actionable.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.2.7` to `0.2.8` for the Windows sidecar verification reliability fix.
+
 ## [0.2.7] - 2026-02-22
 
 ### Fixed
@@ -112,4 +122,3 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial architecture-aligned repository scaffold for frontend, Tauri host, Rust crates, schemas, fixtures, CI, and utility scripts.
 - Core project documents (`README.md`, docs contribution guide, schema and fixture readmes).
 - Safety-focused `.gitignore` rules for datasets, media, secrets, and session artifacts.
-
