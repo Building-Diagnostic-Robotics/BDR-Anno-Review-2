@@ -479,7 +479,10 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> io::Result<()> {
         let metadata = fs::symlink_metadata(&path)?;
         let destination = target.join(entry.file_name());
         if metadata.file_type().is_symlink() {
-            continue;
+            let resolved_metadata = fs::metadata(&path)?;
+            if resolved_metadata.is_dir() {
+                continue;
+            }
         }
 
         if metadata.is_dir() {
@@ -785,6 +788,30 @@ mod tests {
 
         assert!(target.join("nested").join("file.txt").is_file());
         assert!(!target.join("nested").join("loop").exists());
+
+        fs::remove_dir_all(&fixture_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recursive_copies_symlinked_files() {
+        use std::os::unix::fs::symlink;
+
+        let fixture_root = unique_temp_dir();
+        let source = fixture_root.join("source");
+        let target = fixture_root.join("target");
+        fs::create_dir_all(&source).unwrap();
+
+        let real_file = fixture_root.join("shared.txt");
+        fs::write(&real_file, "linked-content").unwrap();
+        symlink(&real_file, source.join("linked.txt")).unwrap();
+
+        copy_dir_recursive(&source, &target).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("linked.txt")).unwrap(),
+            "linked-content"
+        );
 
         fs::remove_dir_all(&fixture_root).unwrap();
     }
