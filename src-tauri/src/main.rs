@@ -10,8 +10,8 @@ use engine::{
     export_coco, extract_frames_from_mp4, generate_review_dataset, get_annotations,
     init_empty_manifest, run_import_stage, set_annotations, AnnotationEdit, ExportCocoOptions,
     ExportCocoReport, ExtractFramesFromMp4Options, ExtractFramesFromMp4Report, FramesSource,
-    GenerateReviewDatasetOptions, GenerateReviewDatasetReport, ImportStageOptions,
-    ImportStageReport, ManifestInputs, ProjectionConfig, RenderConfig, ViewManifest,
+    GenerateReviewDatasetOptions, GenerateReviewDatasetReport, ImportStageOptions, ManifestInputs,
+    ProjectionConfig, RenderConfig, ViewManifest,
 };
 
 const VIEW_MANIFEST_PATH: &str = "annotations/view_manifest.json";
@@ -128,19 +128,49 @@ struct ListFacesReport {
     faces: Vec<FaceListItem>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportStageRequest {
+    dataset_root: String,
+    coco_json_path: String,
+    mp4_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportStageResponse {
+    dataset_root: String,
+    coco_json_path: String,
+    mp4_path: String,
+    image_count: usize,
+    annotation_count: usize,
+    category_count: usize,
+    referenced_image_count: usize,
+}
+
 #[tauri::command]
-fn run_import_stage_command(options: ImportStageOptions) -> Result<ImportStageReport, String> {
-    run_import_stage(options).map_err(|error| error.to_string())
+fn run_import_stage_command(options: ImportStageRequest) -> Result<ImportStageResponse, String> {
+    let report = run_import_stage(ImportStageOptions {
+        dataset_root: options.dataset_root,
+        coco_json_path: options.coco_json_path,
+        mp4_path: options.mp4_path,
+    })
+    .map_err(|error| error.to_string())?;
+
+    Ok(ImportStageResponse {
+        dataset_root: report.dataset_root,
+        coco_json_path: report.coco_json_path,
+        mp4_path: report.mp4_path,
+        image_count: report.image_count,
+        annotation_count: report.annotation_count,
+        category_count: report.category_count,
+        referenced_image_count: report.referenced_image_count,
+    })
 }
 
 #[tauri::command]
 fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport, String> {
-    let dataset_root = request.dataset_root.trim();
-    if dataset_root.is_empty() {
-        return Err("missing required input: dataset_root".to_owned());
-    }
-
-    let manifest_path = PathBuf::from(dataset_root).join(VIEW_MANIFEST_PATH);
+    let (dataset_root, manifest_path) = validate_manifest_request(&request.dataset_root)?;
     let raw = fs::read_to_string(&manifest_path).map_err(|source| {
         format!(
             "could not read file `{}`: {source}",
@@ -156,7 +186,7 @@ fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport
     })?;
 
     Ok(OpenDatasetReport {
-        dataset_root: dataset_root.to_owned(),
+        dataset_root,
         manifest_path: manifest_path.display().to_string(),
         face_count: manifest.faces.len(),
     })
@@ -164,12 +194,7 @@ fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport
 
 #[tauri::command]
 fn list_faces_command(request: DatasetOpenRequest) -> Result<ListFacesReport, String> {
-    let dataset_root = request.dataset_root.trim();
-    if dataset_root.is_empty() {
-        return Err("missing required input: dataset_root".to_owned());
-    }
-
-    let manifest_path = PathBuf::from(dataset_root).join(VIEW_MANIFEST_PATH);
+    let (dataset_root, manifest_path) = validate_manifest_request(&request.dataset_root)?;
     let raw = fs::read_to_string(&manifest_path).map_err(|source| {
         format!(
             "could not read file `{}`: {source}",
@@ -195,9 +220,35 @@ fn list_faces_command(request: DatasetOpenRequest) -> Result<ListFacesReport, St
         .collect();
 
     Ok(ListFacesReport {
-        dataset_root: dataset_root.to_owned(),
+        dataset_root,
         faces,
     })
+}
+
+fn validate_manifest_request(dataset_root_input: &str) -> Result<(String, PathBuf), String> {
+    let dataset_root = dataset_root_input.trim();
+    if dataset_root.is_empty() {
+        return Err("missing required input: dataset_root".to_owned());
+    }
+
+    let dataset_root_path = PathBuf::from(dataset_root);
+    if !dataset_root_path.is_dir() {
+        return Err(format!(
+            "dataset root directory does not exist: `{}`",
+            dataset_root_path.display()
+        ));
+    }
+
+    let manifest_path = dataset_root_path.join(VIEW_MANIFEST_PATH);
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "dataset is not initialized for review: missing `{}` under dataset root `{}`. Run Generate review dataset first.",
+            VIEW_MANIFEST_PATH,
+            dataset_root_path.display()
+        ));
+    }
+
+    Ok((dataset_root.to_owned(), manifest_path))
 }
 
 #[tauri::command]
@@ -461,4 +512,42 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run bdr-anno-review tauri app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_manifest_request, ImportStageRequest};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("bdr_anno_review_main_tests_{nanos}"))
+    }
+
+    #[test]
+    fn import_stage_request_deserializes_camel_case_fields() {
+        let raw = r#"{"datasetRoot":"/tmp/dataset","cocoJsonPath":"annotations/instances_default.json","mp4Path":"videos/source.mp4"}"#;
+        let parsed: ImportStageRequest = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(parsed.dataset_root, "/tmp/dataset");
+        assert_eq!(parsed.coco_json_path, "annotations/instances_default.json");
+        assert_eq!(parsed.mp4_path, "videos/source.mp4");
+    }
+
+    #[test]
+    fn validate_manifest_request_reports_missing_manifest_with_actionable_message() {
+        let dataset_root = unique_temp_dir();
+        fs::create_dir_all(&dataset_root).unwrap();
+
+        let err = validate_manifest_request(dataset_root.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("missing `annotations/view_manifest.json`"));
+        assert!(err.contains("Run Generate review dataset first"));
+
+        fs::remove_dir_all(&dataset_root).unwrap();
+    }
 }

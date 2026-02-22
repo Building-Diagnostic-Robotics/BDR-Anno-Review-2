@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-02-22
+
+### Fixed
+- Fixed Tauri import-stage IPC decoding by introducing a camelCase request boundary for `run_import_stage_command` and mapping it into engine snake_case options, eliminating `missing field `dataset_root`` errors from frontend validation and generation preflight calls.
+- Added a camelCase import-stage response boundary in the Tauri host so frontend diagnostics receive consistently-cased fields from `run_import_stage_command`.
+- Improved `open_dataset_command` and `list_faces_command` preflight diagnostics to fail loudly with actionable messages when dataset root is missing/invalid or `annotations/view_manifest.json` is absent (including guidance to run Generate review dataset first), replacing opaque OS path errors.
+- Added Tauri host regression tests for camelCase import-stage request decoding and manifest-preflight error messaging to prevent recurrence.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.3.3` to `0.3.4` for the IPC boundary and diagnostics hardening release.
+
 ## [0.3.3] - 2026-02-22
 
 ### Fixed
