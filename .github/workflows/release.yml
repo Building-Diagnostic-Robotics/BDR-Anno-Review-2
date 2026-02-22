@@ -131,6 +131,17 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: Get-ChildItem src-tauri/binaries | Format-Table -AutoSize
+      - name: Verify expected sidecar filenames exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            test -f "src-tauri/binaries/ffmpeg-${{ matrix.rust_target }}.exe"
+            test -f "src-tauri/binaries/ffprobe-${{ matrix.rust_target }}.exe"
+          else
+            test -f "src-tauri/binaries/ffmpeg-${{ matrix.rust_target }}"
+            test -f "src-tauri/binaries/ffprobe-${{ matrix.rust_target }}"
+          fi
       - name: Build and upload Tauri bundles
         uses: tauri-apps/tauri-action@v0
         env:
