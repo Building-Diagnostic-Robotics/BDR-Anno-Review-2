@@ -77,6 +77,7 @@ beforeEach(() => {
     stagedDatasetRoot: "/tmp/bdr-stage/dataset",
     stagedCocoJsonPath: "/tmp/bdr-stage/instances_default.json",
     stagedMp4Path: "/tmp/bdr-stage/source.mp4",
+    ignoredPaths: [],
   });
 
   mocks.runImportStage.mockResolvedValue({

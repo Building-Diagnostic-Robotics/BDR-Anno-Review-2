@@ -163,6 +163,7 @@ struct StageDroppedInputsResponse {
     staged_dataset_root: Option<String>,
     staged_coco_json_path: Option<String>,
     staged_mp4_path: Option<String>,
+    ignored_paths: Vec<String>,
 }
 
 #[tauri::command]
@@ -369,6 +370,7 @@ fn stage_dropped_inputs_command(
     let mut staged_dataset_root = None;
     let mut staged_coco_json_path = None;
     let mut staged_mp4_path = None;
+    let mut ignored_paths = Vec::new();
 
     for raw in request.paths {
         let input = PathBuf::from(raw.trim());
@@ -411,8 +413,8 @@ fn stage_dropped_inputs_command(
             staged_coco_json_path = Some(target.display().to_string());
         } else if lower.ends_with(".mp4") && staged_mp4_path.is_none() {
             staged_mp4_path = Some(target.display().to_string());
-        } else if staged_dataset_root.is_none() {
-            staged_dataset_root = Some(target.display().to_string());
+        } else {
+            ignored_paths.push(target.display().to_string());
         }
     }
 
@@ -421,6 +423,7 @@ fn stage_dropped_inputs_command(
         staged_dataset_root,
         staged_coco_json_path,
         staged_mp4_path,
+        ignored_paths,
     })
 }
 
@@ -473,8 +476,13 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> io::Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
         let destination = target.join(entry.file_name());
-        if path.is_dir() {
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        if metadata.is_dir() {
             copy_dir_recursive(&path, &destination)?;
         } else {
             fs::copy(&path, &destination)?;
@@ -661,7 +669,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_manifest_request, ImportStageRequest, SetAnnotationsRequest};
+    use super::{
+        copy_dir_recursive, stage_dropped_inputs_command, validate_manifest_request,
+        ImportStageRequest, SetAnnotationsRequest, StageDroppedInputsRequest,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -720,5 +731,61 @@ mod tests {
         assert!(err.contains("Run Generate review dataset first"));
 
         fs::remove_dir_all(&dataset_root).unwrap();
+    }
+
+    #[test]
+    fn stage_dropped_inputs_prefers_directory_for_dataset_root_and_reports_ignored_files() {
+        let fixture_root = unique_temp_dir();
+        fs::create_dir_all(&fixture_root).unwrap();
+
+        let unsupported_path = fixture_root.join("notes.txt");
+        fs::write(&unsupported_path, "not supported").unwrap();
+
+        let dataset_root = fixture_root.join("dataset");
+        fs::create_dir_all(&dataset_root).unwrap();
+        fs::write(dataset_root.join("placeholder.txt"), "ok").unwrap();
+
+        let response = stage_dropped_inputs_command(StageDroppedInputsRequest {
+            paths: vec![
+                unsupported_path.display().to_string(),
+                dataset_root.display().to_string(),
+            ],
+        })
+        .unwrap();
+
+        assert!(response.staged_dataset_root.is_some());
+        assert!(
+            PathBuf::from(response.staged_dataset_root.unwrap()).is_dir(),
+            "dataset root should always be a directory"
+        );
+        assert_eq!(response.ignored_paths.len(), 1);
+        assert!(response.ignored_paths[0]
+            .to_lowercase()
+            .ends_with("notes.txt"));
+        assert!(PathBuf::from(response.workspace_root).is_dir());
+
+        fs::remove_dir_all(&fixture_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recursive_skips_symlinked_directories() {
+        use std::os::unix::fs::symlink;
+
+        let fixture_root = unique_temp_dir();
+        let source = fixture_root.join("source");
+        let nested = source.join("nested");
+        let target = fixture_root.join("target");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("file.txt"), "ok").unwrap();
+
+        symlink(&source, nested.join("loop")).unwrap();
+
+        copy_dir_recursive(&source, &target).unwrap();
+
+        assert!(target.join("nested").join("file.txt").is_file());
+        assert!(!target.join("nested").join("loop").exists());
+
+        fs::remove_dir_all(&fixture_root).unwrap();
     }
 }

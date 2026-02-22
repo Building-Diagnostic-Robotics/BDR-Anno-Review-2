@@ -21,43 +21,6 @@ import { removeEditAtIndex, validateEdits } from "./editing";
 
 const nowIso = () => new Date().toISOString();
 
-type DropParseResult = {
-  datasetRoot?: string;
-  cocoJsonPath?: string;
-  mp4Path?: string;
-  unsupported: string[];
-};
-
-const classifyDroppedPaths = (paths: string[]): DropParseResult => {
-  const result: DropParseResult = { unsupported: [] };
-
-  paths.forEach((path) => {
-    const normalized = path.replace(/\\/g, "/").toLowerCase();
-    if (normalized.endsWith(".json")) {
-      if (!result.cocoJsonPath) {
-        result.cocoJsonPath = path;
-      }
-      return;
-    }
-
-    if (normalized.endsWith(".mp4")) {
-      if (!result.mp4Path) {
-        result.mp4Path = path;
-      }
-      return;
-    }
-
-    if (!result.datasetRoot) {
-      result.datasetRoot = path;
-      return;
-    }
-
-    result.unsupported.push(path);
-  });
-
-  return result;
-};
-
 type ImageViewport = {
   naturalWidth: number;
   naturalHeight: number;
@@ -229,9 +192,8 @@ export function App() {
         setMp4Path(report.stagedMp4Path);
       }
 
-      const parsed = classifyDroppedPaths(paths);
-      const ignored = parsed.unsupported.length > 0 ? `
-Ignored paths: ${parsed.unsupported.join(", ")}` : "";
+      const ignored = report.ignoredPaths.length > 0 ? `
+Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
       updateDiagnostics("Drop imported", `Staged under: ${report.workspaceRoot}${ignored}`);
     } catch (cause) {
       updateDiagnostics("Drop import failed", String(cause));
