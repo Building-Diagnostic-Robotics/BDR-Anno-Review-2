@@ -208,8 +208,12 @@ fn run_import_stage_command(options: ImportStageRequest) -> Result<ImportStageRe
 }
 
 #[tauri::command]
-fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport, String> {
+fn open_dataset_command(
+    state: State<AppState>,
+    request: DatasetOpenRequest,
+) -> Result<OpenDatasetReport, String> {
     let (dataset_root, manifest_path) = validate_manifest_request(&request.dataset_root)?;
+    clear_annotation_cache_for_dataset(&state, &dataset_root)?;
     let dataset_root_path = PathBuf::from(&dataset_root);
     let raw = fs::read_to_string(&manifest_path).map_err(|source| {
         format!(
@@ -231,6 +235,15 @@ fn open_dataset_command(request: DatasetOpenRequest) -> Result<OpenDatasetReport
         manifest_path: manifest_path.display().to_string(),
         face_count: manifest.faces.len(),
     })
+}
+
+fn clear_annotation_cache_for_dataset(state: &AppState, dataset_root: &str) -> Result<(), String> {
+    state
+        .annotation_cache
+        .lock()
+        .map_err(|_| "annotation cache lock poisoned".to_owned())?
+        .retain(|(cached_dataset_root, _), _| cached_dataset_root != dataset_root);
+    Ok(())
 }
 
 #[tauri::command]
@@ -412,6 +425,7 @@ fn export_coco_command(request: ExportCocoRequest) -> Result<ExportCocoResponse,
 #[tauri::command]
 async fn generate_review_dataset_command(
     app: AppHandle,
+    state: State<'_, AppState>,
     request: GenerateReviewDatasetRequest,
 ) -> Result<GenerateReviewDatasetResponse, String> {
     let ffmpeg_bin = resolve_ffmpeg_binary(&app, "ffmpeg")?;
@@ -519,7 +533,7 @@ async fn generate_review_dataset_command(
     .map_err(|error| error.to_string())?;
 
     let source_frames_dir = extraction_report.source_frames_dir.clone();
-    let dataset_root = request.dataset_root;
+    let dataset_root = request.dataset_root.clone();
     let report = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
         move || {
@@ -556,6 +570,7 @@ async fn generate_review_dataset_command(
     .map_err(|error| error.to_string())?;
 
     emit_progress("done", "Generation complete", 1, 1, started, &app);
+    clear_annotation_cache_for_dataset(&state, &request.dataset_root)?;
 
     Ok(GenerateReviewDatasetResponse {
         written_manifest_path: report.written_manifest_path,

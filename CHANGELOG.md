@@ -22,6 +22,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Added session-scoped annotation caching in the Tauri host for `get_annotations`/`set_annotations` to speed repeated face-to-face navigation within an open review session.
   
 ### Fixed
+- Invalidated the in-memory annotation cache for a dataset when opening that dataset and after review-dataset regeneration completes, preventing stale cached edits from surviving manifest/regeneration changes.
 - Hardened dataset open/list preflight to validate every manifest `faces[].image_path` target exists on disk and fail loudly with sampled missing face IDs/paths, so preview-load issues are diagnosed before face selection.
 - Normalized manifest preview image paths before preflight existence checks so Windows-style relative separators (for example `raw_frames\\face-1.png`) resolve correctly on macOS/Linux instead of being misreported as missing files.
 - Fixed dropped-input staging so `staged_dataset_root` is assigned only from dropped directories; unsupported non-JSON/non-MP4 files are now ignored and reported instead of being misclassified as dataset roots.
