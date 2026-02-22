@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-02-22
+
+### Fixed
+- Fixed review dataset generation to create the `annotations/` output directory before writing `annotations/view_manifest.json`, preventing Windows `os error 3` (and equivalent missing-parent failures on other OSes) when the directory is absent.
+- Added regression coverage for missing `annotations/` directory creation so manifest writes remain fail-loud and cross-platform robust.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `0.3.1` to `0.3.2` for the cross-platform manifest output-path fix release.
+
 ## [0.3.1] - 2026-02-22
 
 ### Fixed
