@@ -288,6 +288,133 @@ jobs:
             throw "ffprobe sidecar is missing from NSIS payload (accepted names: $($ffprobeAllowedNames -join ', '); direct files and embedded payloads checked)."
           }
 
+      - name: Verify Linux bundles contain FFmpeg sidecars
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ffmpeg_allowed_names=("ffmpeg" "ffmpeg-x86_64-unknown-linux-gnu")
+          ffprobe_allowed_names=("ffprobe" "ffprobe-x86_64-unknown-linux-gnu")
+
+          candidate_roots=()
+          if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+            candidate_roots+=("$CARGO_TARGET_DIR")
+          fi
+          candidate_roots+=("$GITHUB_WORKSPACE/target" "$GITHUB_WORKSPACE/src-tauri/target")
+
+          existing_roots=()
+          for root in "${candidate_roots[@]}"; do
+            [ -n "$root" ] || continue
+            if [ -d "$root" ]; then
+              existing_roots+=("$(cd "$root" && pwd)")
+            fi
+          done
+
+          if [ "${#existing_roots[@]}" -eq 0 ]; then
+            echo "Expected Tauri target directory does not exist. Searched: ${candidate_roots[*]}" >&2
+            exit 1
+          fi
+
+          echo "Linux bundle discovery diagnostics:"
+          echo "- Searched roots: ${candidate_roots[*]}"
+          echo "- Existing roots: ${existing_roots[*]}"
+
+          find_bundle_artifact() {
+            local regex="$1"
+            local label="$2"
+            local found=()
+            for root in "${existing_roots[@]}"; do
+              while IFS= read -r path; do
+                found+=("$path")
+              done < <(find "$root" -type f -regextype posix-extended -regex "$regex" 2>/dev/null)
+            done
+
+            if [ "${#found[@]}" -eq 0 ]; then
+              echo "No $label candidates found under existing roots." >&2
+              return 1
+            fi
+
+            mapfile -t found < <(printf '%s\n' "${found[@]}" | sort -u)
+            echo "- $label candidates:" >&2
+            printf '  - %s\n' "${found[@]}" >&2
+
+            if [ "${#found[@]}" -ne 1 ]; then
+              echo "Expected exactly one $label artifact but found ${#found[@]}." >&2
+              return 1
+            fi
+
+            printf '%s\n' "${found[0]}"
+          }
+
+          contains_one_of() {
+            local search_root="$1"
+            shift
+            local names=("$@")
+            local found=""
+            for name in "${names[@]}"; do
+              if found="$(find "$search_root" -type f -name "$name" -print -quit)" && [ -n "$found" ]; then
+                printf '%s\n' "$found"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          appimage="$(find_bundle_artifact '.*/bundle/appimage/[^/]+\.AppImage$' 'AppImage')"
+          deb_package="$(find_bundle_artifact '.*/bundle/deb/[^/]+\.deb$' 'deb')"
+
+          appimage_extract_dir="$RUNNER_TEMP/appimage-inspect"
+          rm -rf "$appimage_extract_dir"
+          mkdir -p "$appimage_extract_dir"
+
+          chmod +x "$appimage"
+          (
+            cd "$appimage_extract_dir"
+            "$appimage" --appimage-extract >/dev/null
+          )
+
+          appimage_root="$appimage_extract_dir/squashfs-root"
+          if [ ! -d "$appimage_root" ]; then
+            echo "AppImage extraction failed; expected $appimage_root" >&2
+            exit 1
+          fi
+
+          appimage_ffmpeg="$(contains_one_of "$appimage_root" "${ffmpeg_allowed_names[@]}" || true)"
+          appimage_ffprobe="$(contains_one_of "$appimage_root" "${ffprobe_allowed_names[@]}" || true)"
+
+          if [ -z "$appimage_ffmpeg" ] || [ -z "$appimage_ffprobe" ]; then
+            echo "AppImage sidecar verification failed for $appimage" >&2
+            echo "Allowed FFmpeg names: ${ffmpeg_allowed_names[*]}" >&2
+            echo "Allowed FFprobe names: ${ffprobe_allowed_names[*]}" >&2
+            find "$appimage_root" -type f \( -name '*ffmpeg*' -o -name '*ffprobe*' \) -print >&2 || true
+            exit 1
+          fi
+
+          echo "AppImage sidecars found:"
+          echo "- $appimage_ffmpeg"
+          echo "- $appimage_ffprobe"
+
+          deb_extract_dir="$RUNNER_TEMP/deb-inspect"
+          rm -rf "$deb_extract_dir"
+          mkdir -p "$deb_extract_dir"
+          dpkg-deb -x "$deb_package" "$deb_extract_dir"
+
+          deb_ffmpeg="$(contains_one_of "$deb_extract_dir" "${ffmpeg_allowed_names[@]}" || true)"
+          deb_ffprobe="$(contains_one_of "$deb_extract_dir" "${ffprobe_allowed_names[@]}" || true)"
+
+          if [ -z "$deb_ffmpeg" ] || [ -z "$deb_ffprobe" ]; then
+            echo "deb sidecar verification failed for $deb_package" >&2
+            echo "Allowed FFmpeg names: ${ffmpeg_allowed_names[*]}" >&2
+            echo "Allowed FFprobe names: ${ffprobe_allowed_names[*]}" >&2
+            find "$deb_extract_dir" -type f \( -name '*ffmpeg*' -o -name '*ffprobe*' \) -print >&2 || true
+            exit 1
+          fi
+
+          echo "deb sidecars found:"
+          echo "- $deb_ffmpeg"
+          echo "- $deb_ffprobe"
+
   publish-release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build-and-upload
