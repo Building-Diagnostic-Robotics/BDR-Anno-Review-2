@@ -281,11 +281,11 @@ fn validate_face_image_paths(
 
     let mut missing = Vec::new();
     for face in faces {
-        let image_path = PathBuf::from(&face.image_path);
-        let resolved = if image_path.is_absolute() {
+        let image_path = normalize_manifest_image_path(&face.image_path);
+        let resolved = if image_path.is_absolute() || is_windows_absolute_path(&face.image_path) {
             image_path
         } else {
-            dataset_root.join(&face.image_path)
+            dataset_root.join(image_path)
         };
 
         if !resolved.is_file() {
@@ -318,6 +318,18 @@ fn validate_face_image_paths(
         sample,
         omitted_suffix
     ))
+}
+
+fn normalize_manifest_image_path(image_path: &str) -> PathBuf {
+    PathBuf::from(image_path.replace('\\', "/"))
+}
+
+fn is_windows_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
 }
 
 #[tauri::command]
@@ -817,6 +829,25 @@ mod tests {
         assert!(err.contains("1 missing `faces[].image_path` target(s)"));
         assert!(err.contains("face-missing ->"));
         assert!(err.contains("raw_frames/face-missing.png"));
+
+        fs::remove_dir_all(&dataset_root).unwrap();
+    }
+
+    #[test]
+    fn validate_face_image_paths_accepts_windows_style_relative_separators() {
+        let dataset_root = unique_temp_dir();
+        fs::create_dir_all(dataset_root.join("raw_frames")).unwrap();
+        fs::write(dataset_root.join("raw_frames/face-ok.png"), "ok").unwrap();
+
+        let faces = vec![FaceView {
+            face_id: "face-ok".to_owned(),
+            source_image_id: 1,
+            face: "front".to_owned(),
+            image_path: "raw_frames\\face-ok.png".to_owned(),
+            initial_boxes: Vec::new(),
+        }];
+
+        validate_face_image_paths(&dataset_root, &faces).unwrap();
 
         fs::remove_dir_all(&dataset_root).unwrap();
     }
