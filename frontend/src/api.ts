@@ -22,6 +22,33 @@ import type {
   StartGenerationResponse,
 } from "./types";
 
+const normalizeInboundEdit = (edit: AnnotationEdit | Record<string, unknown>): AnnotationEdit => {
+  const provenanceRaw = (edit as { provenance?: Record<string, unknown> }).provenance ?? {};
+  return {
+    bbox: ((edit as { bbox: [number, number, number, number] }).bbox),
+    provenance: {
+      source: String(provenanceRaw.source ?? ""),
+      updatedAt: String(provenanceRaw.updatedAt ?? provenanceRaw.updated_at ?? ""),
+      ...(typeof provenanceRaw.sourceAnnotationId === "number"
+        ? { sourceAnnotationId: provenanceRaw.sourceAnnotationId }
+        : (typeof provenanceRaw.source_annotation_id === "number"
+          ? { sourceAnnotationId: provenanceRaw.source_annotation_id }
+          : {})),
+    },
+  };
+};
+
+const normalizeOutboundEdit = (edit: AnnotationEdit): AnnotationEdit => ({
+  bbox: edit.bbox,
+  provenance: {
+    source: edit.provenance.source,
+    updatedAt: edit.provenance.updatedAt,
+    ...(typeof edit.provenance.sourceAnnotationId === "number"
+      ? { sourceAnnotationId: edit.provenance.sourceAnnotationId }
+      : {}),
+  },
+});
+
 export const runImportStage = async (options: ImportStageOptions) =>
   invoke<ImportStageReport>("run_import_stage_command", { options });
 
@@ -38,7 +65,7 @@ export const listFaces = async (datasetRoot: string) =>
 export const getAnnotations = async (datasetRoot: string, faceId: string) =>
   invoke<AnnotationEdit[]>("get_annotations_command", {
     request: { datasetRoot, faceId },
-  });
+  }).then((edits) => edits.map((edit) => normalizeInboundEdit(edit)));
 
 export const setAnnotations = async (
   datasetRoot: string,
@@ -46,8 +73,8 @@ export const setAnnotations = async (
   edits: AnnotationEdit[]
 ) =>
   invoke<AnnotationEdit[]>("set_annotations_command", {
-    request: { datasetRoot, faceId, edits },
-  });
+    request: { datasetRoot, faceId, edits: edits.map((edit) => normalizeOutboundEdit(edit)) },
+  }).then((saved) => saved.map((edit) => normalizeInboundEdit(edit)));
 
 export const exportCoco = async (options: ExportCocoOptions) =>
   invoke<ExportCocoReport>("export_coco_command", { request: options });

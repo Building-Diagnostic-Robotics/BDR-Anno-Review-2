@@ -22,7 +22,7 @@ import {
   prefetchSuggestions,
   getSuggestionQueueState,
 } from "./api";
-import type { AnnotationEdit, FaceListItem, LlmSettingsResponse, QueueStateItem, ReasoningPreset, SaveLlmSettingsRequest, SuggestionBox } from "./types";
+import type { AnnotationEdit, FaceListItem, LlmSettingsResponse, ReasoningPreset, SaveLlmSettingsRequest, SuggestionBox } from "./types";
 import "./styles.css";
 import {
   detectPointerIntent,
@@ -72,7 +72,6 @@ export function App() {
   const [dropModalOpen, setDropModalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [llmSettings, setLlmSettings] = useState<LlmSettingsResponse | null>(null);
-  const [queueState, setQueueState] = useState<Record<string, string>>({});
   const [suggestionsByFace, setSuggestionsByFace] = useState<Record<string, SuggestionBox[]>>({});
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
@@ -88,8 +87,7 @@ export function App() {
   const [lastSavedAt, setLastSavedAt] = useState("");
   const [isFaceLoading, setIsFaceLoading] = useState(false);
   const [homeStep, setHomeStep] = useState<HomeStep>(1);
-  const [showAdvancedHome, setShowAdvancedHome] = useState(false);
-  const [editorFocusMode, setEditorFocusMode] = useState(false);
+  const [showGenerationSpinner, setShowGenerationSpinner] = useState(false);
 
   const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
     if (typeof window === "undefined") {
@@ -177,13 +175,7 @@ export function App() {
     if (faceIds.length === 0) return;
     try {
       const queued = await prefetchSuggestions(datasetRoot, faceIds);
-      setQueueState((prev) => {
-        const next = { ...prev };
-        queued.items.forEach((item) => {
-          next[item.faceId] = item.status;
-        });
-        return next;
-      });
+      updateDiagnostics(`Suggestion prefetch queued ${queued.items.length} face(s).`);
     } catch (cause) {
       updateDiagnostics("Suggestion prefetch failed", String(cause));
     }
@@ -275,7 +267,7 @@ export function App() {
     try {
       const selected = await save({
         filters: [{ name: "JSON", extensions: ["json"] }],
-        defaultPath: outputPath || "exported_instances.json",
+        defaultPath: outputPath || "instances_default.json",
       });
       if (selected) {
         setOutputPath(selected);
@@ -430,6 +422,7 @@ export function App() {
     }
 
     setIsGenerating(true);
+    setShowGenerationSpinner(true);
     setGenerationStep("validating");
     setGenerationPercent(0);
     setGenerationDetail("Starting generation pipeline...");
@@ -481,6 +474,7 @@ export function App() {
       updateDiagnostics("Review dataset generation failed", String(cause));
     } finally {
       setIsGenerating(false);
+      setShowGenerationSpinner(false);
     }
   };
 
@@ -619,17 +613,7 @@ export function App() {
         updateDiagnostics("Suggestion fetch failed", String(cause));
       }
 
-      try {
-        const queue = await getSuggestionQueueState(faces.map((f) => f.faceId));
-        if (cancelled) return;
-        const map: Record<string, string> = {};
-        queue.items.forEach((item: QueueStateItem) => {
-          map[item.faceId] = item.status;
-        });
-        setQueueState(map);
-      } catch {
-        // no-op
-      }
+      void getSuggestionQueueState(faces.map((f) => f.faceId)).catch(() => undefined);
     };
 
     void run();
@@ -836,20 +820,21 @@ export function App() {
         return;
       }
 
-      if (event.key === "ArrowDown" || event.key === "j") {
+      const target = event.target as HTMLElement | null;
+      const isTypingTarget = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+
+      if (!isTypingTarget && event.key === "ArrowRight") {
         event.preventDefault();
         const next = Math.min(selectedIndex + 1, faces.length - 1);
         void navigateToFace(faces[next].faceId);
       }
 
-      if (event.key === "ArrowUp" || event.key === "k") {
+      if (!isTypingTarget && event.key === "ArrowLeft") {
         event.preventDefault();
         const next = Math.max(selectedIndex - 1, 0);
         void navigateToFace(faces[next].faceId);
       }
 
-      const target = event.target as HTMLElement | null;
-      const isTypingTarget = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (!isTypingTarget && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         handleDeleteActiveBox();
@@ -1040,45 +1025,40 @@ export function App() {
               </div>
             </Field>
 
-            <button className="link-button" onClick={() => setShowAdvancedHome((value) => !value)}>{showAdvancedHome ? "Hide" : "Show"} advanced file paths</button>
+            <Field label="COCO JSON" hint="Auto-filled from {datasetRoot}/annotations/instances_default.json when empty.">
+              <div className="row input-row">
+                <input
+                  aria-label="COCO JSON"
+                  value={cocoJsonPath}
+                  placeholder="Select instances_default.json"
+                  onChange={(event) => setCocoJsonPath(event.target.value)}
+                />
+                <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
+              </div>
+            </Field>
 
-            {showAdvancedHome ? (
-              <>
-                <Field label="COCO JSON" hint="Auto-filled from {datasetRoot}/annotations/instances_default.json when empty.">
-                  <div className="row">
-                    <input
-                      aria-label="COCO JSON"
-                      value={cocoJsonPath}
-                      placeholder="Select instances_default.json"
-                      onChange={(event) => setCocoJsonPath(event.target.value)}
-                    />
-                    <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
-                  </div>
-                </Field>
+            <Field label="Source MP4" hint="Auto-filled from {datasetRoot}/source.mp4 when empty.">
+              <div className="row input-row">
+                <input
+                  aria-label="Source MP4"
+                  value={mp4Path}
+                  placeholder="Select source .mp4"
+                  onChange={(event) => setMp4Path(event.target.value)}
+                />
+                <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
+              </div>
+            </Field>
 
-                <Field label="Source MP4" hint="Auto-filled from {datasetRoot}/source.mp4 when empty.">
-                  <div className="row">
-                    <input
-                      aria-label="Source MP4"
-                      value={mp4Path}
-                      placeholder="Select source .mp4"
-                      onChange={(event) => setMp4Path(event.target.value)}
-                    />
-                    <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
-                  </div>
-                </Field>
-
-                <Field label="Source frames directory (auto-managed)">
-                  <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
-                </Field>
-              </>
-            ) : null}
+            <Field label="Source frames directory (auto-managed)">
+              <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
+            </Field>
 
             {(datasetRootError || cocoPathError || mp4PathError) ? <p className="error">{datasetRootError || cocoPathError || mp4PathError}</p> : null}
 
             <div className="row">
-              <Button onClick={handleGenerate} disabled={isHomeBusy}>Generate review dataset</Button>
+              <Button onClick={handleGenerate} disabled={isHomeBusy}>{isGenerating ? "Generating…" : "Generate review dataset"}</Button>
               <Button variant="outlined" onClick={handleImport} disabled={isHomeBusy}>Validate inputs only</Button>
+              {showGenerationSpinner ? <span className="spinner" aria-label="Generation in progress" /> : null}
             </div>
             <div className="progress" aria-label="generation progress">
               <span style={{ width: `${generationPercent}%` }} />
@@ -1110,7 +1090,7 @@ export function App() {
       ) : null}
 
       {page === "editor" ? (
-        <section className={`editor-layout ${editorFocusMode ? "focus-mode" : ""}`}>
+        <section className="editor-layout">
           <Card className="editor-toolbar" elevated>
             <div className="row spread">
               <div>
@@ -1119,7 +1099,6 @@ export function App() {
               </div>
               <div className="row compact">
                 <span className={`save-pill ${saveState}`}>{saveStateMessage}{lastSavedAt ? ` (${lastSavedAt})` : ""}</span>
-                <Button variant="outlined" onClick={() => setEditorFocusMode((value) => !value)}>{editorFocusMode ? "Exit focus" : "Focus mode"}</Button>
                 <Button variant="tonal" onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Save now</Button>
                 <Button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Finish & export</Button>
               </div>
@@ -1135,21 +1114,6 @@ export function App() {
           </Card>
 
           <Card className="editor-nav-pane">
-            <h3>Face queue</h3>
-            <p className="hint">Select a face to jump directly.</p>
-            <div className="face-list" role="listbox" aria-label="Face queue">
-              {faces.map((face) => (
-                <button
-                  key={face.faceId}
-                  className={`face-pill ${face.faceId === selectedFaceId ? "active" : ""}`}
-                  onClick={() => void navigateToFace(face.faceId)}
-                  disabled={isFaceBusy || isEditorBusy}
-                >
-                  {face.faceId}
-                </button>
-              ))}
-            </div>
-
             <div className="card tutorial-card">
               <button className="link-button" onClick={toggleTutorial} aria-expanded={!tutorialCollapsed}>
                 {tutorialCollapsed ? "Show quick tutorial" : "Hide quick tutorial"}
@@ -1160,7 +1124,7 @@ export function App() {
                   <li>Drag center to move the active box.</li>
                   <li>Drag corners/edges to resize from any handle.</li>
                   <li>Use Delete/Backspace to remove the active box.</li>
-                  <li>Use ↑/↓ or j/k to move between faces.</li>
+                  <li>Use ←/→ keys or Previous/Next buttons to move between faces.</li>
                 </ul>
               ) : null}
             </div>
@@ -1206,28 +1170,25 @@ export function App() {
             {previewError ? <p className="error">{previewError}</p> : null}
           </Card>
 
-          {!editorFocusMode ? (
-            <Card className="editor-inspector">
-              <h3>Bounding boxes</h3>
-              <p className="hint">Queue status: {selectedFaceId ? (queueState[selectedFaceId] ?? "unseen") : "-"}</p>
-              <p className="hint">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
-              {edits.map((edit, index) => (
-                <div className={`row ${activeBoxIndex === index ? "active-row" : ""}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
-                  {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
-                    <label key={axis}>
-                      {axis}
-                      <input aria-label={axis} value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
-                    </label>
-                  ))}
-                </div>
-              ))}
-              {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
-              <div className="row">
-                <Button variant="tonal" onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Add box</Button>
-                <Button variant="outlined" onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</Button>
+          <Card className="editor-inspector">
+            <h3>Bounding boxes</h3>
+            <p className="hint">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
+            {edits.map((edit, index) => (
+              <div className={`bbox-editor ${activeBoxIndex === index ? "active-row" : ""}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
+                {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
+                  <label key={axis} className="bbox-field">
+                    {axis}
+                    <input aria-label={axis} value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
+                  </label>
+                ))}
               </div>
-            </Card>
-          ) : null}
+            ))}
+            {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
+            <div className="row wrap-row">
+              <Button variant="tonal" onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Add box</Button>
+              <Button variant="outlined" onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</Button>
+            </div>
+          </Card>
         </section>
       ) : null}
 
