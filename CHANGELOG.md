@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Made MP4 extraction cancellation interrupt in-flight `ffmpeg` processes immediately so abort requests stop heavy decode work without waiting for process completion.
+- Prevented abort requests from regressing already terminal generation jobs (`done`, `error`, `cancelled`) back to `aborting`.
+
+## [0.9.0] - 2026-02-23
+
+### Added
+- Added cancellable generation jobs with a new abort command in the Tauri host and an Abort control in the Home generation flow so users can stop long-running generation safely.
+
+### Changed
+- Reworked MP4 frame extraction to avoid repeated multi-pass chunk decoding by using a single-pass select path for moderate frame sets and a single full-decode path for large frame sets, significantly reducing worst-case decode overhead on long videos.
+- Extended generation pipeline orchestration with cooperative cancellation checks across validation, extraction, and rendering phases and propagated cancellation-aware progress/status transitions (`aborting`/`cancelled`).
+- Updated diagnostics UX to explicitly reset after successful recovery paths (generation success, open success, export success) and to allow clearing state after dismissing generation notices.
+- Bundled and superseded the prior patchset from `0.8.0` into this release while preserving those fixes/features in the release lineage.
+
+### Fixed
+- Fixed background generation lifecycle behavior so app exit requests mark in-flight jobs for cancellation instead of continuing to run as active generation jobs.
+- Fixed stale diagnostics error styling after user recovery by clearing terminal error state on successful operations.
+- Fixed generation polling flow to detect and surface cancelled jobs cleanly instead of falling through as generic failures.
+
 ## [0.8.0] - 2026-02-23
 
 ### Changed

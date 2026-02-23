@@ -20,6 +20,7 @@ import type {
   QueueStateResponse,
   LlmProviderId,
   StartGenerationResponse,
+  AbortGenerationResponse,
 } from "./types";
 
 const normalizeInboundEdit = (edit: AnnotationEdit | Record<string, unknown>): AnnotationEdit => {
@@ -91,6 +92,11 @@ export const startGenerateReviewDataset = async (options: GenerateReviewDatasetO
 
 export const getGenerationStatus = async (jobId: string) =>
   invoke<GenerationStatusResponse>("get_generation_status_command", {
+    request: { jobId },
+  });
+
+export const abortGenerationJob = async (jobId: string) =>
+  invoke<AbortGenerationResponse>("abort_generation_job_command", {
     request: { jobId },
   });
 

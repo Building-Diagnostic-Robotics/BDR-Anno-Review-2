@@ -77,10 +77,22 @@ pub fn generate_review_dataset(
 
 pub fn generate_review_dataset_with_progress<F>(
     options: GenerateReviewDatasetOptions,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<GenerateReviewDatasetReport, EngineError>
 where
     F: FnMut(usize, usize, &str),
+{
+    generate_review_dataset_with_progress_and_cancel(options, on_progress, || false)
+}
+
+pub fn generate_review_dataset_with_progress_and_cancel<F, C>(
+    options: GenerateReviewDatasetOptions,
+    mut on_progress: F,
+    should_cancel: C,
+) -> Result<GenerateReviewDatasetReport, EngineError>
+where
+    F: FnMut(usize, usize, &str),
+    C: Fn() -> bool,
 {
     if options.dataset_root.trim().is_empty() {
         return Err(EngineError::MissingInput("dataset_root"));
@@ -260,6 +272,9 @@ where
     on_progress(completed_work, total_work.max(1), "rendering");
 
     for image_id in referenced_image_ids {
+        if should_cancel() {
+            return Err(EngineError::Cancelled("review rendering"));
+        }
         let source_image = images_by_id
             .get(&image_id)
             .expect("referenced image should have been validated");
@@ -283,6 +298,9 @@ where
             .to_rgba8();
 
         for face in &manifest.render.faces {
+            if should_cancel() {
+                return Err(EngineError::Cancelled("review rendering"));
+            }
             let orientation = face_orientation(face)?;
             let mut initial_boxes = Vec::new();
             for annotation in source_annotations {

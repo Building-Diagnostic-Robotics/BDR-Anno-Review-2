@@ -18,6 +18,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 keyring = "3"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+tokio-util = "0.7"
 
 [features]
 default = ["custom-protocol"]

@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio_util::sync::CancellationToken;
 
 mod llm;
 mod settings;
@@ -23,11 +24,12 @@ use settings::{
 };
 
 use engine::{
-    export_coco, extract_frames_from_mp4_with_progress, generate_review_dataset_with_progress,
-    get_annotations, init_empty_manifest, run_import_stage, set_annotations, AnnotationEdit,
-    ExportCocoOptions, ExportCocoReport, ExtractFramesFromMp4Options, ExtractFramesFromMp4Report,
-    FaceView, FramesSource, GenerateReviewDatasetOptions, ImportStageOptions, ManifestInputs,
-    ProjectionConfig, RenderConfig, ViewManifest,
+    export_coco, extract_frames_from_mp4_with_progress_and_cancel,
+    generate_review_dataset_with_progress_and_cancel, get_annotations, init_empty_manifest,
+    run_import_stage, set_annotations, AnnotationEdit, ExportCocoOptions, ExportCocoReport,
+    ExtractFramesFromMp4Options, ExtractFramesFromMp4Report, FaceView, FramesSource,
+    GenerateReviewDatasetOptions, ImportStageOptions, ManifestInputs, ProjectionConfig,
+    RenderConfig, ViewManifest,
 };
 
 const VIEW_MANIFEST_PATH: &str = "annotations/view_manifest.json";
@@ -200,6 +202,20 @@ struct GenerationStatusRequest {
     job_id: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AbortGenerationRequest {
+    job_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbortGenerationResponse {
+    job_id: String,
+    state: String,
+    message: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerationStatusResponse {
@@ -214,6 +230,7 @@ struct GenerationJobRecord {
     state: String,
     message: String,
     result: Option<GenerateReviewDatasetResponse>,
+    cancellation_token: CancellationToken,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -536,6 +553,7 @@ fn export_coco_command(request: ExportCocoRequest) -> Result<ExportCocoResponse,
 async fn run_generation_pipeline(
     app: AppHandle,
     request: GenerateReviewDatasetRequest,
+    cancellation_token: CancellationToken,
 ) -> Result<GenerateReviewDatasetResponse, String> {
     let ffmpeg_bin = resolve_ffmpeg_binary(&app, "ffmpeg")?;
     let ffprobe_bin = resolve_ffmpeg_binary(&app, "ffprobe")?;
@@ -574,6 +592,9 @@ async fn run_generation_pipeline(
     };
 
     emit_progress("validating", "Validating inputs", 0, 1, started, &app);
+    if cancellation_token.is_cancelled() {
+        return Err("operation cancelled: generation job".to_owned());
+    }
     tauri::async_runtime::spawn_blocking({
         let dataset_root = request.dataset_root.clone();
         let coco_json_path = request.coco_json_path.clone();
@@ -590,13 +611,18 @@ async fn run_generation_pipeline(
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
 
+    if cancellation_token.is_cancelled() {
+        return Err("operation cancelled: generation job".to_owned());
+    }
+
     let extraction_report = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
         let dataset_root = request.dataset_root.clone();
         let coco_json_path = request.coco_json_path.clone();
         let mp4_path = request.mp4_path.clone();
+        let cancellation_token = cancellation_token.clone();
         move || {
-            extract_frames_from_mp4_with_progress(
+            extract_frames_from_mp4_with_progress_and_cancel(
                 ExtractFramesFromMp4Options {
                     dataset_root,
                     coco_json_path,
@@ -624,6 +650,7 @@ async fn run_generation_pipeline(
                         },
                     );
                 },
+                move || cancellation_token.is_cancelled(),
             )
         }
     })
@@ -652,10 +679,14 @@ async fn run_generation_pipeline(
 
     let source_frames_dir = extraction_report.source_frames_dir.clone();
     let dataset_root = request.dataset_root.clone();
+    if cancellation_token.is_cancelled() {
+        return Err("operation cancelled: generation job".to_owned());
+    }
+
     let report = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
         move || {
-            generate_review_dataset_with_progress(
+            generate_review_dataset_with_progress_and_cancel(
                 GenerateReviewDatasetOptions {
                     dataset_root,
                     source_frames_dir,
@@ -680,6 +711,7 @@ async fn run_generation_pipeline(
                         },
                     );
                 },
+                move || cancellation_token.is_cancelled(),
             )
         }
     })
@@ -707,7 +739,7 @@ async fn generate_review_dataset_command(
     request: GenerateReviewDatasetRequest,
 ) -> Result<GenerateReviewDatasetResponse, String> {
     let _ = state;
-    run_generation_pipeline(app, request).await
+    run_generation_pipeline(app, request, CancellationToken::new()).await
 }
 
 #[tauri::command]
@@ -733,12 +765,23 @@ fn start_generate_review_dataset_command(
                     state: "pending".to_owned(),
                     message: "Queued generation job".to_owned(),
                     result: None,
+                    cancellation_token: CancellationToken::new(),
                 },
             );
     }
 
     let app_for_task = app.clone();
     let job_id_for_task = job_id.clone();
+    let cancellation_token = {
+        let state = app.state::<AppState>();
+        let jobs = state
+            .generation_jobs
+            .lock()
+            .map_err(|_| "generation jobs lock poisoned".to_owned())?;
+        jobs.get(&job_id)
+            .map(|job| job.cancellation_token.clone())
+            .ok_or_else(|| format!("generation job not found: {job_id}"))?
+    };
     tauri::async_runtime::spawn(async move {
         {
             let state = app_for_task.state::<AppState>();
@@ -751,7 +794,9 @@ fn start_generate_review_dataset_command(
             }
         }
 
-        let result = run_generation_pipeline(app_for_task.clone(), request).await;
+        let result =
+            run_generation_pipeline(app_for_task.clone(), request, cancellation_token.clone())
+                .await;
 
         if let Ok(mut jobs) = app_for_task.state::<AppState>().generation_jobs.lock() {
             if let Some(job) = jobs.get_mut(&job_id_for_task) {
@@ -762,7 +807,11 @@ fn start_generate_review_dataset_command(
                         job.result = Some(report);
                     }
                     Err(error) => {
-                        job.state = "error".to_owned();
+                        if error.contains("operation cancelled") {
+                            job.state = "cancelled".to_owned();
+                        } else {
+                            job.state = "error".to_owned();
+                        }
                         job.message = error;
                         job.result = None;
                     }
@@ -772,6 +821,39 @@ fn start_generate_review_dataset_command(
     });
 
     Ok(StartGenerationResponse { job_id })
+}
+
+#[tauri::command]
+fn abort_generation_job_command(
+    app: AppHandle,
+    request: AbortGenerationRequest,
+) -> Result<AbortGenerationResponse, String> {
+    let state = app.state::<AppState>();
+    let mut jobs = state
+        .generation_jobs
+        .lock()
+        .map_err(|_| "generation jobs lock poisoned".to_owned())?;
+    let record = jobs
+        .get_mut(&request.job_id)
+        .ok_or_else(|| format!("generation job not found: {}", request.job_id))?;
+
+    if matches!(record.state.as_str(), "done" | "error" | "cancelled") {
+        return Ok(AbortGenerationResponse {
+            job_id: request.job_id,
+            state: record.state.clone(),
+            message: record.message.clone(),
+        });
+    }
+
+    record.cancellation_token.cancel();
+    record.state = "aborting".to_owned();
+    record.message = "Abort requested by user".to_owned();
+
+    Ok(AbortGenerationResponse {
+        job_id: request.job_id,
+        state: record.state.clone(),
+        message: record.message.clone(),
+    })
 }
 
 #[tauri::command]
@@ -805,7 +887,7 @@ async fn extract_frames_from_mp4_command(
     let ffprobe_bin = resolve_ffmpeg_binary(&app, "ffprobe")?;
 
     let report: ExtractFramesFromMp4Report = tauri::async_runtime::spawn_blocking(move || {
-        extract_frames_from_mp4_with_progress(
+        extract_frames_from_mp4_with_progress_and_cancel(
             ExtractFramesFromMp4Options {
                 dataset_root: request.dataset_root,
                 coco_json_path: request.coco_json_path,
@@ -814,6 +896,7 @@ async fn extract_frames_from_mp4_command(
                 ffprobe_bin: Some(ffprobe_bin),
             },
             |_, _, _| {},
+            || false,
         )
     })
     .await
@@ -1565,6 +1648,7 @@ fn main() {
             generate_review_dataset_command,
             start_generate_review_dataset_command,
             get_generation_status_command,
+            abort_generation_job_command,
             extract_frames_from_mp4_command,
             check_runtime_dependencies_command,
             get_llm_settings_command,
@@ -1580,6 +1664,17 @@ fn main() {
         .expect("failed to build bdr-anno-review tauri app")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                let app_state = app.state::<AppState>();
+                if let Ok(mut jobs) = app_state.generation_jobs.lock() {
+                    for job in jobs.values_mut() {
+                        job.cancellation_token.cancel();
+                        if job.state == "running" || job.state == "pending" {
+                            job.state = "aborting".to_owned();
+                            job.message = "App exit requested; aborting generation".to_owned();
+                        }
+                    }
+                }
+
                 let session = app.state::<AppSession>();
                 if let Err(error) = cleanup_registered_staging_workspaces(app, &session.id) {
                     eprintln!("exit staging workspace cleanup failed: {error}");
