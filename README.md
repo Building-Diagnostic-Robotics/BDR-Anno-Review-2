@@ -94,6 +94,8 @@ Bundling is configured in checked-in release config (`src-tauri/tauri.release.co
 
 ### Platform prerequisites
 
+> Note: face preview images are loaded through Tauri's asset protocol (`convertFileSrc`). The checked-in `src-tauri/tauri.conf.json` security scope must include the local directories where review datasets are stored (for example Home/Downloads/Documents/Desktop) or previews will fail with `asset.localhost` permission errors.
+
 - **Windows 10/11**
   - Microsoft Edge WebView2 Runtime installed (usually preinstalled on modern Windows, otherwise install from Microsoft).
   - `ffmpeg` + `ffprobe` available either from packaged sidecars or on `PATH` for developer/local runs.
