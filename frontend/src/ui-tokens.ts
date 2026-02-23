@@ -4,9 +4,13 @@ export const uiTokens = {
     surface: "#1a1c22",
     surfaceContainer: "#23262d",
     surfaceContainerHigh: "#2d313a",
+    surfaceContainerHighest: "#353a45",
     primary: "#b4c5ff",
     primaryStrong: "#7ea2ff",
     error: "#ffb4ab",
+    success: "#99e2b4",
+    warning: "#f5d58b",
+    info: "#9cc7ff",
   },
   radius: {
     sm: 10,

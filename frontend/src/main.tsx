@@ -1073,7 +1073,7 @@ export function App() {
 
             {(datasetRootError || cocoPathError || mp4PathError) ? <p className="error">{datasetRootError || cocoPathError || mp4PathError}</p> : null}
 
-            <div className="row">
+            <div className="actions-primary">
               <Button onClick={handleGenerate} disabled={isHomeBusy}>{isGenerating ? "Generating…" : "Generate review dataset"}</Button>
               <Button variant="outlined" onClick={handleImport} disabled={isHomeBusy}>Validate inputs only</Button>
               {showGenerationSpinner ? <span className="spinner" aria-label="Generation in progress" /> : null}
@@ -1092,7 +1092,7 @@ export function App() {
                 <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
               </div>
             </Field>
-            <div className="row">
+            <div className="actions-secondary">
               <Button onClick={handleOpen} disabled={isHomeBusy}>Open dataset</Button>
               <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
             </div>
@@ -1100,7 +1100,7 @@ export function App() {
           </Card>
 
           <Card>
-            <h3>Diagnostics</h3>
+            <SectionHeading title="Diagnostics" />
             {error ? <p className="error">Error: {error}</p> : null}
             <pre className="status">{status}</pre>
           </Card>
@@ -1213,24 +1213,23 @@ export function App() {
       {page === "export" ? (
         <section className="export-layout">
           <Card elevated>
-            <h2>Export final annotations</h2>
-            <p className="hint">Export reviewed annotations to COCO JSON.</p>
+            <SectionHeading title="Export final annotations" subtitle="Export reviewed annotations to COCO JSON." />
             <div className="row">
               <input value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
               <Button onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</Button>
             </div>
             {outputPathError ? <p className="error">{outputPathError}</p> : null}
-            <div className="row">
+            <div className="actions-primary">
               <Button onClick={handleExport} disabled={isExportBusy}>Export COCO</Button>
             </div>
-            <div className="row">
+            <div className="actions-secondary">
               <Button variant="outlined" onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</Button>
               <Button variant="text" onClick={() => void goHome()} disabled={isExportBusy}>Return home</Button>
             </div>
           </Card>
 
           <Card>
-            <h3>Diagnostics</h3>
+            <SectionHeading title="Diagnostics" />
             {error ? <p className="error">Error: {error}</p> : null}
             <pre className="status">{status}</pre>
           </Card>
