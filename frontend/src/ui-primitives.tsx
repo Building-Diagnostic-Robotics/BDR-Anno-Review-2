@@ -6,8 +6,23 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
 };
 
+const buttonVariants: Record<ButtonVariant, string> = {
+  filled:
+    "bg-anno-primary text-white shadow-lg shadow-anno-primary/35 hover:bg-indigo-500 focus-visible:ring-anno-primary",
+  tonal:
+    "bg-anno-surface-high text-anno-text-main shadow-md shadow-black/30 hover:bg-zinc-700 focus-visible:ring-anno-secondary",
+  outlined:
+    "bg-transparent text-anno-text-main ring-1 ring-white/10 hover:bg-anno-surface-high focus-visible:ring-anno-primary",
+  text: "bg-transparent text-anno-text-muted hover:text-anno-text-main hover:bg-anno-surface-high focus-visible:ring-anno-secondary",
+};
+
 export function Button({ variant = "filled", className = "", ...props }: ButtonProps) {
-  return <button className={`btn btn-${variant} ${className}`.trim()} {...props} />;
+  return (
+    <button
+      className={`inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold transition duration-200 ease-out active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-0 ${buttonVariants[variant]} ${className}`.trim()}
+      {...props}
+    />
+  );
 }
 
 type CardProps = React.HTMLAttributes<HTMLElement> & {
@@ -17,24 +32,35 @@ type CardProps = React.HTMLAttributes<HTMLElement> & {
 
 export function Card({ as = "section", elevated = false, className = "", ...props }: CardProps) {
   const Tag = as;
-  return <Tag className={`card ${elevated ? "card-elevated" : ""} ${className}`.trim()} {...props} />;
+  return (
+    <Tag
+      className={`rounded-anno-card bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-xl shadow-black/35 ${elevated ? "shadow-2xl shadow-black/45" : ""} ${className}`.trim()}
+      {...props}
+    />
+  );
 }
 
 export function SectionHeading({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
-    <header className="section-heading">
-      <h2>{title}</h2>
-      {subtitle ? <p className="hint">{subtitle}</p> : null}
+    <header className="mb-4 space-y-1">
+      <h2 className="text-xl font-semibold tracking-tight text-anno-text-main">{title}</h2>
+      {subtitle ? <p className="text-sm text-anno-text-muted">{subtitle}</p> : null}
     </header>
   );
 }
 
 export function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
-    <label className="field">
-      <span className="field-label">{label}</span>
+    <label className="mb-4 block space-y-1.5">
+      <span className="text-sm font-medium text-anno-text-main">{label}</span>
       {children}
-      {hint ? <span className="field-hint">{hint}</span> : null}
+      {hint ? <span className="block text-xs text-anno-text-muted">{hint}</span> : null}
     </label>
   );
 }
+
+export const inputClassName =
+  "w-full rounded-2xl bg-anno-surface-high px-3 py-2.5 text-sm text-anno-text-main placeholder:text-anno-text-muted/70 ring-1 ring-white/5 transition focus:outline-none focus:ring-2 focus:ring-anno-primary disabled:cursor-not-allowed disabled:opacity-60";
+
+export const modalOverlayClassName =
+  "fixed inset-0 z-40 flex items-center justify-center bg-black/65 p-4 backdrop-blur-[1px]";
