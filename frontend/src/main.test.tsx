@@ -193,3 +193,81 @@ describe("delete flow", () => {
     });
   });
 });
+
+describe("face switching and save concurrency", () => {
+  it("does not autosave stale edits for the next face while annotations are loading", async () => {
+    let resolveFace2Load: ((value: AnnotationEdit[]) => void) | null = null;
+    const delayedFace2 = new Promise<AnnotationEdit[]>((resolve) => {
+      resolveFace2Load = resolve;
+    });
+
+    mocks.setAnnotations.mockClear();
+
+    const api = await import("./api");
+    const getAnnotationsMock = vi.mocked(api.getAnnotations);
+    getAnnotationsMock.mockImplementation(async (_datasetRoot: string, faceId: string) => {
+      if (faceId === "face-2") {
+        return delayedFace2;
+      }
+      return annotationStore[faceId] ?? [];
+    });
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getAllByLabelText("x")[0], { target: { value: "41" } });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+
+    expect(
+      mocks.setAnnotations.mock.calls.some(([, faceId]) => faceId === "face-2")
+    ).toBe(false);
+
+    resolveFace2Load?.([]);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-2/)).toBeTruthy();
+    });
+  });
+
+  it("keeps newer local edits when an older save response returns", async () => {
+    let resolveSave: ((value: AnnotationEdit[]) => void) | null = null;
+    mocks.setAnnotations.mockImplementation(
+      (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) =>
+        new Promise<AnnotationEdit[]>((resolve) => {
+          resolveSave = () => resolve(edits);
+        })
+    );
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    });
+
+    const firstXInput = screen.getAllByLabelText("x")[0] as HTMLInputElement;
+    fireEvent.change(firstXInput, { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save now" }));
+
+    fireEvent.change(firstXInput, { target: { value: "15" } });
+    resolveSave?.(annotationStore["face-1"]);
+
+    await waitFor(() => {
+      expect(firstXInput.value).toBe("15");
+    });
+  });
+});

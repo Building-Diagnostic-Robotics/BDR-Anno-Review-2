@@ -65,6 +65,7 @@ export function App() {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveStateMessage, setSaveStateMessage] = useState("No changes yet.");
   const [lastSavedAt, setLastSavedAt] = useState("");
+  const [isFaceLoading, setIsFaceLoading] = useState(false);
 
   const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
     if (typeof window === "undefined") {
@@ -88,10 +89,15 @@ export function App() {
   const autosaveTimerRef = useRef<number | undefined>(undefined);
   const pendingSaveRef = useRef<Promise<void> | null>(null);
   const editsRef = useRef<AnnotationEdit[]>([]);
+  const selectedFaceIdRef = useRef("");
 
   useEffect(() => {
     editsRef.current = edits;
   }, [edits]);
+
+  useEffect(() => {
+    selectedFaceIdRef.current = selectedFaceId;
+  }, [selectedFaceId]);
 
   const [isBusy, setIsBusy] = useState(false);
   const [status, setStatus] = useState("Ready.");
@@ -367,15 +373,20 @@ export function App() {
 
   const loadAnnotations = useCallback(async (faceId: string) => {
     if (!faceId) {
+      setIsFaceLoading(false);
       setEdits([]);
       setActiveBoxIndex(null);
       setEditValidationError("");
       return;
     }
 
+    setIsFaceLoading(true);
     setIsBusy(true);
     try {
       const current = await getAnnotations(datasetRoot, faceId);
+      if (selectedFaceIdRef.current !== faceId) {
+        return;
+      }
       setEdits(current);
       lastSavedSnapshotRef.current[faceId] = JSON.stringify(current);
       setSaveState("saved");
@@ -387,15 +398,20 @@ export function App() {
     } catch (cause) {
       updateDiagnostics("Load annotations failed", String(cause));
     } finally {
+      setIsFaceLoading(false);
       setIsBusy(false);
     }
   }, [datasetRoot]);
 
   const commitSave = useCallback(async (origin: "manual" | "autosave") => {
-    if (!selectedFaceId) {
+    const saveFaceId = selectedFaceIdRef.current;
+    if (!saveFaceId) {
       return;
     }
-    const validationError = validateEdits(editsRef.current);
+    const editsSnapshot = editsRef.current;
+    const saveRequestSnapshot = JSON.stringify(editsSnapshot);
+
+    const validationError = validateEdits(editsSnapshot);
     if (validationError) {
       setEditValidationError(validationError);
       setSaveState("error");
@@ -416,15 +432,29 @@ export function App() {
 
     const run = (async () => {
       try {
-        const saved = await setAnnotations(datasetRoot, selectedFaceId, editsRef.current);
-        setEdits(saved);
-        lastSavedSnapshotRef.current[selectedFaceId] = JSON.stringify(saved);
-        setEditValidationError("");
-        setSaveState("saved");
-        setSaveStateMessage(origin === "manual" ? "Saved." : "Autosaved.");
-        setLastSavedAt(new Date().toLocaleTimeString());
-        if (origin === "manual") {
-          updateDiagnostics(`Saved ${saved.length} annotation(s) for ${selectedFaceId}`);
+        const saved = await setAnnotations(datasetRoot, saveFaceId, editsSnapshot);
+        const savedSnapshot = JSON.stringify(saved);
+        lastSavedSnapshotRef.current[saveFaceId] = savedSnapshot;
+
+        const activeFaceId = selectedFaceIdRef.current;
+        const currentSnapshot = JSON.stringify(editsRef.current);
+        const shouldApplySavedEdits = activeFaceId === saveFaceId && currentSnapshot === saveRequestSnapshot;
+
+        if (shouldApplySavedEdits) {
+          setEdits(saved);
+          setEditValidationError("");
+          setSaveState("saved");
+          setSaveStateMessage(origin === "manual" ? "Saved." : "Autosaved.");
+          setLastSavedAt(new Date().toLocaleTimeString());
+          if (origin === "manual") {
+            updateDiagnostics(`Saved ${saved.length} annotation(s) for ${saveFaceId}`);
+          }
+          return;
+        }
+
+        if (activeFaceId === saveFaceId) {
+          setSaveState("dirty");
+          setSaveStateMessage("Unsaved changes.");
         }
       } catch (cause) {
         setSaveState("error");
@@ -439,7 +469,7 @@ export function App() {
 
     pendingSaveRef.current = run;
     await run;
-  }, [datasetRoot, selectedFaceId]);
+  }, [datasetRoot]);
 
   const flushAutosave = useCallback(async () => {
     if (autosaveTimerRef.current) {
@@ -512,7 +542,7 @@ export function App() {
   }, [edits, imageViewport, activeBoxIndex]);
 
   useEffect(() => {
-    if (!selectedFaceId) {
+    if (!selectedFaceId || isFaceLoading) {
       return;
     }
 
@@ -545,7 +575,7 @@ export function App() {
         window.clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [edits, selectedFaceId, commitSave]);
+  }, [edits, selectedFaceId, isFaceLoading, commitSave]);
 
   const navigateToFace = async (faceId: string) => {
     if (faceId === selectedFaceId) {
