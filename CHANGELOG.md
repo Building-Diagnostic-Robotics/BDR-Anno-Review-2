@@ -8,6 +8,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- Kept auto-inferred Home file paths (`COCO JSON`, `Source MP4`) synchronized with dataset root edits until the user explicitly overrides either field, preventing stale hidden-path defaults after iterative root input changes.
+
+## [0.7.0] - 2026-02-23
+
+### Added
+- Introduced a reusable frontend UI foundation with design primitives (`Button`, `Card`, `Field`, and `SectionHeading`) and a centralized token module for color, shape, and motion values to support a cohesive Material-inspired design language.
+- Added a guided Home setup stepper and progressive-disclosure controls so common dataset setup paths require less manual input.
+- Added an editor face-queue side panel and optional Focus mode to streamline annotation review and reduce visual clutter while editing.
+
+### Changed
+- Restyled the application around a dark, minimalist token-driven theme with consistent surfaces, button variants, spacing rhythm, and save/progress motion polish.
+- Redesigned LLM settings into basic and advanced tiers with provider selection, preset profiles (`Fast`, `Balanced`, `Quality`), and an effective configuration summary for safer defaults.
+- Bumped workspace, Tauri app config, and frontend package versions from `0.6.1` to `0.7.0` for the UI overhaul release.
+
+### Fixed
 - Preserved the original resize anchor while dragging edge/corner handles across the opposite side by reusing the pointer-down bbox as the resize baseline for the full drag interaction.
 
 ## [0.6.1] - 2026-02-23

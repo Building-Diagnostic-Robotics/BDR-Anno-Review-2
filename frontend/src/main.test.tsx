@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   getGenerationStatus: vi.fn(),
   runImportStage: vi.fn(),
   stageDroppedInputs: vi.fn(),
+  getLlmSettings: vi.fn(),
   setAnnotations: vi.fn(async (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) => edits),
   exportCoco: vi.fn(),
 }));
@@ -44,6 +45,12 @@ vi.mock("./api", () => ({
   getGenerationStatus: mocks.getGenerationStatus,
   runImportStage: mocks.runImportStage,
   stageDroppedInputs: mocks.stageDroppedInputs,
+  getLlmSettings: mocks.getLlmSettings,
+  saveLlmSettings: vi.fn(),
+  clearProviderKey: vi.fn(),
+  getSuggestions: vi.fn(),
+  prefetchSuggestions: vi.fn(),
+  getSuggestionQueueState: vi.fn(),
   checkRuntimeDependencies: vi.fn(async () => ({
     ffmpeg: { name: "ffmpeg", resolvedPath: "ffmpeg" },
     ffprobe: { name: "ffprobe", resolvedPath: "ffprobe" },
@@ -113,6 +120,17 @@ beforeEach(() => {
   mocks.setAnnotations.mockImplementation(async (_datasetRoot: string, faceId: string, edits: AnnotationEdit[]) => {
     annotationStore[faceId] = edits;
     return edits;
+  });
+
+  mocks.getLlmSettings.mockResolvedValue({
+    llmSuggestionsEnabled: false,
+    provider: "openai",
+    model: "gpt-5.2",
+    reasoningPreset: "balanced",
+    maxTokens: 2048,
+    prefetchBufferSize: 4,
+    hasOpenAiKey: false,
+    hasAnthropicKey: false,
   });
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
@@ -187,6 +205,60 @@ describe("tutorial preferences", () => {
     fireEvent.click(screen.getByRole("button", { name: "Hide quick tutorial" }));
     expect(window.localStorage.getItem("bdr.editor.tutorialCollapsed")).toBe("true");
     expect(screen.getByRole("button", { name: "Show quick tutorial" })).toBeTruthy();
+  });
+});
+
+
+describe("home progressive disclosure and editor focus", () => {
+  it("shows advanced path fields on demand and toggles focus mode", async () => {
+    render(<App />);
+
+    expect(screen.queryByLabelText("COCO JSON")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show advanced file paths" }));
+    expect(screen.getByLabelText("COCO JSON")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Focus mode" })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Focus mode" }));
+    expect(screen.getByRole("button", { name: "Exit focus" })).toBeTruthy();
+  });
+
+  it("keeps inferred paths synced with dataset root until user overrides them", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show advanced file paths" }));
+
+    const datasetRootInput = screen.getByLabelText("Resume dataset directory");
+    const cocoInput = screen.getByLabelText("COCO JSON") as HTMLInputElement;
+    const mp4Input = screen.getByLabelText("Source MP4") as HTMLInputElement;
+
+    fireEvent.change(datasetRootInput, { target: { value: "/tmp/dataset-a" } });
+    await waitFor(() => {
+      expect(cocoInput.value).toBe("/tmp/dataset-a/annotations/instances_default.json");
+      expect(mp4Input.value).toBe("/tmp/dataset-a/source.mp4");
+    });
+
+    fireEvent.change(datasetRootInput, { target: { value: "/tmp/dataset-b" } });
+    await waitFor(() => {
+      expect(cocoInput.value).toBe("/tmp/dataset-b/annotations/instances_default.json");
+      expect(mp4Input.value).toBe("/tmp/dataset-b/source.mp4");
+    });
+
+    fireEvent.change(cocoInput, { target: { value: "/custom/instances.json" } });
+    fireEvent.change(mp4Input, { target: { value: "/custom/source.mp4" } });
+    fireEvent.change(datasetRootInput, { target: { value: "/tmp/dataset-c" } });
+
+    await waitFor(() => {
+      expect(cocoInput.value).toBe("/custom/instances.json");
+      expect(mp4Input.value).toBe("/custom/source.mp4");
+    });
   });
 });
 

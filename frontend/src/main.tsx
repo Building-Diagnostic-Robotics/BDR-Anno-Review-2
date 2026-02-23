@@ -33,6 +33,7 @@ import {
   validateEdits,
 } from "./editing";
 import { LlmSettingsModal } from "./settings-modal";
+import { Button, Card, Field, SectionHeading } from "./ui-primitives";
 
 const nowIso = () => new Date().toISOString();
 const AUTOSAVE_DEBOUNCE_MS = 1000;
@@ -49,6 +50,7 @@ type PointerMode = "idle" | "draw" | "move" | "resize";
 type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "done";
 type AppPage = "home" | "editor" | "export";
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
+type HomeStep = 1 | 2 | 3;
 
 const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   const normalizedRoot = datasetRoot.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -85,6 +87,9 @@ export function App() {
   const [saveStateMessage, setSaveStateMessage] = useState("No changes yet.");
   const [lastSavedAt, setLastSavedAt] = useState("");
   const [isFaceLoading, setIsFaceLoading] = useState(false);
+  const [homeStep, setHomeStep] = useState<HomeStep>(1);
+  const [showAdvancedHome, setShowAdvancedHome] = useState(false);
+  const [editorFocusMode, setEditorFocusMode] = useState(false);
 
   const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
     if (typeof window === "undefined") {
@@ -111,6 +116,8 @@ export function App() {
   const pendingSaveRef = useRef<Promise<void> | null>(null);
   const editsRef = useRef<AnnotationEdit[]>([]);
   const selectedFaceIdRef = useRef("");
+  const inferredCocoPathRef = useRef("");
+  const inferredMp4PathRef = useRef("");
 
   useEffect(() => {
     editsRef.current = edits;
@@ -186,6 +193,27 @@ export function App() {
     void prefetchLinearSuggestions();
   }, [prefetchLinearSuggestions]);
 
+
+  useEffect(() => {
+    if (!datasetRoot.trim()) {
+      return;
+    }
+    const root = datasetRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+    const nextInferredCocoPath = `${root}/annotations/instances_default.json`;
+    const nextInferredMp4Path = `${root}/source.mp4`;
+
+    if (!cocoJsonPath.trim() || cocoJsonPath === inferredCocoPathRef.current) {
+      setCocoJsonPath(nextInferredCocoPath);
+    }
+
+    if (!mp4Path.trim() || mp4Path === inferredMp4PathRef.current) {
+      setMp4Path(nextInferredMp4Path);
+    }
+
+    inferredCocoPathRef.current = nextInferredCocoPath;
+    inferredMp4PathRef.current = nextInferredMp4Path;
+  }, [datasetRoot, cocoJsonPath, mp4Path]);
+
   const datasetRootError = datasetRoot.trim() ? "" : "Dataset root is required.";
   const cocoPathError = cocoJsonPath.trim() ? "" : "COCO JSON path is required.";
   const mp4PathError = mp4Path.trim() ? (mp4Path.toLowerCase().endsWith(".mp4") ? "" : "MP4 path must end with .mp4") : "MP4 path is required.";
@@ -193,6 +221,7 @@ export function App() {
 
   const importInputError = datasetRootError || cocoPathError || mp4PathError;
   const exportInputError = datasetRootError || outputPathError;
+  const homeReadiness = !datasetRootError ? (!cocoPathError && !mp4PathError ? 3 : 2) : 1;
 
   const updateDiagnostics = (nextStatus: string, nextError = "") => {
     setStatus(nextStatus);
@@ -975,6 +1004,10 @@ export function App() {
     setPage("home");
   };
 
+  useEffect(() => {
+    setHomeStep(homeReadiness as HomeStep);
+  }, [homeReadiness]);
+
   return (
     <main className="app-shell">
       <header className="app-header row spread">
@@ -982,131 +1015,158 @@ export function App() {
           <h1>bdr-anno-review</h1>
           <p className="hint">Workflow: Home → Annotate → Export</p>
         </div>
-        <button aria-label="Open settings" onClick={() => setSettingsOpen(true)} disabled={isHomeBusy || isFaceBusy || isExportBusy}>⚙ Settings</button>
+        <Button aria-label="Open settings" variant="tonal" onClick={() => setSettingsOpen(true)} disabled={isHomeBusy || isFaceBusy || isExportBusy}>⚙ Settings</Button>
       </header>
 
       {page === "home" ? (
         <section className="home-layout">
-          <div className="card">
-            <h2>Create new dataset</h2>
-            <p className="hint">Upload COCO + MP4 and generate a review dataset.</p>
-            <div className="row">
-              <label>Dataset root</label>
-              <input
-                aria-label="Dataset root"
-                value={datasetRoot}
-                placeholder="Select dataset directory"
-                onChange={(event) => setDatasetRoot(event.target.value)}
-              />
-              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</button>
+          <Card elevated>
+            <SectionHeading title="Create new dataset" subtitle="A guided flow with sensible defaults." />
+            <div className="stepper" role="status" aria-label="Home setup progress">
+              <span className={homeStep >= 1 ? "step active" : "step"}>1. Choose dataset folder</span>
+              <span className={homeStep >= 2 ? "step active" : "step"}>2. Confirm detected files</span>
+              <span className={homeStep >= 3 ? "step active" : "step"}>3. Generate</span>
             </div>
-            <div className="row">
-              <label>COCO JSON</label>
-              <input
-                aria-label="COCO JSON"
-                value={cocoJsonPath}
-                placeholder="Select instances_default.json"
-                onChange={(event) => setCocoJsonPath(event.target.value)}
-              />
-              <button onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</button>
-            </div>
-            <div className="row">
-              <label>Source MP4</label>
-              <input
-                aria-label="Source MP4"
-                value={mp4Path}
-                placeholder="Select source .mp4"
-                onChange={(event) => setMp4Path(event.target.value)}
-              />
-              <button onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</button>
-            </div>
-            <div className="row">
-              <label>Source frames directory (auto-managed)</label>
-              <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
-            </div>
-            <p className="hint">Manual overrides are disabled in MVP to keep runtime behavior deterministic.</p>
-            {(datasetRootError || cocoPathError || mp4PathError) ? (
-              <p className="error">{datasetRootError || cocoPathError || mp4PathError}</p>
+
+            <Field label="Dataset root">
+              <div className="row">
+                <input
+                  aria-label="Dataset root"
+                  value={datasetRoot}
+                  placeholder="Select dataset directory"
+                  onChange={(event) => setDatasetRoot(event.target.value)}
+                />
+                <Button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+              </div>
+            </Field>
+
+            <button className="link-button" onClick={() => setShowAdvancedHome((value) => !value)}>{showAdvancedHome ? "Hide" : "Show"} advanced file paths</button>
+
+            {showAdvancedHome ? (
+              <>
+                <Field label="COCO JSON" hint="Auto-filled from {datasetRoot}/annotations/instances_default.json when empty.">
+                  <div className="row">
+                    <input
+                      aria-label="COCO JSON"
+                      value={cocoJsonPath}
+                      placeholder="Select instances_default.json"
+                      onChange={(event) => setCocoJsonPath(event.target.value)}
+                    />
+                    <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
+                  </div>
+                </Field>
+
+                <Field label="Source MP4" hint="Auto-filled from {datasetRoot}/source.mp4 when empty.">
+                  <div className="row">
+                    <input
+                      aria-label="Source MP4"
+                      value={mp4Path}
+                      placeholder="Select source .mp4"
+                      onChange={(event) => setMp4Path(event.target.value)}
+                    />
+                    <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
+                  </div>
+                </Field>
+
+                <Field label="Source frames directory (auto-managed)">
+                  <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
+                </Field>
+              </>
             ) : null}
 
-            <div className="row">
-              <button onClick={handleGenerate} disabled={isHomeBusy}>Generate review dataset</button>
-              <button onClick={handleImport} disabled={isHomeBusy}>Validate inputs only</button>
-            </div>
+            {(datasetRootError || cocoPathError || mp4PathError) ? <p className="error">{datasetRootError || cocoPathError || mp4PathError}</p> : null}
 
+            <div className="row">
+              <Button onClick={handleGenerate} disabled={isHomeBusy}>Generate review dataset</Button>
+              <Button variant="outlined" onClick={handleImport} disabled={isHomeBusy}>Validate inputs only</Button>
+            </div>
             <div className="progress" aria-label="generation progress">
               <span style={{ width: `${generationPercent}%` }} />
             </div>
-            <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat} • {isGenerating ? "Running" : "Idle"}</p>
-          </div>
+            <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
+          </Card>
 
-          <div className="card">
-            <h2>Resume existing dataset</h2>
-            <p className="hint">Open a dataset with an existing review manifest and continue editing.</p>
+          <Card>
+            <SectionHeading title="Resume existing dataset" subtitle="Jump straight into annotation review." />
+            <Field label="Resume dataset directory">
+              <div className="row">
+                <input aria-label="Resume dataset directory" value={datasetRoot} onChange={(event) => setDatasetRoot(event.target.value)} />
+                <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+              </div>
+            </Field>
             <div className="row">
-              <input
-                aria-label="Resume dataset directory"
-                value={datasetRoot}
-                placeholder="Select dataset directory"
-                onChange={(event) => setDatasetRoot(event.target.value)}
-              />
-              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</button>
-            </div>
-            <div className="row">
-              <button onClick={handleOpen} disabled={isHomeBusy}>Open dataset</button>
-              <button onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</button>
+              <Button onClick={handleOpen} disabled={isHomeBusy}>Open dataset</Button>
+              <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
             </div>
             {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
-          </div>
+          </Card>
 
-          <div className="card">
+          <Card>
             <h3>Diagnostics</h3>
             {error ? <p className="error">Error: {error}</p> : null}
             <pre className="status">{status}</pre>
-          </div>
+          </Card>
         </section>
       ) : null}
 
       {page === "editor" ? (
-        <section className="editor-layout">
-          <div className="card editor-toolbar">
+        <section className={`editor-layout ${editorFocusMode ? "focus-mode" : ""}`}>
+          <Card className="editor-toolbar" elevated>
             <div className="row spread">
               <div>
-                <strong>Editing: {selectedFaceId || "(none)"}</strong>
+                <h2>Editing: {selectedFace?.faceId ?? "(none)"}</h2>
                 <p className="hint">Progress {Math.max(0, selectedIndex + 1)}/{faces.length} ({Math.round(progress)}%)</p>
               </div>
               <div className="row compact">
                 <span className={`save-pill ${saveState}`}>{saveStateMessage}{lastSavedAt ? ` (${lastSavedAt})` : ""}</span>
-                <button onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Save now</button>
-                <button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Finish & export</button>
+                <Button variant="outlined" onClick={() => setEditorFocusMode((value) => !value)}>{editorFocusMode ? "Exit focus" : "Focus mode"}</Button>
+                <Button variant="tonal" onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Save now</Button>
+                <Button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Finish & export</Button>
               </div>
             </div>
             <div className="progress" aria-label="review progress">
               <span style={{ width: `${progress}%` }} />
             </div>
             <div className="row compact">
-              <button onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex <= 0}>Previous</button>
-              <button onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</button>
-              <button onClick={() => void goHome()} disabled={isFaceBusy || isEditorBusy}>Return home</button>
+              <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex <= 0}>Previous</Button>
+              <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</Button>
+              <Button variant="text" onClick={() => void goHome()} disabled={isFaceBusy || isEditorBusy}>Return home</Button>
             </div>
-          </div>
+          </Card>
 
-          <div className="card tutorial-card">
-            <button className="link-button" onClick={toggleTutorial} aria-expanded={!tutorialCollapsed}>
-              {tutorialCollapsed ? "Show quick tutorial" : "Hide quick tutorial"}
-            </button>
-            {!tutorialCollapsed ? (
-              <ul className="hint">
-                <li>Draw a box by dragging on the image.</li>
-                <li>Drag inside a box to move it. Drag any corner or edge handle to resize.</li>
-                <li>Use Delete/Backspace to remove the active box.</li>
-                <li>Use ↑/↓ or j/k to move between faces.</li>
-                <li>Autosave runs after edits; use Save now for immediate persistence.</li>
-              </ul>
-            ) : null}
-          </div>
+          <Card className="editor-nav-pane">
+            <h3>Face queue</h3>
+            <p className="hint">Select a face to jump directly.</p>
+            <div className="face-list" role="listbox" aria-label="Face queue">
+              {faces.map((face) => (
+                <button
+                  key={face.faceId}
+                  className={`face-pill ${face.faceId === selectedFaceId ? "active" : ""}`}
+                  onClick={() => void navigateToFace(face.faceId)}
+                  disabled={isFaceBusy || isEditorBusy}
+                >
+                  {face.faceId}
+                </button>
+              ))}
+            </div>
 
-          <div className="card canvas-card">
+            <div className="card tutorial-card">
+              <button className="link-button" onClick={toggleTutorial} aria-expanded={!tutorialCollapsed}>
+                {tutorialCollapsed ? "Show quick tutorial" : "Hide quick tutorial"}
+              </button>
+              {!tutorialCollapsed ? (
+                <ul className="hint">
+                  <li>Click and drag to draw a box.</li>
+                  <li>Drag center to move the active box.</li>
+                  <li>Drag corners/edges to resize from any handle.</li>
+                  <li>Use Delete/Backspace to remove the active box.</li>
+                  <li>Use ↑/↓ or j/k to move between faces.</li>
+                </ul>
+              ) : null}
+            </div>
+          </Card>
+
+          <Card className="canvas-card">
             <div className="preview-shell preview-large">
               {selectedFace ? (
                 <>
@@ -1144,59 +1204,59 @@ export function App() {
               )}
             </div>
             {previewError ? <p className="error">{previewError}</p> : null}
-          </div>
+          </Card>
 
-          <div className="card">
-            <h3>Bounding boxes</h3>
-            <p className="hint">Queue status: {selectedFaceId ? (queueState[selectedFaceId] ?? "unseen") : "-"}</p>
-            <p className="hint">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
-            {edits.map((edit, index) => (
-              <div className={`row ${activeBoxIndex === index ? "active-row" : ""}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
-                {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
-                  <label key={axis}>
-                    {axis}
-                    <input value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
-                  </label>
-                ))}
+          {!editorFocusMode ? (
+            <Card className="editor-inspector">
+              <h3>Bounding boxes</h3>
+              <p className="hint">Queue status: {selectedFaceId ? (queueState[selectedFaceId] ?? "unseen") : "-"}</p>
+              <p className="hint">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
+              {edits.map((edit, index) => (
+                <div className={`row ${activeBoxIndex === index ? "active-row" : ""}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
+                  {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
+                    <label key={axis}>
+                      {axis}
+                      <input aria-label={axis} value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
+                    </label>
+                  ))}
+                </div>
+              ))}
+              {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
+              <div className="row">
+                <Button variant="tonal" onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Add box</Button>
+                <Button variant="outlined" onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</Button>
               </div>
-            ))}
-            {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
-            <div className="row">
-              <button onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Add box</button>
-              <button onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</button>
-            </div>
-          </div>
+            </Card>
+          ) : null}
         </section>
       ) : null}
 
       {page === "export" ? (
         <section className="export-layout">
-          <div className="card">
+          <Card elevated>
             <h2>Export final annotations</h2>
             <p className="hint">Export reviewed annotations to COCO JSON.</p>
             <div className="row">
               <input value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
-              <button onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</button>
+              <Button onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</Button>
             </div>
             {outputPathError ? <p className="error">{outputPathError}</p> : null}
             <div className="row">
-              <button onClick={handleExport} disabled={isExportBusy}>Export COCO</button>
+              <Button onClick={handleExport} disabled={isExportBusy}>Export COCO</Button>
             </div>
             <div className="row">
-              <button onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</button>
-              <button onClick={() => void goHome()} disabled={isExportBusy}>Return home</button>
+              <Button variant="outlined" onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</Button>
+              <Button variant="text" onClick={() => void goHome()} disabled={isExportBusy}>Return home</Button>
             </div>
-          </div>
+          </Card>
 
-          <div className="card">
+          <Card>
             <h3>Diagnostics</h3>
             {error ? <p className="error">Error: {error}</p> : null}
             <pre className="status">{status}</pre>
-          </div>
+          </Card>
         </section>
       ) : null}
-
-
 
       {settingsOpen ? (
         <LlmSettingsModal
@@ -1219,7 +1279,7 @@ export function App() {
             <h3>Drop input files</h3>
             <p className="hint">Drop dataset directory, COCO JSON, and MP4 anywhere on this window.</p>
             <div className="row">
-              <button onClick={() => setDropModalOpen(false)}>Close</button>
+              <Button variant="outlined" onClick={() => setDropModalOpen(false)}>Close</Button>
             </div>
           </div>
         </div>
