@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- Replaced the LLM suggestion prompt with a ROOFER-focused roofing inspection prompt that requires normalized defect boxes (`xmin`, `ymin`, `xmax`, `ymax`) or the exact negative-case string `"No defects detected"`.
+- Updated LLM suggestion parsing to accept the new response contract, convert normalized coordinates to pixel-space annotations using each image's dimensions, and treat `"No defects detected"` as an empty suggestion set.
+
 ### Fixed
 - Kept auto-inferred Home file paths (`COCO JSON`, `Source MP4`) synchronized with dataset root edits until the user explicitly overrides either field, preventing stale hidden-path defaults after iterative root input changes.
 
