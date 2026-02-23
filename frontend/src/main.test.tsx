@@ -33,6 +33,9 @@ const mocks = vi.hoisted(() => ({
   runImportStage: vi.fn(),
   stageDroppedInputs: vi.fn(),
   getLlmSettings: vi.fn(),
+  getSuggestions: vi.fn(),
+  getSuggestionQueueState: vi.fn(),
+  prefetchSuggestions: vi.fn(),
   setAnnotations: vi.fn(async (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) => edits),
   exportCoco: vi.fn(),
 }));
@@ -48,9 +51,9 @@ vi.mock("./api", () => ({
   getLlmSettings: mocks.getLlmSettings,
   saveLlmSettings: vi.fn(),
   clearProviderKey: vi.fn(),
-  getSuggestions: vi.fn(),
-  prefetchSuggestions: vi.fn(),
-  getSuggestionQueueState: vi.fn(),
+  getSuggestions: mocks.getSuggestions,
+  prefetchSuggestions: mocks.prefetchSuggestions,
+  getSuggestionQueueState: mocks.getSuggestionQueueState,
   checkRuntimeDependencies: vi.fn(async () => ({
     ffmpeg: { name: "ffmpeg", resolvedPath: "ffmpeg" },
     ffprobe: { name: "ffprobe", resolvedPath: "ffprobe" },
@@ -123,17 +126,17 @@ beforeEach(() => {
   });
 
   mocks.getLlmSettings.mockResolvedValue({
-    llmSuggestionsEnabled: false,
-    provider: "openai",
-    model: "gpt-5.2",
-    reasoningPreset: "balanced",
-    maxTokens: 2048,
-    prefetchBufferSize: 4,
-    hasOpenAiKey: false,
-    hasAnthropicKey: false,
+    llmSuggestionsEnabled: true,
+    reasoningPreset: "high",
+    prefetchBufferSize: 12,
+    openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: false },
+    anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
   });
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
+  mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.2", suggestions: [], attempts: 1 });
+  mocks.prefetchSuggestions.mockResolvedValue({ items: [] });
+  mocks.getSuggestionQueueState.mockResolvedValue({ items: [] });
 
   mocks.startGenerateReviewDataset.mockClear();
   mocks.getGenerationStatus.mockClear();
@@ -141,6 +144,9 @@ beforeEach(() => {
   mocks.setAnnotations.mockClear();
   mocks.stageDroppedInputs.mockClear();
   mocks.exportCoco.mockClear();
+  mocks.getSuggestions.mockClear();
+  mocks.prefetchSuggestions.mockClear();
+  mocks.getSuggestionQueueState.mockClear();
 });
 
 describe("workflow pages", () => {
@@ -209,13 +215,13 @@ describe("tutorial preferences", () => {
 });
 
 
-describe("home progressive disclosure and editor focus", () => {
-  it("shows advanced path fields on demand and toggles focus mode", async () => {
+describe("home path inputs and editor chrome", () => {
+  it("always shows file path fields and does not render focus mode", async () => {
     render(<App />);
 
-    expect(screen.queryByLabelText("COCO JSON")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show advanced file paths" }));
     expect(screen.getByLabelText("COCO JSON")).toBeTruthy();
+    expect(screen.getByLabelText("Source MP4")).toBeTruthy();
+    expect(screen.getByLabelText("Source frames directory (auto-managed)")).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
       target: { value: "/tmp/dataset" },
@@ -223,17 +229,13 @@ describe("home progressive disclosure and editor focus", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Focus mode" })).toBeTruthy();
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
     });
-
-    fireEvent.click(screen.getByRole("button", { name: "Focus mode" }));
-    expect(screen.getByRole("button", { name: "Exit focus" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Focus mode" })).toBeNull();
   });
 
   it("keeps inferred paths synced with dataset root until user overrides them", async () => {
     render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Show advanced file paths" }));
 
     const datasetRootInput = screen.getByLabelText("Resume dataset directory");
     const cocoInput = screen.getByLabelText("COCO JSON") as HTMLInputElement;
@@ -279,7 +281,7 @@ describe("delete flow", () => {
     expect(boxRowsBeforeDelete).toHaveLength(8);
 
     const secondRowXInput = boxRowsBeforeDelete[4];
-    fireEvent.mouseEnter(secondRowXInput.closest(".row") as HTMLElement);
+    fireEvent.mouseEnter(secondRowXInput.closest(".bbox-editor") as HTMLElement);
     fireEvent.click(screen.getByRole("button", { name: "Delete active box" }));
     fireEvent.click(screen.getByRole("button", { name: "Save now" }));
 

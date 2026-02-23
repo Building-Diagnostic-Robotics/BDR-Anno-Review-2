@@ -34,12 +34,16 @@
 body {
   margin: 0;
   background: radial-gradient(circle at 20% -20%, #2f2648 0%, var(--md-sys-color-background) 45%);
+  background-repeat: no-repeat;
+  background-size: cover;
+  min-height: 100vh;
 }
 
 main {
   max-width: 1400px;
   margin: 0 auto;
   padding: var(--space-5);
+  min-height: 100vh;
 }
 
 h1,
@@ -65,17 +69,10 @@ ul {
 .editor-layout {
   display: grid;
   gap: var(--space-4);
-  grid-template-columns: 280px 1fr 360px;
+  grid-template-columns: 220px minmax(0, 1fr) 380px;
   grid-template-areas:
     "toolbar toolbar toolbar"
     "nav canvas inspector";
-}
-
-.editor-layout.focus-mode {
-  grid-template-columns: 240px 1fr;
-  grid-template-areas:
-    "toolbar toolbar"
-    "nav canvas";
 }
 
 .editor-toolbar {
@@ -107,6 +104,8 @@ ul {
   align-items: center;
   margin-bottom: var(--space-2);
 }
+
+.row > * { min-width: 0; }
 
 .row.spread { justify-content: space-between; align-items: flex-start; }
 .row.compact { margin-bottom: 0; }
@@ -213,12 +212,41 @@ select {
   background: #0f1319;
 }
 
-.preview-large { max-width: 980px; margin: 0 auto; }
+.preview-large { max-width: 1200px; margin: 0 auto; }
 .face-preview { display: block; width: 100%; height: auto; }
 .bbox-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
 .empty-preview { margin: 0; padding: 0.75rem; color: var(--md-sys-color-on-surface-variant); }
 .hint { font-size: 0.84rem; color: var(--md-sys-color-on-surface-variant); }
 .active-row { background: rgba(180,197,255,0.12); border-radius: 6px; padding: 0.2rem; }
+
+.input-row { flex-wrap: wrap; }
+.input-row input { flex: 1 1 420px; }
+.wrap-row { flex-wrap: wrap; }
+
+.bbox-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.bbox-field,
+.bbox-field input {
+  min-width: 0;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: var(--md-sys-color-primary-strong);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .save-pill {
   border-radius: 999px;
@@ -291,4 +319,10 @@ select {
 .face-pill.active {
   background: rgba(126, 162, 255, 0.25);
   border-color: rgba(126, 162, 255, 0.55);
+}
+
+@media (min-width: 1180px) {
+  .bbox-editor {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }

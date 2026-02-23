@@ -30,9 +30,9 @@ pub struct LlmSettings {
 impl Default for LlmSettings {
     fn default() -> Self {
         Self {
-            llm_suggestions_enabled: false,
+            llm_suggestions_enabled: true,
             reasoning_preset: "high".to_owned(),
-            prefetch_buffer_size: 8,
+            prefetch_buffer_size: 12,
             openai: LlmProviderSettings {
                 enabled: true,
                 model: "gpt-5.2".to_owned(),

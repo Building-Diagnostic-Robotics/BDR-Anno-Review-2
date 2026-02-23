@@ -13,9 +13,9 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
   const seed = useMemo(
     () =>
       initial ?? {
-        llmSuggestionsEnabled: false,
+        llmSuggestionsEnabled: true,
         reasoningPreset: "high" as ReasoningPreset,
-        prefetchBufferSize: 8,
+        prefetchBufferSize: 12,
         openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: false },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
       },

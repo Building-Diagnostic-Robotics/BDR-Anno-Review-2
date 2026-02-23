@@ -7,12 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-02-23
+
 ### Changed
 - Replaced the LLM suggestion prompt with a ROOFER-focused roofing inspection prompt that requires normalized defect boxes (`xmin`, `ymin`, `xmax`, `ymax`) or the exact negative-case string `"No defects detected"`.
 - Updated LLM suggestion parsing to accept the new response contract, convert normalized coordinates to pixel-space annotations using each image's dimensions, and treat `"No defects detected"` as an empty suggestion set.
+- Kept COCO/MP4/source-frames path inputs visible on Home (removed advanced-path hiding), removed editor Focus mode/face-queue UI, switched keyboard face navigation to left/right arrows, and expanded preview + inspector responsiveness to reduce clipping/overflow.
+- Enabled visible generation activity feedback with an inline throbber and active button label while review dataset generation runs.
+- Set LLM defaults to suggestions enabled with a Quality-oriented preset profile and raised default prefetch depth.
+- Changed export save dialog fallback filename from `exported_instances.json` to `instances_default.json`.
+- Bumped workspace, Tauri app config, and frontend package versions from `0.7.0` to `0.7.1` for this UI/UX + save reliability patch release.
 
 ### Fixed
 - Kept auto-inferred Home file paths (`COCO JSON`, `Source MP4`) synchronized with dataset root edits until the user explicitly overrides either field, preventing stale hidden-path defaults after iterative root input changes.
+- Hardened annotation edit payload normalization in the frontend invoke layer to prevent mixed-case provenance keys from serializing duplicate `updated_at` fields during save requests.
 
 ## [0.7.0] - 2026-02-23
 
