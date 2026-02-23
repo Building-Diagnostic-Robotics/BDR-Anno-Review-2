@@ -8,6 +8,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- Enabled Tauri asset protocol with a bounded filesystem scope for common local dataset locations so face preview images resolved via `convertFileSrc` (including Windows absolute paths) load reliably instead of returning `asset.localhost` 403 errors.
+- Updated frontend face-preview path tests to mimic real Tauri `convertFileSrc` URLs (`http://asset.localhost/...`) so Windows absolute-path preview regressions are caught in unit tests.
 - `scripts/check.sh` now auto-builds `frontend/dist` when missing so Tauri workspace tests no longer fail with a missing `frontendDist` path in clean environments.
 - Scoped staging-workspace lifecycle cleanup to the active app session so startup/exit cleanup no longer deletes temp workspaces created by other concurrently running app processes.
 - Hardened staging workspace ownership validation by requiring an app-owned marker file before cleanup removes a temp directory, preventing accidental deletion of similarly prefixed non-app directories.

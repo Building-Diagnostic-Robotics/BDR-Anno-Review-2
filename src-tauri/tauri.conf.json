@@ -8,6 +8,21 @@
     "devUrl": "http://localhost:5173"
   },
   "app": {
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": [
+            "$HOME/**",
+            "$DOWNLOAD/**",
+            "$DOCUMENT/**",
+            "$DESKTOP/**",
+            "$PUBLIC/**",
+            "$TEMP/**"
+          ]
+        }
+      }
+    },
     "windows": [
       {
         "title": "bdr-anno-review",

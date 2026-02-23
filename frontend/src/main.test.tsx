@@ -5,7 +5,7 @@ import type { AnnotationEdit, FaceListItem } from "./types";
 import * as api from "./api";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  convertFileSrc: (value: string) => value,
+  convertFileSrc: (value: string) => `http://asset.localhost/${encodeURIComponent(value)}`,
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -201,7 +201,7 @@ describe("face preview path behavior", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
 
     const preview = await screen.findByAltText("Face preview for face-1") as HTMLImageElement;
-    expect(preview.getAttribute("src")).toBe("C:/Users/Kevin/Downloads/bdr-anno-review/raw_frames/face-1.png");
+    expect(preview.getAttribute("src")).toBe("http://asset.localhost/C%3A%2FUsers%2FKevin%2FDownloads%2Fbdr-anno-review%2Fraw_frames%2Fface-1.png");
   });
 
   it("shows explicit diagnostics when preview image fails to load", async () => {
