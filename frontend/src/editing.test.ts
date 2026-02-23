@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectPointerIntent, removeEditAtIndex, resizeBboxFromHandle } from "./editing";
+import { clampBboxToBounds, detectPointerIntent, removeEditAtIndex, resizeBboxFromHandle } from "./editing";
 import type { AnnotationEdit } from "./types";
 
 const makeEdit = (seed: number): AnnotationEdit => ({
@@ -43,5 +43,18 @@ describe("resizeBboxFromHandle", () => {
   it("resizes from west edge", () => {
     const next = resizeBboxFromHandle([10, 10, 20, 20], "w", { x: 4, y: 0 });
     expect(next).toEqual([4, 10, 26, 20]);
+  });
+});
+
+
+describe("clampBboxToBounds", () => {
+  it("clamps right and bottom overflow to image bounds", () => {
+    const next = clampBboxToBounds([90, 80, 20, 30], { width: 100, height: 100 });
+    expect(next).toEqual([90, 80, 10, 20]);
+  });
+
+  it("clamps negative origin and keeps non-negative size", () => {
+    const next = clampBboxToBounds([-5, -7, 30, 40], { width: 100, height: 100 });
+    expect(next).toEqual([0, 0, 30, 40]);
   });
 });

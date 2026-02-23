@@ -31,6 +31,7 @@ import {
   resizeBboxFromHandle,
   type ResizeHandle,
   validateEdits,
+  clampBboxToBounds,
 } from "./editing";
 import { LlmSettingsModal } from "./settings-modal";
 import { Button, Card, Field, SectionHeading } from "./ui-primitives";
@@ -734,10 +735,13 @@ export function App() {
 
         const bbox: [number, number, number, number] = [...entry.bbox] as [number, number, number, number];
         bbox[axis] = value;
+        const boundedBbox = imageViewport
+          ? clampBboxToBounds(bbox, { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight })
+          : bbox;
 
         return {
           ...entry,
-          bbox,
+          bbox: boundedBbox,
           provenance: {
             ...entry.provenance,
             source: "ui_manual",
@@ -920,7 +924,11 @@ export function App() {
 
     const [x, y, w, h] = box.bbox;
     if (state.mode === "move") {
-      updateBoxFromPointer(state.index, [Math.max(0, pointer.x - state.offsetX), Math.max(0, pointer.y - state.offsetY), w, h]);
+      const boundedMove = clampBboxToBounds(
+        [Math.max(0, pointer.x - state.offsetX), Math.max(0, pointer.y - state.offsetY), w, h],
+        { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight }
+      );
+      updateBoxFromPointer(state.index, boundedMove);
       return;
     }
 
@@ -929,16 +937,24 @@ export function App() {
         return;
       }
       const resizeBase = state.originBbox ?? [x, y, w, h];
-      updateBoxFromPointer(state.index, resizeBboxFromHandle(resizeBase, state.handle, pointer));
+      const resizedBbox = resizeBboxFromHandle(resizeBase, state.handle, pointer);
+      updateBoxFromPointer(
+        state.index,
+        clampBboxToBounds(resizedBbox, { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight })
+      );
       return;
     }
 
-    updateBoxFromPointer(state.index, [
+    const drawnBbox: [number, number, number, number] = [
       Math.min(state.startX, pointer.x),
       Math.min(state.startY, pointer.y),
       Math.max(0, Math.abs(pointer.x - state.startX)),
       Math.max(0, Math.abs(pointer.y - state.startY)),
-    ]);
+    ];
+    updateBoxFromPointer(
+      state.index,
+      clampBboxToBounds(drawnBbox, { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight })
+    );
   };
 
   const handleCanvasPointerUp = () => {
@@ -1226,6 +1242,7 @@ export function App() {
           onSave={async (request: SaveLlmSettingsRequest) => {
             const response = await saveLlmSettings(request);
             setLlmSettings(response);
+            setSettingsOpen(false);
             updateDiagnostics("Settings saved", "");
           }}
           onClearProviderKey={async (provider) => {
