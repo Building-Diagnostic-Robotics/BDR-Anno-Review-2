@@ -13,12 +13,13 @@ pub use annotations::{
 pub use export::{export_coco, ExportCocoOptions, ExportCocoReport};
 pub use frame_sourcing::{
     build_frame_sourcing_report, extract_frames_from_mp4, extract_frames_from_mp4_with_progress,
-    ExtractFramesFromMp4Options, ExtractFramesFromMp4Report, FrameMapping, FrameSourcingOptions,
-    FrameSourcingReport,
+    extract_frames_from_mp4_with_progress_and_cancel, ExtractFramesFromMp4Options,
+    ExtractFramesFromMp4Report, FrameMapping, FrameSourcingOptions, FrameSourcingReport,
 };
 pub use import_stage::{run_import_stage, ImportStageOptions, ImportStageReport};
 pub use review_generation::{
-    generate_review_dataset, generate_review_dataset_with_progress, GenerateReviewDatasetOptions,
+    generate_review_dataset, generate_review_dataset_with_progress,
+    generate_review_dataset_with_progress_and_cancel, GenerateReviewDatasetOptions,
     GenerateReviewDatasetReport,
 };
 
@@ -74,6 +75,8 @@ pub enum EngineError {
     },
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),
+    #[error("operation cancelled: {0}")]
+    Cancelled(&'static str),
     #[error("unknown face_id: {0}")]
     UnknownFaceId(String),
     #[error("malformed payload: {0}")]

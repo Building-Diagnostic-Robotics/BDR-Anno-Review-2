@@ -8,6 +8,7 @@ import {
   exportCoco,
   startGenerateReviewDataset,
   getGenerationStatus,
+  abortGenerationJob,
   getAnnotations,
   listFaces,
   openDataset,
@@ -49,7 +50,7 @@ type ImageViewport = {
 };
 
 type PointerMode = "idle" | "draw" | "move" | "resize";
-type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "done";
+type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "aborting" | "done";
 type AppPage = "home" | "editor" | "export";
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
@@ -136,6 +137,7 @@ export function App() {
   const [generationPercent, setGenerationPercent] = useState(0);
   const [generationDetail, setGenerationDetail] = useState("Idle.");
   const [generationHeartbeat, setGenerationHeartbeat] = useState("Idle");
+  const [generationJobId, setGenerationJobId] = useState("");
 
   const isFaceBusy = isFaceLoading;
   const isEditorBusy = isImporting || isExporting;
@@ -218,6 +220,11 @@ export function App() {
   const updateDiagnostics = (nextStatus: string, nextError = "") => {
     setStatus(nextStatus);
     setError(nextError);
+  };
+
+  const clearDiagnostics = (nextStatus = "Ready.") => {
+    setStatus(nextStatus);
+    setError("");
   };
 
   const formatDialogError = (scope: "folder" | "file" | "save", cause: unknown): string => {
@@ -346,7 +353,7 @@ export function App() {
         const nextStep: GenerationStep =
           phase === "rendering"
             ? "generating"
-            : (["idle", "validating", "dependencies", "extracting", "generating", "done"].includes(phase)
+            : (["idle", "validating", "dependencies", "extracting", "generating", "aborting", "done"].includes(phase)
               ? (phase as GenerationStep)
               : "generating");
         setGenerationStep(nextStep);
@@ -424,6 +431,7 @@ export function App() {
         qualityProfile: "balanced",
       });
 
+      setGenerationJobId(start.jobId);
       setGenerationHeartbeat(`Job ${start.jobId} running`);
       let report;
       while (!report) {
@@ -432,6 +440,9 @@ export function App() {
         if (status.state === "done" && status.result) {
           report = status.result;
           break;
+        }
+        if (status.state === "cancelled") {
+          throw new Error(status.message || "Generation job cancelled.");
         }
         if (status.state === "error") {
           throw new Error(status.message || "Generation job failed.");
@@ -459,6 +470,23 @@ export function App() {
     } finally {
       setIsGenerating(false);
       setShowGenerationSpinner(false);
+      setGenerationJobId("");
+    }
+  };
+
+
+  const handleAbortGeneration = async () => {
+    if (!generationJobId) {
+      return;
+    }
+    try {
+      setGenerationStep("aborting");
+      setGenerationDetail("Abort requested. Waiting for cleanup...");
+      setGenerationHeartbeat(`Job ${generationJobId} aborting`);
+      await abortGenerationJob(generationJobId);
+      updateDiagnostics("Generation abort requested", "Waiting for background cleanup to finish.");
+    } catch (cause) {
+      updateDiagnostics("Generation abort failed", String(cause));
     }
   };
 
@@ -1053,6 +1081,7 @@ export function App() {
               <div className="actions-primary">
                 <Button onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>{isGenerating ? "Generating…" : "Generate"}</Button>
                 {showGenerationSpinner ? <span className="spinner" aria-label="Generation in progress" /> : null}
+                <Button variant="outlined" onClick={() => void handleAbortGeneration()} disabled={!isGenerating || !generationJobId}>Abort</Button>
               </div>
               <div className="progress" aria-label="generation progress">
                 <span style={{ width: `${generationPercent}%` }} />
@@ -1221,7 +1250,7 @@ export function App() {
             <p className="hint">Generation could not continue. See diagnostics for details.</p>
             <pre className="status">{noticeMessage}</pre>
             <div className="row">
-              <Button variant="outlined" onClick={() => setNoticeMessage("")}>Dismiss</Button>
+              <Button variant="outlined" onClick={() => { setNoticeMessage(""); if (error) { clearDiagnostics("Ready."); } }}>Dismiss</Button>
             </div>
           </div>
         </div>

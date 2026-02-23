@@ -48,13 +48,19 @@ export type StartGenerationResponse = {
   jobId: string;
 };
 
-export type GenerationJobState = "pending" | "running" | "done" | "error";
+export type GenerationJobState = "pending" | "running" | "aborting" | "cancelled" | "done" | "error";
 
 export type GenerationStatusResponse = {
   jobId: string;
   state: GenerationJobState;
   message: string;
   result?: GenerateReviewDatasetReport;
+};
+
+export type AbortGenerationResponse = {
+  jobId: string;
+  state: GenerationJobState;
+  message: string;
 };
 
 export type GenerationProgressEvent = {
