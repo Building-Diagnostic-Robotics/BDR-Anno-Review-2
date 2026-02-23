@@ -1233,9 +1233,10 @@ fn generate_and_cache_suggestion(
             .suggestion_queue
             .lock()
             .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
-        queue
-            .states
-            .insert(request.face_id.clone(), "in_flight".to_owned());
+        queue.states.insert(
+            suggestion_queue_key(&request.dataset_root, &request.face_id),
+            "in_flight".to_owned(),
+        );
     }
 
     let face = get_face_by_id(&request.dataset_root, &request.face_id)?;
@@ -1261,7 +1262,10 @@ fn generate_and_cache_suggestion(
                 .lock()
                 .map_err(|_| "suggestion queue lock poisoned".to_owned())?
                 .states
-                .insert(request.face_id, "ready".to_owned());
+                .insert(
+                    suggestion_queue_key(&request.dataset_root, &request.face_id),
+                    "ready".to_owned(),
+                );
             Ok(response)
         }
         Err(error) => {
@@ -1270,7 +1274,10 @@ fn generate_and_cache_suggestion(
                 .lock()
                 .map_err(|_| "suggestion queue lock poisoned".to_owned())?
                 .states
-                .insert(request.face_id, "failed".to_owned());
+                .insert(
+                    suggestion_queue_key(&request.dataset_root, &request.face_id),
+                    "failed".to_owned(),
+                );
             Err(error)
         }
     }
@@ -1278,6 +1285,10 @@ fn generate_and_cache_suggestion(
 
 fn should_enqueue_prefetch(status: Option<&str>) -> bool {
     !matches!(status, Some("queued" | "in_flight" | "ready"))
+}
+
+fn suggestion_queue_key(dataset_root: &str, face_id: &str) -> (String, String) {
+    (dataset_root.to_owned(), face_id.to_owned())
 }
 
 #[tauri::command]
@@ -1313,8 +1324,9 @@ fn prefetch_suggestions_command(
                 .suggestion_queue
                 .lock()
                 .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
-            if should_enqueue_prefetch(queue.states.get(face_id).map(String::as_str)) {
-                queue.states.insert(face_id.clone(), "queued".to_owned());
+            let key = suggestion_queue_key(&request.dataset_root, face_id);
+            if should_enqueue_prefetch(queue.states.get(&key).map(String::as_str)) {
+                queue.states.insert(key, "queued".to_owned());
                 true
             } else {
                 false
@@ -1341,7 +1353,7 @@ fn prefetch_suggestions_command(
         .suggestion_queue
         .lock()
         .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
-    Ok(queue.state(&limited))
+    Ok(queue.state(&request.dataset_root, &limited))
 }
 
 #[cfg(test)]
@@ -1365,13 +1377,14 @@ mod prefetch_tests {
 #[tauri::command]
 fn get_suggestion_queue_state_command(
     state: State<AppState>,
+    dataset_root: String,
     face_ids: Vec<String>,
 ) -> Result<QueueStateResponse, String> {
     let queue = state
         .suggestion_queue
         .lock()
         .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
-    Ok(queue.state(&face_ids))
+    Ok(queue.state(&dataset_root, &face_ids))
 }
 #[tauri::command]
 fn check_runtime_dependencies_command(app: AppHandle) -> Result<RuntimeDependencyReport, String> {

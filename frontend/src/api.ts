@@ -127,5 +127,5 @@ export const prefetchSuggestions = async (datasetRoot: string, faceIds: string[]
     request: { datasetRoot, faceIds },
   });
 
-export const getSuggestionQueueState = async (faceIds: string[]) =>
-  invoke<QueueStateResponse>("get_suggestion_queue_state_command", { faceIds });
+export const getSuggestionQueueState = async (datasetRoot: string, faceIds: string[]) =>
+  invoke<QueueStateResponse>("get_suggestion_queue_state_command", { datasetRoot, faceIds });
