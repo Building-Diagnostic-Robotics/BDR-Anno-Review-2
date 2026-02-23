@@ -32,6 +32,7 @@ import {
   type ResizeHandle,
   validateEdits,
   clampBboxToBounds,
+  clampBboxMoveToBounds,
 } from "./editing";
 import { LlmSettingsModal } from "./settings-modal";
 import { Button, Card, Field, SectionHeading } from "./ui-primitives";
@@ -924,8 +925,8 @@ export function App() {
 
     const [x, y, w, h] = box.bbox;
     if (state.mode === "move") {
-      const boundedMove = clampBboxToBounds(
-        [Math.max(0, pointer.x - state.offsetX), Math.max(0, pointer.y - state.offsetY), w, h],
+      const boundedMove = clampBboxMoveToBounds(
+        [pointer.x - state.offsetX, pointer.y - state.offsetY, w, h],
         { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight }
       );
       updateBoxFromPointer(state.index, boundedMove);

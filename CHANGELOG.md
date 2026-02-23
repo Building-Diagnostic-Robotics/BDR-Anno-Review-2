@@ -15,6 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Improved editor responsiveness on narrower windows by adding layout breakpoints that avoid horizontal overflow and keep toolbar/nav/canvas/inspector sections reachable.
 - Made the settings modal viewport-safe by capping modal height and enabling internal scrolling so lower controls remain accessible on short screens.
 - Clamped pointer-driven and manual bbox edits to image bounds so move/resize/draw interactions can no longer save out-of-frame boxes.
+- Preserved bbox width/height during pointer drag moves at image edges by clamping move origin without shrinking box dimensions.
 - Fixed LLM settings coherence by enforcing a single provider selection when suggestions are enabled (frontend validation + backend fail-loud guardrails).
 - Added keyboard-accessible dialog behavior for LLM settings (Escape to close, focus trap, and focus restoration) and close the modal after a successful save.
 
