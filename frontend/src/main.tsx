@@ -904,7 +904,8 @@ export function App() {
   const handleCanvasPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const pointer = getPointerInImageSpace(event);
     const state = dragState.current;
-    if (!pointer) {
+    const viewport = imageViewport;
+    if (!pointer || !viewport) {
       return;
     }
 
@@ -927,7 +928,7 @@ export function App() {
     if (state.mode === "move") {
       const boundedMove = clampBboxMoveToBounds(
         [pointer.x - state.offsetX, pointer.y - state.offsetY, w, h],
-        { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight }
+        { width: viewport.naturalWidth, height: viewport.naturalHeight }
       );
       updateBoxFromPointer(state.index, boundedMove);
       return;
@@ -941,7 +942,7 @@ export function App() {
       const resizedBbox = resizeBboxFromHandle(resizeBase, state.handle, pointer);
       updateBoxFromPointer(
         state.index,
-        clampBboxToBounds(resizedBbox, { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight })
+        clampBboxToBounds(resizedBbox, { width: viewport.naturalWidth, height: viewport.naturalHeight })
       );
       return;
     }
@@ -954,7 +955,7 @@ export function App() {
     ];
     updateBoxFromPointer(
       state.index,
-      clampBboxToBounds(drawnBbox, { width: imageViewport.naturalWidth, height: imageViewport.naturalHeight })
+      clampBboxToBounds(drawnBbox, { width: viewport.naturalWidth, height: viewport.naturalHeight })
     );
   };
 
