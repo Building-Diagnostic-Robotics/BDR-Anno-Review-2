@@ -9,6 +9,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 - Prevented editor ArrowLeft/ArrowRight face-navigation hotkeys from firing while typing in bbox input fields, so caret movement inside inputs no longer triggers unintended face switches.
+- Moved LLM suggestion prefetch execution to background async tasks so prefetch requests no longer block command completion while keeping queue/cache state transitions explicit (`queued` → `in_flight` → `ready`/`failed`).
+- Scoped LLM suggestion queue state by `(dataset_root, face_id)` so identical face IDs across different datasets no longer suppress prefetch for uncached datasets.
+- Corrected frame-sourcing COCO diagnostics to report the actual `images[]` index when `file_name` is missing instead of always reporting index `0`.
+- Improved editor responsiveness on narrower windows by adding layout breakpoints that avoid horizontal overflow and keep toolbar/nav/canvas/inspector sections reachable.
+- Made the settings modal viewport-safe by capping modal height and enabling internal scrolling so lower controls remain accessible on short screens.
 
 ## [0.7.1] - 2026-02-23
 

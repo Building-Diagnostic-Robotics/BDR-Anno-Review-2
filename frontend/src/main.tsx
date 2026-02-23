@@ -613,7 +613,7 @@ export function App() {
         updateDiagnostics("Suggestion fetch failed", String(cause));
       }
 
-      void getSuggestionQueueState(faces.map((f) => f.faceId)).catch(() => undefined);
+      void getSuggestionQueueState(datasetRoot, faces.map((f) => f.faceId)).catch(() => undefined);
     };
 
     void run();

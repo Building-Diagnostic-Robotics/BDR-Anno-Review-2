@@ -84,7 +84,7 @@ ul {
 
 .editor-nav-pane { grid-area: nav; }
 .canvas-card { grid-area: canvas; }
-.editor-inspector { grid-area: inspector; }
+.editor-inspector { grid-area: inspector; min-width: 0; }
 
 .card {
   background: var(--md-sys-color-surface-container);
@@ -273,11 +273,34 @@ select {
 
 .modal-card {
   width: min(620px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
   background: var(--md-sys-color-surface-container-high);
   border-radius: var(--radius-md);
   padding: 1rem;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255,255,255,0.1);
+}
+
+@media (max-width: 1260px) {
+  .editor-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-areas:
+      "toolbar toolbar"
+      "nav canvas"
+      "inspector inspector";
+  }
+}
+
+@media (max-width: 900px) {
+  .editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "toolbar"
+      "nav"
+      "canvas"
+      "inspector";
+  }
 }
 
 .stepper {

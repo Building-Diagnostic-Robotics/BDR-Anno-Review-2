@@ -61,7 +61,7 @@ pub struct SuggestionQueuePrefetchRequest {
 
 #[derive(Debug, Clone)]
 pub struct SuggestionQueue {
-    pub states: HashMap<String, String>,
+    pub states: HashMap<(String, String), String>,
 }
 
 impl SuggestionQueue {
@@ -71,14 +71,14 @@ impl SuggestionQueue {
         }
     }
 
-    pub fn state(&self, face_ids: &[String]) -> QueueStateResponse {
+    pub fn state(&self, dataset_root: &str, face_ids: &[String]) -> QueueStateResponse {
         let mut items = Vec::with_capacity(face_ids.len());
         for face_id in face_ids {
             items.push(QueueStateItem {
                 face_id: face_id.clone(),
                 status: self
                     .states
-                    .get(face_id)
+                    .get(&(dataset_root.to_owned(), face_id.clone()))
                     .cloned()
                     .unwrap_or_else(|| "unseen".to_owned()),
             });
@@ -478,7 +478,7 @@ pub fn generate_suggestions_with_retry(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_json_suggestions;
+    use super::{parse_json_suggestions, SuggestionQueue};
 
     #[test]
     fn parser_converts_normalized_boxes_and_sorts() {
@@ -499,5 +499,20 @@ mod tests {
     fn parser_rejects_non_json() {
         let err = parse_json_suggestions("not json", 20.0, 20.0).unwrap_err();
         assert!(err.contains("not valid suggestion JSON"));
+    }
+
+    #[test]
+    fn queue_state_is_scoped_by_dataset_root() {
+        let mut queue = SuggestionQueue::new();
+        queue.states.insert(
+            ("/dataset-a".to_owned(), "face-001".to_owned()),
+            "ready".to_owned(),
+        );
+
+        let response_a = queue.state("/dataset-a", &["face-001".to_owned()]);
+        assert_eq!(response_a.items[0].status, "ready");
+
+        let response_b = queue.state("/dataset-b", &["face-001".to_owned()]);
+        assert_eq!(response_b.items[0].status, "unseen");
     }
 }

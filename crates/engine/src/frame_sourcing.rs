@@ -175,7 +175,7 @@ pub fn build_frame_sourcing_report(
             reason: "missing required field `id`".to_owned(),
         })?;
 
-        if images_by_id.insert(image_id, image).is_some() {
+        if images_by_id.insert(image_id, (index, image)).is_some() {
             return Err(EngineError::InvalidCocoEntry {
                 section: "images",
                 index,
@@ -212,13 +212,13 @@ pub fn build_frame_sourcing_report(
     let mut seen_frame_indices = HashSet::new();
 
     for image_id in referenced_image_ids {
-        let image = images_by_id.get(&image_id).expect("validated image exists");
+        let (image_index, image) = images_by_id.get(&image_id).expect("validated image exists");
         let file_name = image
             .file_name
             .clone()
             .ok_or_else(|| EngineError::InvalidCocoEntry {
                 section: "images",
-                index: 0,
+                index: *image_index,
                 reason: format!("missing required field `file_name` for image id `{image_id}`"),
             })?;
 
@@ -669,6 +669,44 @@ mod tests {
 
         assert!(message.contains("frame reference out of range for image_id 20 (`cam0_frame_000007.jpg`): frame index 7 is outside MP4 frame count 5"));
         assert!(message.contains("videos/source.mp4"));
+    }
+
+    #[test]
+    fn reports_correct_image_index_when_file_name_is_missing() {
+        let root = unique_temp_dir();
+        let annotations_dir = root.join("annotations");
+        let videos_dir = root.join("videos");
+        fs::create_dir_all(&annotations_dir).unwrap();
+        fs::create_dir_all(&videos_dir).unwrap();
+
+        fs::write(
+            annotations_dir.join("instances_default.json"),
+            r#"{
+                "images": [
+                    {"id": 10, "file_name": "frame_000003.png", "frame_index": 3},
+                    {"id": 20, "frame_index": 7}
+                ],
+                "annotations": [
+                    {"id": 100, "image_id": 10},
+                    {"id": 200, "image_id": 20}
+                ]
+            }"#,
+        )
+        .unwrap();
+        fs::write(videos_dir.join("source.mp4"), b"fake-mp4").unwrap();
+
+        let err = build_frame_sourcing_report(FrameSourcingOptions {
+            dataset_root: root.display().to_string(),
+            coco_json_path: "annotations/instances_default.json".to_owned(),
+            mp4_path: "videos/source.mp4".to_owned(),
+            mp4_frame_count: 32,
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "invalid COCO entry in section `images` at index 1: missing required field `file_name` for image id `20`"
+        );
     }
 
     #[test]
