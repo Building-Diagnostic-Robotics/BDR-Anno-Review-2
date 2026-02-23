@@ -143,84 +143,90 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
         </div>
         <p className="hint">Default behavior is optimized for low-friction suggestions. Use Advanced only when tuning is needed.</p>
 
-        <label className="row spread">
-          <span>Enable suggestions</span>
-          <input
-            ref={firstControlRef}
-            type="checkbox"
-            checked={llmSuggestionsEnabled}
-            onChange={(e) => setLlmSuggestionsEnabled(e.target.checked)}
-          />
-        </label>
+        <section className="settings-group">
+          <h4>General</h4>
+          <label className="row spread">
+            <span>Enable suggestions</span>
+            <input
+              ref={firstControlRef}
+              type="checkbox"
+              checked={llmSuggestionsEnabled}
+              onChange={(e) => setLlmSuggestionsEnabled(e.target.checked)}
+            />
+          </label>
 
-        <Field label="Provider">
-          <select value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as "openai" | "anthropic" | "none") }>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="none">Disabled</option>
-          </select>
-        </Field>
+          <Field label="Provider">
+            <select value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as "openai" | "anthropic" | "none") }>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="none">Disabled</option>
+            </select>
+          </Field>
 
-        <Field label="Preset" hint="Fast prioritizes speed, Quality prioritizes accuracy.">
-          <div className="row compact">
-            <Button variant={preset === "Fast" ? "filled" : "outlined"} onClick={() => applyPreset("Fast")}>Fast</Button>
-            <Button variant={preset === "Balanced" ? "filled" : "outlined"} onClick={() => applyPreset("Balanced")}>Balanced</Button>
-            <Button variant={preset === "Quality" ? "filled" : "outlined"} onClick={() => applyPreset("Quality")}>Quality</Button>
+          <Field label="Preset" hint="Fast prioritizes speed, Quality prioritizes accuracy.">
+            <div className="row compact">
+              <Button variant={preset === "Fast" ? "filled" : "outlined"} onClick={() => applyPreset("Fast")}>Fast</Button>
+              <Button variant={preset === "Balanced" ? "filled" : "outlined"} onClick={() => applyPreset("Balanced")}>Balanced</Button>
+              <Button variant={preset === "Quality" ? "filled" : "outlined"} onClick={() => applyPreset("Quality")}>Quality</Button>
+            </div>
+          </Field>
+        </section>
+
+        <section className="settings-group">
+          <h4>Credentials</h4>
+          <Field label={`OpenAI model${seed.openai.maskedKeyPreview ? ` (saved key: ${seed.openai.maskedKeyPreview})` : ""}`}>
+            <select value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
+              <option value="gpt-5.2">gpt-5.2</option>
+            </select>
+          </Field>
+          <div className="row">
+            <input
+              type={showOpenaiKey ? "text" : "password"}
+              value={openaiApiKey}
+              onChange={(e) => setOpenaiApiKey(e.target.value)}
+              placeholder="sk-..."
+            />
+            <Button variant="tonal" onClick={() => setShowOpenaiKey((v) => !v)}>{showOpenaiKey ? "Hide" : "Show"}</Button>
+            <Button variant="outlined" onClick={() => void onClearProviderKey("openai")}>Clear key</Button>
           </div>
-        </Field>
 
-        <button className="link-button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} advanced settings</button>
+          <Field label={`Anthropic model${seed.anthropic.maskedKeyPreview ? ` (saved key: ${seed.anthropic.maskedKeyPreview})` : ""}`}>
+            <select value={anthropicModel} onChange={(e) => setAnthropicModel(e.target.value)}>
+              <option value="claude-opus-4-6">claude-opus-4-6</option>
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+            </select>
+          </Field>
+          <div className="row">
+            <input
+              type={showAnthropicKey ? "text" : "password"}
+              value={anthropicApiKey}
+              onChange={(e) => setAnthropicApiKey(e.target.value)}
+              placeholder="sk-ant-..."
+            />
+            <Button variant="tonal" onClick={() => setShowAnthropicKey((v) => !v)}>{showAnthropicKey ? "Hide" : "Show"}</Button>
+            <Button variant="outlined" onClick={() => void onClearProviderKey("anthropic")}>Clear key</Button>
+          </div>
+        </section>
 
-        {showAdvanced ? (
-          <>
-            <Field label="Reasoning preset">
-              <select value={reasoningPreset} onChange={(e) => setReasoningPreset(e.target.value as ReasoningPreset)}>
-                <option value="high">High</option>
-                <option value="balanced">Balanced</option>
-                <option value="low">Low</option>
-              </select>
-            </Field>
+        <section className="settings-group">
+          <h4>Advanced</h4>
+          <button className="link-button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} advanced settings</button>
+          {showAdvanced ? (
+            <>
+              <Field label="Reasoning preset">
+                <select value={reasoningPreset} onChange={(e) => setReasoningPreset(e.target.value as ReasoningPreset)}>
+                  <option value="high">High</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="low">Low</option>
+                </select>
+              </Field>
 
-            <Field label="Prefetch buffer size">
-              <input type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
-            </Field>
-          </>
-        ) : null}
-
-        <h4>OpenAI</h4>
-        <label>Model</label>
-        <select value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
-          <option value="gpt-5.2">gpt-5.2</option>
-        </select>
-        <label>API key {seed.openai.maskedKeyPreview ? `(saved: ${seed.openai.maskedKeyPreview})` : ""}</label>
-        <div className="row">
-          <input
-            type={showOpenaiKey ? "text" : "password"}
-            value={openaiApiKey}
-            onChange={(e) => setOpenaiApiKey(e.target.value)}
-            placeholder="sk-..."
-          />
-          <Button variant="tonal" onClick={() => setShowOpenaiKey((v) => !v)}>{showOpenaiKey ? "Hide" : "Show"}</Button>
-          <Button variant="outlined" onClick={() => void onClearProviderKey("openai")}>Clear key</Button>
-        </div>
-
-        <h4>Anthropic</h4>
-        <label>Model</label>
-        <select value={anthropicModel} onChange={(e) => setAnthropicModel(e.target.value)}>
-          <option value="claude-opus-4-6">claude-opus-4-6</option>
-          <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-        </select>
-        <label>API key {seed.anthropic.maskedKeyPreview ? `(saved: ${seed.anthropic.maskedKeyPreview})` : ""}</label>
-        <div className="row">
-          <input
-            type={showAnthropicKey ? "text" : "password"}
-            value={anthropicApiKey}
-            onChange={(e) => setAnthropicApiKey(e.target.value)}
-            placeholder="sk-ant-..."
-          />
-          <Button variant="tonal" onClick={() => setShowAnthropicKey((v) => !v)}>{showAnthropicKey ? "Hide" : "Show"}</Button>
-          <Button variant="outlined" onClick={() => void onClearProviderKey("anthropic")}>Clear key</Button>
-        </div>
+              <Field label="Prefetch buffer size">
+                <input type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
+              </Field>
+            </>
+          ) : null}
+        </section>
 
         {providerValidation ? <p className="error">{providerValidation}</p> : null}
 

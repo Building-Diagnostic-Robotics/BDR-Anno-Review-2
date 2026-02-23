@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- Refined frontend visual polish across Home/Editor/Export and settings surfaces with stronger typography hierarchy, tokenized status colors, richer focus/active control states, grouped action rows, and a cleaner sectioned LLM settings modal for a more professional UI presentation.
+
 ### Fixed
 - Prevented editor ArrowLeft/ArrowRight face-navigation hotkeys from firing while typing in bbox input fields, so caret movement inside inputs no longer triggers unintended face switches.
 - Moved LLM suggestion prefetch execution to background async tasks so prefetch requests no longer block command completion while keeping queue/cache state transitions explicit (`queued` → `in_flight` → `ready`/`failed`).
