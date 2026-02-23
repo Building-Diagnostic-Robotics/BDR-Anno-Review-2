@@ -99,6 +99,7 @@ export function App() {
     mode: "idle" as PointerMode,
     index: null as number | null,
     handle: null as ResizeHandle | null,
+    originBbox: null as [number, number, number, number] | null,
     startX: 0,
     startY: 0,
     offsetX: 0,
@@ -785,7 +786,7 @@ export function App() {
       setActiveBoxIndex(next.activeBoxIndex);
       if (dragState.current.index !== null) {
         if (dragState.current.index === activeBoxIndex) {
-          dragState.current = { mode: "idle", index: null, handle: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
+          dragState.current = { mode: "idle", index: null, handle: null, originBbox: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
         } else if (dragState.current.index > activeBoxIndex) {
           dragState.current = {
             ...dragState.current,
@@ -869,6 +870,7 @@ export function App() {
       mode,
       index: targetIndex,
       handle: intent.handle,
+      originBbox: edits[targetIndex]?.bbox ?? null,
       startX: pointer.x,
       startY: pointer.y,
       offsetX,
@@ -912,7 +914,8 @@ export function App() {
       if (!state.handle) {
         return;
       }
-      updateBoxFromPointer(state.index, resizeBboxFromHandle([x, y, w, h], state.handle, pointer));
+      const resizeBase = state.originBbox ?? [x, y, w, h];
+      updateBoxFromPointer(state.index, resizeBboxFromHandle(resizeBase, state.handle, pointer));
       return;
     }
 
@@ -925,7 +928,7 @@ export function App() {
   };
 
   const handleCanvasPointerUp = () => {
-    dragState.current = { mode: "idle", index: null, handle: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
+    dragState.current = { mode: "idle", index: null, handle: null, originBbox: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
     setCanvasCursor("crosshair");
     const currentFaceId = selectedFaceIdRef.current;
     if (hasUnsavedChanges(currentFaceId, editsRef.current)) {

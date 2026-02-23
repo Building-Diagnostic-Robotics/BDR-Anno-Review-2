@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Preserved the original resize anchor while dragging edge/corner handles across the opposite side by reusing the pointer-down bbox as the resize baseline for the full drag interaction.
+
 ## [0.6.1] - 2026-02-23
 
 ### Added
