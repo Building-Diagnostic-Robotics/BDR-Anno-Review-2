@@ -267,6 +267,14 @@ pub fn save_settings_request(
     get_settings_response(app)
 }
 
+pub fn clear_provider_key(request: ClearProviderKeyRequest) -> Result<(), String> {
+    match request.provider.as_str() {
+        "openai" => clear_key(OPENAI_USER),
+        "anthropic" => clear_key(ANTHROPIC_USER),
+        _ => Err("provider must be `openai` or `anthropic`".to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{validate_provider_selection, LlmProviderSettings, SaveLlmSettingsRequest};
@@ -320,13 +328,5 @@ mod tests {
 
         let result = validate_provider_selection(&request);
         assert!(result.is_ok());
-    }
-}
-
-pub fn clear_provider_key(request: ClearProviderKeyRequest) -> Result<(), String> {
-    match request.provider.as_str() {
-        "openai" => clear_key(OPENAI_USER),
-        "anthropic" => clear_key(ANTHROPIC_USER),
-        _ => Err("provider must be `openai` or `anthropic`".to_owned()),
     }
 }
