@@ -292,6 +292,27 @@ describe("delete flow", () => {
 });
 
 describe("face switching and save concurrency", () => {
+  it("does not navigate faces with arrow keys while typing in bbox inputs", async () => {
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    });
+
+    const xInput = screen.getAllByLabelText("x")[0];
+    fireEvent.keyDown(xInput, { key: "ArrowRight" });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    });
+    expect(screen.queryByText(/Editing: face-2/)).toBeNull();
+  });
+
   it("does not autosave stale edits for the next face while annotations are loading", async () => {
     let resolveFace2Load: (value: AnnotationEdit[]) => void = () => {
       throw new Error("Expected face-2 annotation loader to be initialized");

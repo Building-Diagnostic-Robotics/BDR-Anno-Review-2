@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Prevented editor ArrowLeft/ArrowRight face-navigation hotkeys from firing while typing in bbox input fields, so caret movement inside inputs no longer triggers unintended face switches.
+
 ## [0.7.1] - 2026-02-23
 
 ### Changed

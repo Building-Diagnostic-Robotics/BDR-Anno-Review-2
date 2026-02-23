@@ -820,20 +820,21 @@ export function App() {
         return;
       }
 
-      if (event.key === "ArrowRight") {
+      const target = event.target as HTMLElement | null;
+      const isTypingTarget = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+
+      if (!isTypingTarget && event.key === "ArrowRight") {
         event.preventDefault();
         const next = Math.min(selectedIndex + 1, faces.length - 1);
         void navigateToFace(faces[next].faceId);
       }
 
-      if (event.key === "ArrowLeft") {
+      if (!isTypingTarget && event.key === "ArrowLeft") {
         event.preventDefault();
         const next = Math.max(selectedIndex - 1, 0);
         void navigateToFace(faces[next].faceId);
       }
 
-      const target = event.target as HTMLElement | null;
-      const isTypingTarget = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (!isTypingTarget && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         handleDeleteActiveBox();
