@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-02-23
+
+### Added
+- Added an explicit 3-step UI flow with dedicated Home, Editor, and Export pages so users can move through dataset intake/resume, annotation, and export in a guided order.
+- Added a collapsible quick tutorial panel in the editor with persisted collapse preference (`localStorage`) for discoverable but unobtrusive annotation guidance.
+- Added debounced editor autosave with visible save-state badges (`Unsaved`, `Autosaving`, `Autosaved`, and error states) while retaining manual Save as an explicit fallback.
+- Added export completion controls that let users continue editing or return home directly from the export page.
+
+### Changed
+- Refactored the annotation dashboard layout to prioritize a large centered frame preview/canvas with a sticky action toolbar for progress, save/export controls, and face navigation.
+- Updated frontend unit tests to cover the new multi-page workflow, autosave behavior, tutorial persistence, and delete-box behavior under the revised UI.
+- Bumped workspace, Tauri app config, and frontend package versions from `0.4.2` to `0.5.0` for the workflow-oriented UI/UX release.
+
 ### Fixed
 - Enabled Tauri asset protocol with a bounded filesystem scope for common local dataset locations so face preview images resolved via `convertFileSrc` (including Windows absolute paths) load reliably instead of returning `asset.localhost` 403 errors.
 - Updated frontend face-preview path tests to mimic real Tauri `convertFileSrc` URLs (`http://asset.localhost/...`) so Windows absolute-path preview regressions are caught in unit tests.

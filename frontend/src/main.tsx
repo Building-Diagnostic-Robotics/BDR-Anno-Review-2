@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -20,6 +20,8 @@ import "./styles.css";
 import { removeEditAtIndex, validateEdits } from "./editing";
 
 const nowIso = () => new Date().toISOString();
+const AUTOSAVE_DEBOUNCE_MS = 1000;
+const TUTORIAL_STORAGE_KEY = "bdr.editor.tutorialCollapsed";
 
 type ImageViewport = {
   naturalWidth: number;
@@ -30,6 +32,8 @@ type ImageViewport = {
 
 type PointerMode = "idle" | "draw" | "move" | "resize";
 type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "done";
+type AppPage = "home" | "editor" | "export";
+type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   const normalizedRoot = datasetRoot.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -40,12 +44,13 @@ const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   return `${normalizedRoot}/${normalizedPath}`;
 };
 
-
 export function App() {
+  const [page, setPage] = useState<AppPage>("home");
+
   const [datasetRoot, setDatasetRoot] = useState("");
   const [cocoJsonPath, setCocoJsonPath] = useState("");
   const [mp4Path, setMp4Path] = useState("");
-  const [sourceFramesDir, setSourceFramesDir] = useState("(auto-managed after extraction)");
+  const [sourceFramesDir] = useState("(auto-managed after extraction)");
   const [outputPath, setOutputPath] = useState("");
   const [dropModalOpen, setDropModalOpen] = useState(false);
 
@@ -57,6 +62,17 @@ export function App() {
   const [imageViewport, setImageViewport] = useState<ImageViewport | null>(null);
   const [previewError, setPreviewError] = useState("");
 
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [saveStateMessage, setSaveStateMessage] = useState("No changes yet.");
+  const [lastSavedAt, setLastSavedAt] = useState("");
+
+  const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.localStorage.getItem(TUTORIAL_STORAGE_KEY) === "true";
+  });
+
   const imageRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragState = useRef({
@@ -67,6 +83,15 @@ export function App() {
     offsetX: 0,
     offsetY: 0,
   });
+
+  const lastSavedSnapshotRef = useRef<Record<string, string>>({});
+  const autosaveTimerRef = useRef<number | undefined>(undefined);
+  const pendingSaveRef = useRef<Promise<void> | null>(null);
+  const editsRef = useRef<AnnotationEdit[]>([]);
+
+  useEffect(() => {
+    editsRef.current = edits;
+  }, [edits]);
 
   const [isBusy, setIsBusy] = useState(false);
   const [status, setStatus] = useState("Ready.");
@@ -81,28 +106,15 @@ export function App() {
     [faces, selectedFaceId]
   );
   const selectedFace = selectedIndex < 0 ? undefined : faces[selectedIndex];
-  const selectedFaceImagePath = selectedFace
-    ? resolveFaceImagePath(datasetRoot, selectedFace.imagePath)
-    : "";
-  const imageSrc = selectedFace
-    ? convertFileSrc(selectedFaceImagePath)
-    : "";
+  const selectedFaceImagePath = selectedFace ? resolveFaceImagePath(datasetRoot, selectedFace.imagePath) : "";
+  const imageSrc = selectedFace ? convertFileSrc(selectedFaceImagePath) : "";
 
   const progress = faces.length === 0 ? 0 : ((selectedIndex + 1) / faces.length) * 100;
 
-
   const datasetRootError = datasetRoot.trim() ? "" : "Dataset root is required.";
   const cocoPathError = cocoJsonPath.trim() ? "" : "COCO JSON path is required.";
-  const mp4PathError = mp4Path.trim()
-    ? mp4Path.toLowerCase().endsWith(".mp4")
-      ? ""
-      : "MP4 path must end with .mp4"
-    : "MP4 path is required.";
-  const outputPathError = outputPath.trim()
-    ? outputPath.toLowerCase().endsWith(".json")
-      ? ""
-      : "Export path must end with .json"
-    : "Export output path is required.";
+  const mp4PathError = mp4Path.trim() ? (mp4Path.toLowerCase().endsWith(".mp4") ? "" : "MP4 path must end with .mp4") : "MP4 path is required.";
+  const outputPathError = outputPath.trim() ? (outputPath.toLowerCase().endsWith(".json") ? "" : "Export path must end with .json") : "Export output path is required.";
 
   const importInputError = datasetRootError || cocoPathError || mp4PathError;
   const exportInputError = datasetRootError || outputPathError;
@@ -132,7 +144,6 @@ export function App() {
 
     return `Could not open file picker: ${message}`;
   };
-
 
   const pickDirectory = async (setter: (value: string) => void) => {
     try {
@@ -193,8 +204,7 @@ export function App() {
         setMp4Path(report.stagedMp4Path);
       }
 
-      const ignored = report.ignoredPaths.length > 0 ? `
-Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
+      const ignored = report.ignoredPaths.length > 0 ? `\nIgnored paths: ${report.ignoredPaths.join(", ")}` : "";
       updateDiagnostics("Drop imported", `Staged under: ${report.workspaceRoot}${ignored}`);
     } catch (cause) {
       updateDiagnostics("Drop import failed", String(cause));
@@ -222,6 +232,7 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
       }
     };
   }, []);
+
   useEffect(() => {
     let disposed = false;
     let unlistenProgress: (() => void) | undefined;
@@ -236,11 +247,12 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
           elapsedMs: number;
         };
         const phase = payload.phase ?? "idle";
-        const nextStep: GenerationStep = phase === "rendering"
-          ? "generating"
-          : (["idle", "validating", "dependencies", "extracting", "generating", "done"].includes(phase)
-            ? (phase as GenerationStep)
-            : "generating");
+        const nextStep: GenerationStep =
+          phase === "rendering"
+            ? "generating"
+            : (["idle", "validating", "dependencies", "extracting", "generating", "done"].includes(phase)
+              ? (phase as GenerationStep)
+              : "generating");
         setGenerationStep(nextStep);
         setGenerationPercent(payload.percent ?? 0);
         setGenerationDetail(payload.detail ?? "Working...");
@@ -257,7 +269,6 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
     };
   }, []);
 
-
   const refreshFaces = async () => {
     const openReport = await openDataset(datasetRoot);
     const faceReport = await listFaces(datasetRoot);
@@ -272,12 +283,16 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
   };
 
   const handleOpen = async () => {
+    if (datasetRootError) {
+      updateDiagnostics("Open dataset blocked", datasetRootError);
+      return;
+    }
+
     setIsBusy(true);
     try {
       const { openReport } = await refreshFaces();
-      updateDiagnostics(
-        `Dataset opened\nmanifest: ${openReport.manifestPath}\nfaces: ${openReport.faceCount}`
-      );
+      setPage("editor");
+      updateDiagnostics(`Dataset opened\nmanifest: ${openReport.manifestPath}\nfaces: ${openReport.faceCount}`);
     } catch (cause) {
       updateDiagnostics("Open dataset failed", String(cause));
     } finally {
@@ -331,19 +346,13 @@ Ignored paths: ${report.ignoredPaths.join(", ")}` : "";
       });
 
       await refreshFaces();
+      setPage("editor");
       setGenerationStep("done");
       setGenerationPercent(100);
       setGenerationDetail("Done: review dataset is ready.");
       setGenerationHeartbeat("Complete");
       updateDiagnostics(
-        `Review dataset generation complete
-${runtimeReport}
-sourceFramesDir (auto-generated): ${sourceFramesDir}
-extractedFrames: ${report.extractedFrameCount}
-skippedCachedFrames: ${report.skippedExistingCount}
-manifest: ${report.writtenManifestPath}
-faces: ${report.faceCount}
-filteredBoxes: ${report.filteredBoxCount}`
+        `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir (auto-generated): ${sourceFramesDir}\nextractedFrames: ${report.extractedFrameCount}\nskippedCachedFrames: ${report.skippedExistingCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
       setGenerationStep("idle");
@@ -356,7 +365,7 @@ filteredBoxes: ${report.filteredBoxCount}`
     }
   };
 
-  const loadAnnotations = async (faceId: string) => {
+  const loadAnnotations = useCallback(async (faceId: string) => {
     if (!faceId) {
       setEdits([]);
       setActiveBoxIndex(null);
@@ -368,6 +377,10 @@ filteredBoxes: ${report.filteredBoxCount}`
     try {
       const current = await getAnnotations(datasetRoot, faceId);
       setEdits(current);
+      lastSavedSnapshotRef.current[faceId] = JSON.stringify(current);
+      setSaveState("saved");
+      setSaveStateMessage("Saved.");
+      setLastSavedAt(new Date().toLocaleTimeString());
       setActiveBoxIndex(null);
       setEditValidationError("");
       updateDiagnostics(`Loaded ${current.length} annotation(s) for ${faceId}`);
@@ -376,11 +389,74 @@ filteredBoxes: ${report.filteredBoxCount}`
     } finally {
       setIsBusy(false);
     }
-  };
+  }, [datasetRoot]);
+
+  const commitSave = useCallback(async (origin: "manual" | "autosave") => {
+    if (!selectedFaceId) {
+      return;
+    }
+    const validationError = validateEdits(editsRef.current);
+    if (validationError) {
+      setEditValidationError(validationError);
+      setSaveState("error");
+      setSaveStateMessage(`Save blocked: ${validationError}`);
+      if (origin === "manual") {
+        updateDiagnostics("Save blocked due to invalid edits", validationError);
+      }
+      return;
+    }
+
+    if (pendingSaveRef.current) {
+      await pendingSaveRef.current;
+      return;
+    }
+
+    setSaveState("saving");
+    setSaveStateMessage(origin === "manual" ? "Saving…" : "Autosaving…");
+
+    const run = (async () => {
+      try {
+        const saved = await setAnnotations(datasetRoot, selectedFaceId, editsRef.current);
+        setEdits(saved);
+        lastSavedSnapshotRef.current[selectedFaceId] = JSON.stringify(saved);
+        setEditValidationError("");
+        setSaveState("saved");
+        setSaveStateMessage(origin === "manual" ? "Saved." : "Autosaved.");
+        setLastSavedAt(new Date().toLocaleTimeString());
+        if (origin === "manual") {
+          updateDiagnostics(`Saved ${saved.length} annotation(s) for ${selectedFaceId}`);
+        }
+      } catch (cause) {
+        setSaveState("error");
+        setSaveStateMessage("Autosave failed. Please retry.");
+        if (origin === "manual") {
+          updateDiagnostics("Save edits failed", String(cause));
+        }
+      }
+    })().finally(() => {
+      pendingSaveRef.current = null;
+    });
+
+    pendingSaveRef.current = run;
+    await run;
+  }, [datasetRoot, selectedFaceId]);
+
+  const flushAutosave = useCallback(async () => {
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = undefined;
+    }
+
+    const snapshot = selectedFaceId ? JSON.stringify(editsRef.current) : "";
+    const baseline = selectedFaceId ? lastSavedSnapshotRef.current[selectedFaceId] ?? "" : "";
+    if (selectedFaceId && snapshot !== baseline) {
+      await commitSave("autosave");
+    }
+  }, [commitSave, selectedFaceId]);
 
   useEffect(() => {
     void loadAnnotations(selectedFaceId);
-  }, [selectedFaceId]);
+  }, [selectedFaceId, loadAnnotations]);
 
   useEffect(() => {
     const onResize = () => {
@@ -435,6 +511,50 @@ filteredBoxes: ${report.filteredBoxCount}`
     });
   }, [edits, imageViewport, activeBoxIndex]);
 
+  useEffect(() => {
+    if (!selectedFaceId) {
+      return;
+    }
+
+    const validationError = validateEdits(edits);
+    if (validationError) {
+      setSaveState("error");
+      setSaveStateMessage(`Fix invalid edits: ${validationError}`);
+      return;
+    }
+
+    const snapshot = JSON.stringify(edits);
+    const baseline = lastSavedSnapshotRef.current[selectedFaceId] ?? "";
+    if (snapshot === baseline) {
+      return;
+    }
+
+    setSaveState("dirty");
+    setSaveStateMessage("Unsaved changes.");
+
+    if (autosaveTimerRef.current) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void commitSave("autosave");
+    }, AUTOSAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, [edits, selectedFaceId, commitSave]);
+
+  const navigateToFace = async (faceId: string) => {
+    if (faceId === selectedFaceId) {
+      return;
+    }
+    await flushAutosave();
+    setSelectedFaceId(faceId);
+  };
+
   const handleEditChange = (index: number, axis: number, rawValue: string) => {
     const value = Number(rawValue);
     if (Number.isNaN(value)) {
@@ -447,12 +567,7 @@ filteredBoxes: ${report.filteredBoxCount}`
           return entry;
         }
 
-        const bbox: [number, number, number, number] = [...entry.bbox] as [
-          number,
-          number,
-          number,
-          number
-        ];
+        const bbox: [number, number, number, number] = [...entry.bbox] as [number, number, number, number];
         bbox[axis] = value;
 
         return {
@@ -500,8 +615,7 @@ filteredBoxes: ${report.filteredBoxCount}`
     setEditValidationError("");
   };
 
-
-  const handleDeleteActiveBox = () => {
+  const handleDeleteActiveBox = useCallback(() => {
     if (activeBoxIndex === null) {
       return;
     }
@@ -524,29 +638,28 @@ filteredBoxes: ${report.filteredBoxCount}`
       setEditValidationError(validationError);
       return next.edits;
     });
-  };
+  }, [activeBoxIndex]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isBusy || faces.length === 0) {
+      if (isBusy || faces.length === 0 || page !== "editor") {
         return;
       }
 
       if (event.key === "ArrowDown" || event.key === "j") {
         event.preventDefault();
         const next = Math.min(selectedIndex + 1, faces.length - 1);
-        setSelectedFaceId(faces[next].faceId);
+        void navigateToFace(faces[next].faceId);
       }
 
       if (event.key === "ArrowUp" || event.key === "k") {
         event.preventDefault();
         const next = Math.max(selectedIndex - 1, 0);
-        setSelectedFaceId(faces[next].faceId);
+        void navigateToFace(faces[next].faceId);
       }
 
       const target = event.target as HTMLElement | null;
-      const isTypingTarget =
-        !!target &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      const isTypingTarget = !!target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (!isTypingTarget && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         handleDeleteActiveBox();
@@ -555,8 +668,7 @@ filteredBoxes: ${report.filteredBoxCount}`
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isBusy, faces, selectedIndex, handleDeleteActiveBox]);
-
+  }, [isBusy, faces, selectedIndex, handleDeleteActiveBox, page]);
 
   const getPointerInImageSpace = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -565,20 +677,8 @@ filteredBoxes: ${report.filteredBoxCount}`
     }
     const rect = canvas.getBoundingClientRect();
     return {
-      x: Math.max(
-        0,
-        Math.min(
-          imageViewport.naturalWidth,
-          ((event.clientX - rect.left) / rect.width) * imageViewport.naturalWidth
-        )
-      ),
-      y: Math.max(
-        0,
-        Math.min(
-          imageViewport.naturalHeight,
-          ((event.clientY - rect.top) / rect.height) * imageViewport.naturalHeight
-        )
-      ),
+      x: Math.max(0, Math.min(imageViewport.naturalWidth, ((event.clientX - rect.left) / rect.width) * imageViewport.naturalWidth)),
+      y: Math.max(0, Math.min(imageViewport.naturalHeight, ((event.clientY - rect.top) / rect.height) * imageViewport.naturalHeight)),
     };
   };
 
@@ -596,8 +696,7 @@ filteredBoxes: ${report.filteredBoxCount}`
 
     for (let index = edits.length - 1; index >= 0; index -= 1) {
       const [x, y, w, h] = edits[index].bbox;
-      const inHandle =
-        Math.abs(pointer.x - (x + w)) <= handleRadius && Math.abs(pointer.y - (y + h)) <= handleRadius;
+      const inHandle = Math.abs(pointer.x - (x + w)) <= handleRadius && Math.abs(pointer.y - (y + h)) <= handleRadius;
       if (inHandle) {
         mode = "resize";
         targetIndex = index;
@@ -674,28 +773,7 @@ filteredBoxes: ${report.filteredBoxCount}`
   };
 
   const handleSave = async () => {
-    if (!selectedFaceId) {
-      return;
-    }
-
-    const validationError = validateEdits(edits);
-    if (validationError) {
-      setEditValidationError(validationError);
-      updateDiagnostics("Save blocked due to invalid edits", validationError);
-      return;
-    }
-
-    setIsBusy(true);
-    try {
-      const saved = await setAnnotations(datasetRoot, selectedFaceId, edits);
-      setEdits(saved);
-      setEditValidationError("");
-      updateDiagnostics(`Saved ${saved.length} annotation(s) for ${selectedFaceId}`);
-    } catch (cause) {
-      updateDiagnostics("Save edits failed", String(cause));
-    } finally {
-      setIsBusy(false);
-    }
+    await commitSave("manual");
   };
 
   const handleExport = async () => {
@@ -707,9 +785,7 @@ filteredBoxes: ${report.filteredBoxCount}`
     setIsBusy(true);
     try {
       const report = await exportCoco({ datasetRoot, outputPath });
-      updateDiagnostics(
-        `Export finished\noutput: ${report.outputPath}\nimages=${report.imageCount}\nannotations=${report.annotationCount}`
-      );
+      updateDiagnostics(`Export finished\noutput: ${report.outputPath}\nimages=${report.imageCount}\nannotations=${report.annotationCount}`);
     } catch (cause) {
       updateDiagnostics("Export failed", String(cause));
     } finally {
@@ -717,218 +793,233 @@ filteredBoxes: ${report.filteredBoxCount}`
     }
   };
 
+  const toggleTutorial = () => {
+    setTutorialCollapsed((previous) => {
+      const next = !previous;
+      window.localStorage.setItem(TUTORIAL_STORAGE_KEY, String(next));
+      return next;
+    });
+  };
+
+  const goHome = async () => {
+    await flushAutosave();
+    setPage("home");
+  };
+
   return (
-    <main>
-      <h1>bdr-anno-review MVP workstation</h1>
-      <div className="progress" aria-label="review progress">
-        <span style={{ width: `${progress}%` }} />
-      </div>
-      <p>
-        Progress: {faces.length === 0 ? "0 / 0" : `${selectedIndex + 1} / ${faces.length}`} (↑/↓
-        or j/k to navigate)
-      </p>
+    <main className="app-shell">
+      <header className="app-header">
+        <h1>bdr-anno-review</h1>
+        <p className="hint">Workflow: Home → Annotate → Export</p>
+      </header>
 
-      <div className="grid">
-        <section className="card">
-          <h3>Dataset open/import</h3>
-          <div className="row">
-            <label>Dataset root</label>
-          </div>
-          <div className="row">
-            <input
-              value={datasetRoot}
-              placeholder="Select dataset directory"
-              onChange={(event) => setDatasetRoot(event.target.value)}
-            />
-            <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isBusy}>
-              Browse
-            </button>
-          </div>
-          {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
-          <div className="row">
-            <button onClick={handleOpen} disabled={isBusy}>
-              Open dataset
-            </button>
-          </div>
-
-          <div className="row">
-            <label>COCO JSON</label>
-          </div>
-          <div className="row">
-            <input
-              value={cocoJsonPath}
-              placeholder="Select instances_default.json"
-              onChange={(event) => setCocoJsonPath(event.target.value)}
-            />
-            <button
-              onClick={() => void pickFile(setCocoJsonPath, [{ name: "COCO JSON", extensions: ["json"] }])}
-              disabled={isBusy}
-            >
-              Browse
-            </button>
-          </div>
-          {cocoPathError ? <p className="error">{cocoPathError}</p> : null}
-          <div className="row">
-            <label>MP4</label>
-          </div>
-          <div className="row">
-            <input
-              value={mp4Path}
-              placeholder="Select source .mp4"
-              onChange={(event) => setMp4Path(event.target.value)}
-            />
-            <button
-              onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])}
-              disabled={isBusy}
-            >
-              Browse
-            </button>
-          </div>
-          {mp4PathError ? <p className="error">{mp4PathError}</p> : null}
-          <div className="row">
-            <label>Source frames directory (auto-managed)</label>
-          </div>
-          <input
-            aria-label="Source frames directory (auto-managed)"
-            value={sourceFramesDir}
-            readOnly
-            aria-readonly="true"
-          />
-          <p className="hint">Generated from MP4 extraction; manual overrides are disabled in MVP.</p>
-          <div className="row">
-            <button onClick={() => setDropModalOpen(true)} disabled={isBusy}>
-              Drop input
-            </button>
-          </div>
-          <p className="hint">Use Browse or Drop input to stage files/folders into app temp workspace.</p>
-          <div className="row">
-            <label>Generation progress</label>
-          </div>
-          <div className="progress" aria-label="generation progress">
-            <span style={{ width: `${generationPercent}%` }} />
-          </div>
-          <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
-          <div className="row">
-            <button onClick={handleGenerate} disabled={isBusy}>
-              Generate review dataset
-            </button>
-            <button onClick={handleImport} disabled={isBusy}>
-              Validate inputs only
-            </button>
-          </div>
-
-          <h3>Face browse</h3>
-          <div className="face-list">
-            {faces.map((face) => (
-              <button
-                key={face.faceId}
-                className={`face-item ${face.faceId === selectedFaceId ? "active" : ""}`}
-                onClick={() => setSelectedFaceId(face.faceId)}
-                disabled={isBusy}
-              >
-                {face.faceId} ({face.face}) • init:{face.initialBoxCount}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="card">
-          <h3>BBox edit + save</h3>
-          <p>Selected face: {selectedFaceId || "(none)"}</p>
-          <div className="preview-shell">
-            {selectedFace ? (
-              <>
-                <img
-                  ref={imageRef}
-                  className="face-preview"
-                  src={imageSrc}
-                  alt={`Face preview for ${selectedFace.faceId}`}
-                  onLoad={(event) => {
-                    setPreviewError("");
-                    setImageViewport({
-                      naturalWidth: event.currentTarget.naturalWidth,
-                      naturalHeight: event.currentTarget.naturalHeight,
-                      displayWidth: event.currentTarget.clientWidth,
-                      displayHeight: event.currentTarget.clientHeight,
-                    });
-                  }}
-                  onError={() => {
-                    setPreviewError(
-                      `Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}. Resolved src: ${imageSrc}. Dataset root: ${datasetRoot || "(empty)"}.`
-                    );
-                  }}
-                />
-                <canvas
-                  ref={canvasRef}
-                  className="bbox-canvas"
-                  onPointerDown={handleCanvasPointerDown}
-                  onPointerMove={handleCanvasPointerMove}
-                  onPointerUp={handleCanvasPointerUp}
-                  onPointerLeave={handleCanvasPointerUp}
-                />
-              </>
-            ) : (
-              <p className="empty-preview">Open a dataset and select a face to start reviewing.</p>
-            )}
-          </div>
-          {previewError ? <p className="error">{previewError}</p> : null}
-          <p className="hint">Canvas: drag to draw, drag inside to move, drag lower-right to resize, Delete/Backspace to remove active.</p>
-
-          {edits.map((edit, index) => (
-            <div
-              className={`row ${activeBoxIndex === index ? "active-row" : ""}`}
-              key={`${selectedFaceId}-${index}`}
-              onMouseEnter={() => setActiveBoxIndex(index)}
-            >
-              {["x", "y", "w", "h"].map((axis, axisIndex) => (
-                <label key={axis}>
-                  {axis}
-                  <input
-                    value={edit.bbox[axisIndex]}
-                    onChange={(event) => handleEditChange(index, axisIndex, event.target.value)}
-                  />
-                </label>
-              ))}
+      {page === "home" ? (
+        <section className="home-layout">
+          <div className="card">
+            <h2>Create new dataset</h2>
+            <p className="hint">Upload COCO + MP4 and generate a review dataset.</p>
+            <div className="row">
+              <label>Dataset root</label>
+              <input
+                aria-label="Dataset root"
+                value={datasetRoot}
+                placeholder="Select dataset directory"
+                onChange={(event) => setDatasetRoot(event.target.value)}
+              />
+              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isBusy}>Browse</button>
             </div>
-          ))}
-          {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
+            <div className="row">
+              <label>COCO JSON</label>
+              <input
+                aria-label="COCO JSON"
+                value={cocoJsonPath}
+                placeholder="Select instances_default.json"
+                onChange={(event) => setCocoJsonPath(event.target.value)}
+              />
+              <button onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isBusy}>Browse</button>
+            </div>
+            <div className="row">
+              <label>Source MP4</label>
+              <input
+                aria-label="Source MP4"
+                value={mp4Path}
+                placeholder="Select source .mp4"
+                onChange={(event) => setMp4Path(event.target.value)}
+              />
+              <button onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isBusy}>Browse</button>
+            </div>
+            <div className="row">
+              <label>Source frames directory (auto-managed)</label>
+              <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
+            </div>
+            <p className="hint">Manual overrides are disabled in MVP to keep runtime behavior deterministic.</p>
+            {(datasetRootError || cocoPathError || mp4PathError) ? (
+              <p className="error">{datasetRootError || cocoPathError || mp4PathError}</p>
+            ) : null}
 
-          <div className="row">
-            <button onClick={handleAddBox} disabled={isBusy || !selectedFaceId}>
-              Add box
-            </button>
-            <button onClick={handleDeleteActiveBox} disabled={isBusy || !selectedFaceId || activeBoxIndex === null}>
-              Delete active box
-            </button>
-            <button onClick={handleSave} disabled={isBusy || !selectedFaceId}>
-              Save edits
-            </button>
+            <div className="row">
+              <button onClick={handleGenerate} disabled={isBusy}>Generate review dataset</button>
+              <button onClick={handleImport} disabled={isBusy}>Validate inputs only</button>
+            </div>
+
+            <div className="progress" aria-label="generation progress">
+              <span style={{ width: `${generationPercent}%` }} />
+            </div>
+            <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
           </div>
 
-          <h3>Export trigger</h3>
-          <div className="row">
-            <input
-              value={outputPath}
-              placeholder="Select export .json output"
-              onChange={(event) => setOutputPath(event.target.value)}
-            />
-            <button onClick={() => void pickSaveFile()} disabled={isBusy}>
-              Browse
-            </button>
-          </div>
-          {outputPathError ? <p className="error">{outputPathError}</p> : null}
-          <div className="row">
-            <button onClick={handleExport} disabled={isBusy}>
-              Export COCO
-            </button>
+          <div className="card">
+            <h2>Resume existing dataset</h2>
+            <p className="hint">Open a dataset with an existing review manifest and continue editing.</p>
+            <div className="row">
+              <input
+                aria-label="Resume dataset directory"
+                value={datasetRoot}
+                placeholder="Select dataset directory"
+                onChange={(event) => setDatasetRoot(event.target.value)}
+              />
+              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isBusy}>Browse</button>
+            </div>
+            <div className="row">
+              <button onClick={handleOpen} disabled={isBusy}>Open dataset</button>
+              <button onClick={() => setDropModalOpen(true)} disabled={isBusy}>Drop input</button>
+            </div>
+            {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
           </div>
 
-          <h3>Backend diagnostics</h3>
-          {error ? <p className="error">Error: {error}</p> : null}
-          <pre className="status">{status}</pre>
-          <small>LLM suggestion helpers are intentionally deferred from this MVP path.</small>
+          <div className="card">
+            <h3>Diagnostics</h3>
+            {error ? <p className="error">Error: {error}</p> : null}
+            <pre className="status">{status}</pre>
+          </div>
         </section>
-      </div>
+      ) : null}
+
+      {page === "editor" ? (
+        <section className="editor-layout">
+          <div className="card editor-toolbar">
+            <div className="row spread">
+              <div>
+                <strong>Editing: {selectedFaceId || "(none)"}</strong>
+                <p className="hint">Progress {Math.max(0, selectedIndex + 1)}/{faces.length} ({Math.round(progress)}%)</p>
+              </div>
+              <div className="row compact">
+                <span className={`save-pill ${saveState}`}>{saveStateMessage}{lastSavedAt ? ` (${lastSavedAt})` : ""}</span>
+                <button onClick={handleSave} disabled={isBusy || !selectedFaceId}>Save now</button>
+                <button onClick={() => setPage("export")} disabled={isBusy || !selectedFaceId}>Finish & export</button>
+              </div>
+            </div>
+            <div className="progress" aria-label="review progress">
+              <span style={{ width: `${progress}%` }} />
+            </div>
+            <div className="row compact">
+              <button onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isBusy || selectedIndex <= 0}>Previous</button>
+              <button onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</button>
+              <button onClick={() => void goHome()} disabled={isBusy}>Return home</button>
+            </div>
+          </div>
+
+          <div className="card tutorial-card">
+            <button className="link-button" onClick={toggleTutorial} aria-expanded={!tutorialCollapsed}>
+              {tutorialCollapsed ? "Show quick tutorial" : "Hide quick tutorial"}
+            </button>
+            {!tutorialCollapsed ? (
+              <ul className="hint">
+                <li>Draw a box by dragging on the image.</li>
+                <li>Drag inside a box to move it. Drag bottom-right corner to resize.</li>
+                <li>Use Delete/Backspace to remove the active box.</li>
+                <li>Use ↑/↓ or j/k to move between faces.</li>
+                <li>Autosave runs after edits; use Save now for immediate persistence.</li>
+              </ul>
+            ) : null}
+          </div>
+
+          <div className="card canvas-card">
+            <div className="preview-shell preview-large">
+              {selectedFace ? (
+                <>
+                  <img
+                    ref={imageRef}
+                    className="face-preview"
+                    src={imageSrc}
+                    alt={`Face preview for ${selectedFace.faceId}`}
+                    onLoad={(event) => {
+                      setPreviewError("");
+                      setImageViewport({
+                        naturalWidth: event.currentTarget.naturalWidth,
+                        naturalHeight: event.currentTarget.naturalHeight,
+                        displayWidth: event.currentTarget.clientWidth,
+                        displayHeight: event.currentTarget.clientHeight,
+                      });
+                    }}
+                    onError={() => {
+                      setPreviewError(`Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}. Resolved src: ${imageSrc}. Dataset root: ${datasetRoot || "(empty)"}.`);
+                    }}
+                  />
+                  <canvas
+                    ref={canvasRef}
+                    className="bbox-canvas"
+                    onPointerDown={handleCanvasPointerDown}
+                    onPointerMove={handleCanvasPointerMove}
+                    onPointerUp={handleCanvasPointerUp}
+                    onPointerLeave={handleCanvasPointerUp}
+                  />
+                </>
+              ) : (
+                <p className="empty-preview">Open a dataset and select a face to start reviewing.</p>
+              )}
+            </div>
+            {previewError ? <p className="error">{previewError}</p> : null}
+          </div>
+
+          <div className="card">
+            <h3>Bounding boxes</h3>
+            {edits.map((edit, index) => (
+              <div className={`row ${activeBoxIndex === index ? "active-row" : ""}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
+                {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
+                  <label key={axis}>
+                    {axis}
+                    <input value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
+                  </label>
+                ))}
+              </div>
+            ))}
+            {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
+            <div className="row">
+              <button onClick={handleAddBox} disabled={isBusy || !selectedFaceId}>Add box</button>
+              <button onClick={handleDeleteActiveBox} disabled={isBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {page === "export" ? (
+        <section className="export-layout">
+          <div className="card">
+            <h2>Export final annotations</h2>
+            <p className="hint">Export reviewed annotations to COCO JSON.</p>
+            <div className="row">
+              <input value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
+              <button onClick={() => void pickSaveFile()} disabled={isBusy}>Browse</button>
+            </div>
+            {outputPathError ? <p className="error">{outputPathError}</p> : null}
+            <div className="row">
+              <button onClick={handleExport} disabled={isBusy}>Export COCO</button>
+            </div>
+            <div className="row">
+              <button onClick={() => setPage("editor")} disabled={isBusy}>Continue editing</button>
+              <button onClick={() => void goHome()} disabled={isBusy}>Return home</button>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3>Diagnostics</h3>
+            {error ? <p className="error">Error: {error}</p> : null}
+            <pre className="status">{status}</pre>
+          </div>
+        </section>
+      ) : null}
+
       {dropModalOpen ? (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Drop input files">
           <div className="modal-card">
