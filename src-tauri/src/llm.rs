@@ -88,15 +88,19 @@ impl SuggestionQueue {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ParsedSuggestions {
-    suggestions: Vec<ParsedSuggestionItem>,
+#[serde(untagged)]
+enum ParsedSuggestions {
+    Boxes(Vec<ParsedSuggestionItem>),
+    NoDefects(String),
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ParsedSuggestionItem {
-    bbox: [f64; 4],
+    xmin: f64,
+    ymin: f64,
+    xmax: f64,
+    ymax: f64,
     confidence: Option<f64>,
 }
 
@@ -163,24 +167,48 @@ fn parse_json_suggestions(
     let parsed: ParsedSuggestions = serde_json::from_str(raw)
         .map_err(|source| format!("provider response was not valid suggestion JSON: {source}"))?;
 
+    if let ParsedSuggestions::NoDefects(value) = &parsed {
+        if value.trim() == "No defects detected" {
+            return Ok(Vec::new());
+        }
+    }
+
+    let entries =
+        match parsed {
+            ParsedSuggestions::Boxes(entries) => entries,
+            ParsedSuggestions::NoDefects(_) => return Err(
+                "provider response string must be exactly `No defects detected` for negative cases"
+                    .to_owned(),
+            ),
+        };
+
     let mut out = Vec::new();
-    for entry in parsed.suggestions {
-        let [x, y, w, h] = entry.bbox;
-        if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
+    for entry in entries {
+        let ParsedSuggestionItem {
+            xmin,
+            ymin,
+            xmax,
+            ymax,
+            confidence,
+        } = entry;
+        if !(xmin.is_finite() && ymin.is_finite() && xmax.is_finite() && ymax.is_finite()) {
             continue;
         }
-        let clamped_x = x.clamp(0.0, width.max(0.0));
-        let clamped_y = y.clamp(0.0, height.max(0.0));
-        let max_w = (width - clamped_x).max(0.0);
-        let max_h = (height - clamped_y).max(0.0);
-        let clamped_w = w.max(0.0).min(max_w);
-        let clamped_h = h.max(0.0).min(max_h);
-        if clamped_w <= 0.0 || clamped_h <= 0.0 {
+        let clamped_xmin = xmin.clamp(0.0, 1.0);
+        let clamped_ymin = ymin.clamp(0.0, 1.0);
+        let clamped_xmax = xmax.clamp(0.0, 1.0);
+        let clamped_ymax = ymax.clamp(0.0, 1.0);
+        if clamped_xmax <= clamped_xmin || clamped_ymax <= clamped_ymin {
             continue;
         }
+
+        let clamped_x = clamped_xmin * width.max(0.0);
+        let clamped_y = clamped_ymin * height.max(0.0);
+        let clamped_w = (clamped_xmax - clamped_xmin) * width.max(0.0);
+        let clamped_h = (clamped_ymax - clamped_ymin) * height.max(0.0);
         out.push(SuggestionBox {
             bbox: [clamped_x, clamped_y, clamped_w, clamped_h],
-            confidence: entry.confidence,
+            confidence,
             source: "llm".to_owned(),
         });
     }
@@ -453,12 +481,18 @@ mod tests {
     use super::parse_json_suggestions;
 
     #[test]
-    fn parser_clamps_and_sorts() {
-        let raw = r#"{"suggestions":[{"bbox":[-1,10,30,30],"confidence":0.2},{"bbox":[5,5,10,10],"confidence":0.9}]}"#;
+    fn parser_converts_normalized_boxes_and_sorts() {
+        let raw = r#"[{"xmin":-0.2,"ymin":0.5,"xmax":1.2,"ymax":1.0,"confidence":0.2},{"xmin":0.25,"ymin":0.25,"xmax":0.75,"ymax":0.75,"confidence":0.9}]"#;
         let parsed = parse_json_suggestions(raw, 20.0, 20.0).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].bbox, [5.0, 5.0, 10.0, 10.0]);
         assert_eq!(parsed[1].bbox, [0.0, 10.0, 20.0, 10.0]);
+    }
+
+    #[test]
+    fn parser_handles_no_defects_response() {
+        let parsed = parse_json_suggestions(r#""No defects detected""#, 20.0, 20.0).unwrap();
+        assert!(parsed.is_empty());
     }
 
     #[test]
