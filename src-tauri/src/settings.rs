@@ -201,6 +201,29 @@ pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, Str
     })
 }
 
+fn validate_provider_selection(request: &SaveLlmSettingsRequest) -> Result<(), String> {
+    if !request.llm_suggestions_enabled {
+        return Ok(());
+    }
+
+    let provider_count =
+        usize::from(request.openai.enabled) + usize::from(request.anthropic.enabled);
+    if provider_count == 0 {
+        return Err(
+            "LLM suggestions are enabled but no provider is enabled. Enable OpenAI or Anthropic, or disable suggestions."
+                .to_owned(),
+        );
+    }
+    if provider_count > 1 {
+        return Err(
+            "LLM suggestions require exactly one enabled provider. Disable one provider before saving."
+                .to_owned(),
+        );
+    }
+
+    Ok(())
+}
+
 pub fn save_settings_request(
     app: &AppHandle,
     request: SaveLlmSettingsRequest,
@@ -218,6 +241,8 @@ pub fn save_settings_request(
     if request.anthropic.model.trim().is_empty() {
         return Err("Anthropic model is required".to_owned());
     }
+
+    validate_provider_selection(&request)?;
 
     if let Some(key) = request.openai_api_key.as_deref() {
         if !key.trim().is_empty() {
@@ -247,5 +272,61 @@ pub fn clear_provider_key(request: ClearProviderKeyRequest) -> Result<(), String
         "openai" => clear_key(OPENAI_USER),
         "anthropic" => clear_key(ANTHROPIC_USER),
         _ => Err("provider must be `openai` or `anthropic`".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_provider_selection, LlmProviderSettings, SaveLlmSettingsRequest};
+
+    fn base_request() -> SaveLlmSettingsRequest {
+        SaveLlmSettingsRequest {
+            llm_suggestions_enabled: true,
+            reasoning_preset: "balanced".to_owned(),
+            prefetch_buffer_size: 8,
+            openai: LlmProviderSettings {
+                enabled: true,
+                model: "gpt-5.2".to_owned(),
+            },
+            anthropic: LlmProviderSettings {
+                enabled: false,
+                model: "claude-sonnet-4-6".to_owned(),
+            },
+            openai_api_key: None,
+            anthropic_api_key: None,
+        }
+    }
+
+    #[test]
+    fn provider_selection_rejects_none_enabled_with_suggestions() {
+        let mut request = base_request();
+        request.openai.enabled = false;
+        request.anthropic.enabled = false;
+
+        let error = validate_provider_selection(&request)
+            .expect_err("expected provider validation to fail");
+        assert!(error.contains("no provider is enabled"));
+    }
+
+    #[test]
+    fn provider_selection_rejects_multiple_enabled_with_suggestions() {
+        let mut request = base_request();
+        request.openai.enabled = true;
+        request.anthropic.enabled = true;
+
+        let error = validate_provider_selection(&request)
+            .expect_err("expected provider validation to fail");
+        assert!(error.contains("exactly one enabled provider"));
+    }
+
+    #[test]
+    fn provider_selection_allows_none_enabled_when_suggestions_disabled() {
+        let mut request = base_request();
+        request.llm_suggestions_enabled = false;
+        request.openai.enabled = false;
+        request.anthropic.enabled = false;
+
+        let result = validate_provider_selection(&request);
+        assert!(result.is_ok());
     }
 }

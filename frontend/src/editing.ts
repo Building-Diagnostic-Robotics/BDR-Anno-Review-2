@@ -156,3 +156,37 @@ export const resizeBboxFromHandle = (
     Math.max(0, normalizedBottom - normalizedTop),
   ];
 };
+
+export const clampBboxToBounds = (
+  bbox: [number, number, number, number],
+  bounds: { width: number; height: number }
+): [number, number, number, number] => {
+  const maxWidth = Math.max(0, bounds.width);
+  const maxHeight = Math.max(0, bounds.height);
+  const [x, y, w, h] = bbox;
+
+  const clampedX = Math.max(0, Math.min(maxWidth, x));
+  const clampedY = Math.max(0, Math.min(maxHeight, y));
+  const clampedW = Math.max(0, Math.min(maxWidth - clampedX, w));
+  const clampedH = Math.max(0, Math.min(maxHeight - clampedY, h));
+
+  return [clampedX, clampedY, clampedW, clampedH];
+};
+
+export const clampBboxMoveToBounds = (
+  bbox: [number, number, number, number],
+  bounds: { width: number; height: number }
+): [number, number, number, number] => {
+  const maxWidth = Math.max(0, bounds.width);
+  const maxHeight = Math.max(0, bounds.height);
+  const [x, y, w, h] = bbox;
+
+  if (w > maxWidth || h > maxHeight) {
+    return clampBboxToBounds(bbox, bounds);
+  }
+
+  const clampedX = Math.max(0, Math.min(maxWidth - w, x));
+  const clampedY = Math.max(0, Math.min(maxHeight - h, y));
+
+  return [clampedX, clampedY, w, h];
+};

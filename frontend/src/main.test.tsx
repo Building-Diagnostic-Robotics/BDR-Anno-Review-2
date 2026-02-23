@@ -36,6 +36,8 @@ const mocks = vi.hoisted(() => ({
   getSuggestions: vi.fn(),
   getSuggestionQueueState: vi.fn(),
   prefetchSuggestions: vi.fn(),
+  saveLlmSettings: vi.fn(),
+  clearProviderKey: vi.fn(),
   setAnnotations: vi.fn(async (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) => edits),
   exportCoco: vi.fn(),
 }));
@@ -137,6 +139,13 @@ beforeEach(() => {
   mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.2", suggestions: [], attempts: 1 });
   mocks.prefetchSuggestions.mockResolvedValue({ items: [] });
   mocks.getSuggestionQueueState.mockResolvedValue({ items: [] });
+  mocks.saveLlmSettings.mockResolvedValue({
+    llmSuggestionsEnabled: true,
+    reasoningPreset: "high",
+    prefetchBufferSize: 12,
+    openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: false },
+    anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+  });
 
   mocks.startGenerateReviewDataset.mockClear();
   mocks.getGenerationStatus.mockClear();
@@ -147,6 +156,8 @@ beforeEach(() => {
   mocks.getSuggestions.mockClear();
   mocks.prefetchSuggestions.mockClear();
   mocks.getSuggestionQueueState.mockClear();
+  mocks.saveLlmSettings.mockClear();
+  mocks.clearProviderKey.mockClear();
 });
 
 describe("workflow pages", () => {
@@ -390,6 +401,33 @@ describe("face switching and save concurrency", () => {
 
     await waitFor(() => {
       expect(firstXInput.value).toBe("15");
+    });
+  });
+});
+
+
+describe("settings modal", () => {
+  it("disables save when suggestions are enabled and provider is disabled", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+    const providerSelect = await screen.findByLabelText("Provider");
+    fireEvent.change(providerSelect, { target: { value: "none" } });
+
+    expect(screen.getByText(/select an llm provider or disable suggestions/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("closes settings modal on Escape", async () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+    await screen.findByRole("dialog", { name: "LLM settings" });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "LLM settings" })).toBeNull();
     });
   });
 });
