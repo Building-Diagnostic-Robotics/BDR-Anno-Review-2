@@ -7,10 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-02-23
+
+### Added
+- Added asynchronous generation job commands (`start_generate_review_dataset_command`, `get_generation_status_command`) and frontend polling integration so generation progress can be tracked without blocking a single long-running UI invoke.
+- Added full-box resize handle support (all four corners + all four edges) with handle rendering on the active annotation box.
+- Added pointer-intent helpers and unit tests for resize/move hit-testing and handle-based bbox resizing behavior.
+
+### Changed
+- Refactored editor interaction state to expose intent-aware cursor updates (`grab`/`grabbing` for moves and directional resize cursors for handles) instead of a static crosshair cursor.
+- Split coarse busy-state handling into generation/import/export/face-loading specific flags so editor and status UX remain responsive during background operations.
+- Updated editor quick tutorial guidance to describe resizing from any corner/edge.
+
 ### Fixed
-- Resolved LLM prompt loading in packaged builds by reading `suggest_boxes_v1.txt` from Tauri bundled resources (with explicit diagnostics and a dev fallback path).
-- Synced the LLM settings modal form state whenever async-loaded settings arrive to prevent stale default values from overwriting saved configuration.
-- Updated linear prefetch to skip the currently selected face so suggestion prefetch avoids duplicate requests for the active item.
+- Fixed autosave regression for pointer-driven bbox modifications by hardening dirty-state checks and forcing autosave scheduling after pointer-up when unsaved edits remain.
+- Moved import-stage validation for generation into `spawn_blocking` execution to avoid synchronous blocking during dataset generation startup.
 
 ## [0.6.0] - 2026-02-23
 

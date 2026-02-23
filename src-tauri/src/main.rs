@@ -39,6 +39,7 @@ struct AppState {
     annotation_cache: Mutex<HashMap<(String, String), Vec<AnnotationEdit>>>,
     suggestion_cache: Mutex<HashMap<(String, String), SuggestionResponse>>,
     suggestion_queue: Mutex<SuggestionQueue>,
+    generation_jobs: Mutex<HashMap<String, GenerationJobRecord>>,
 }
 
 impl Default for AppState {
@@ -47,6 +48,7 @@ impl Default for AppState {
             annotation_cache: Mutex::new(HashMap::new()),
             suggestion_cache: Mutex::new(HashMap::new()),
             suggestion_queue: Mutex::new(SuggestionQueue::new()),
+            generation_jobs: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -184,6 +186,34 @@ struct GenerateReviewDatasetResponse {
     filtered_box_count: usize,
     extracted_frame_count: usize,
     skipped_existing_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartGenerationResponse {
+    job_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationStatusRequest {
+    job_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerationStatusResponse {
+    job_id: String,
+    state: String,
+    message: String,
+    result: Option<GenerateReviewDatasetResponse>,
+}
+
+#[derive(Debug, Clone)]
+struct GenerationJobRecord {
+    state: String,
+    message: String,
+    result: Option<GenerateReviewDatasetResponse>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -503,10 +533,8 @@ fn export_coco_command(request: ExportCocoRequest) -> Result<ExportCocoResponse,
     })
 }
 
-#[tauri::command]
-async fn generate_review_dataset_command(
+async fn run_generation_pipeline(
     app: AppHandle,
-    state: State<'_, AppState>,
     request: GenerateReviewDatasetRequest,
 ) -> Result<GenerateReviewDatasetResponse, String> {
     let ffmpeg_bin = resolve_ffmpeg_binary(&app, "ffmpeg")?;
@@ -546,11 +574,20 @@ async fn generate_review_dataset_command(
     };
 
     emit_progress("validating", "Validating inputs", 0, 1, started, &app);
-    run_import_stage(ImportStageOptions {
-        dataset_root: request.dataset_root.clone(),
-        coco_json_path: request.coco_json_path.clone(),
-        mp4_path: request.mp4_path.clone(),
+    tauri::async_runtime::spawn_blocking({
+        let dataset_root = request.dataset_root.clone();
+        let coco_json_path = request.coco_json_path.clone();
+        let mp4_path = request.mp4_path.clone();
+        move || {
+            run_import_stage(ImportStageOptions {
+                dataset_root,
+                coco_json_path,
+                mp4_path,
+            })
+        }
     })
+    .await
+    .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;
 
     let extraction_report = tauri::async_runtime::spawn_blocking({
@@ -651,6 +688,7 @@ async fn generate_review_dataset_command(
     .map_err(|error| error.to_string())?;
 
     emit_progress("done", "Generation complete", 1, 1, started, &app);
+    let state = app.state::<AppState>();
     clear_annotation_cache_for_dataset(&state, &request.dataset_root)?;
 
     Ok(GenerateReviewDatasetResponse {
@@ -659,6 +697,102 @@ async fn generate_review_dataset_command(
         filtered_box_count: report.filtered_box_count,
         extracted_frame_count: extraction_report.extracted_frame_count,
         skipped_existing_count: extraction_report.skipped_existing_count,
+    })
+}
+
+#[tauri::command]
+async fn generate_review_dataset_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: GenerateReviewDatasetRequest,
+) -> Result<GenerateReviewDatasetResponse, String> {
+    let _ = state;
+    run_generation_pipeline(app, request).await
+}
+
+#[tauri::command]
+fn start_generate_review_dataset_command(
+    app: AppHandle,
+    request: GenerateReviewDatasetRequest,
+) -> Result<StartGenerationResponse, String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let job_id = format!("gen-{}-{nanos}", std::process::id());
+
+    {
+        let state = app.state::<AppState>();
+        state
+            .generation_jobs
+            .lock()
+            .map_err(|_| "generation jobs lock poisoned".to_owned())?
+            .insert(
+                job_id.clone(),
+                GenerationJobRecord {
+                    state: "pending".to_owned(),
+                    message: "Queued generation job".to_owned(),
+                    result: None,
+                },
+            );
+    }
+
+    let app_for_task = app.clone();
+    let job_id_for_task = job_id.clone();
+    tauri::async_runtime::spawn(async move {
+        {
+            let state = app_for_task.state::<AppState>();
+            let lock = state.generation_jobs.lock();
+            if let Ok(mut jobs) = lock {
+                if let Some(job) = jobs.get_mut(&job_id_for_task) {
+                    job.state = "running".to_owned();
+                    job.message = "Generation job is running".to_owned();
+                }
+            }
+        }
+
+        let result = run_generation_pipeline(app_for_task.clone(), request).await;
+
+        if let Ok(mut jobs) = app_for_task.state::<AppState>().generation_jobs.lock() {
+            if let Some(job) = jobs.get_mut(&job_id_for_task) {
+                match result {
+                    Ok(report) => {
+                        job.state = "done".to_owned();
+                        job.message = "Generation complete".to_owned();
+                        job.result = Some(report);
+                    }
+                    Err(error) => {
+                        job.state = "error".to_owned();
+                        job.message = error;
+                        job.result = None;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(StartGenerationResponse { job_id })
+}
+
+#[tauri::command]
+fn get_generation_status_command(
+    app: AppHandle,
+    request: GenerationStatusRequest,
+) -> Result<GenerationStatusResponse, String> {
+    let state = app.state::<AppState>();
+    let jobs = state
+        .generation_jobs
+        .lock()
+        .map_err(|_| "generation jobs lock poisoned".to_owned())?;
+    let record = jobs
+        .get(&request.job_id)
+        .ok_or_else(|| format!("generation job not found: {}", request.job_id))?;
+
+    Ok(GenerationStatusResponse {
+        job_id: request.job_id,
+        state: record.state.clone(),
+        message: record.message.clone(),
+        result: record.result.clone(),
     })
 }
 
@@ -1375,6 +1509,8 @@ fn main() {
             set_annotations_command,
             export_coco_command,
             generate_review_dataset_command,
+            start_generate_review_dataset_command,
+            get_generation_status_command,
             extract_frames_from_mp4_command,
             check_runtime_dependencies_command,
             get_llm_settings_command,

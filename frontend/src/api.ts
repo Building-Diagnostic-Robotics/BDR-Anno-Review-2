@@ -7,6 +7,7 @@ import type {
   ExportCocoReport,
   GenerateReviewDatasetOptions,
   GenerateReviewDatasetReport,
+  GenerationStatusResponse,
   ImportStageOptions,
   ImportStageReport,
   ListFacesReport,
@@ -18,6 +19,7 @@ import type {
   SuggestionResponse,
   QueueStateResponse,
   LlmProviderId,
+  StartGenerationResponse,
 } from "./types";
 
 export const runImportStage = async (options: ImportStageOptions) =>
@@ -53,6 +55,16 @@ export const exportCoco = async (options: ExportCocoOptions) =>
 export const generateReviewDataset = async (options: GenerateReviewDatasetOptions) =>
   invoke<GenerateReviewDatasetReport>("generate_review_dataset_command", {
     request: options,
+  });
+
+export const startGenerateReviewDataset = async (options: GenerateReviewDatasetOptions) =>
+  invoke<StartGenerationResponse>("start_generate_review_dataset_command", {
+    request: options,
+  });
+
+export const getGenerationStatus = async (jobId: string) =>
+  invoke<GenerationStatusResponse>("get_generation_status_command", {
+    request: { jobId },
   });
 
 export const extractFramesFromMp4 = async (options: ExtractFramesFromMp4Options) =>

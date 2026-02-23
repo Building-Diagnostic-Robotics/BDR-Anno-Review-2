@@ -28,7 +28,8 @@ const faces: FaceListItem[] = [
 ];
 
 const mocks = vi.hoisted(() => ({
-  generateReviewDataset: vi.fn(),
+  startGenerateReviewDataset: vi.fn(),
+  getGenerationStatus: vi.fn(),
   runImportStage: vi.fn(),
   stageDroppedInputs: vi.fn(),
   setAnnotations: vi.fn(async (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) => edits),
@@ -39,7 +40,8 @@ let annotationStore: Record<string, AnnotationEdit[]>;
 
 vi.mock("./api", () => ({
   exportCoco: mocks.exportCoco,
-  generateReviewDataset: mocks.generateReviewDataset,
+  startGenerateReviewDataset: mocks.startGenerateReviewDataset,
+  getGenerationStatus: mocks.getGenerationStatus,
   runImportStage: mocks.runImportStage,
   stageDroppedInputs: mocks.stageDroppedInputs,
   checkRuntimeDependencies: vi.fn(async () => ({
@@ -57,6 +59,19 @@ vi.mock("./api", () => ({
 }));
 
 beforeEach(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
+    return {
+      clearRect: () => undefined,
+      fillRect: () => undefined,
+      strokeRect: () => undefined,
+      fillText: () => undefined,
+      set lineWidth(_value: number) {},
+      set fillStyle(_value: string) {},
+      set strokeStyle(_value: string) {},
+    } as unknown as CanvasRenderingContext2D;
+  });
+  (Element.prototype as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture = () => undefined;
+
   window.localStorage.clear();
   annotationStore = {
     "face-1": [
@@ -66,12 +81,18 @@ beforeEach(() => {
     "face-2": [],
   };
 
-  mocks.generateReviewDataset.mockResolvedValue({
+  mocks.startGenerateReviewDataset.mockResolvedValue({ jobId: "job-1" });
+  mocks.getGenerationStatus.mockResolvedValue({
+    jobId: "job-1",
+    state: "done",
+    message: "Generation complete",
+    result: {
     writtenManifestPath: "annotations/view_manifest.json",
     faceCount: 2,
     filteredBoxCount: 1,
     extractedFrameCount: 8,
     skippedExistingCount: 2,
+  },
   });
 
   mocks.stageDroppedInputs.mockResolvedValue({
@@ -96,7 +117,8 @@ beforeEach(() => {
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
 
-  mocks.generateReviewDataset.mockClear();
+  mocks.startGenerateReviewDataset.mockClear();
+  mocks.getGenerationStatus.mockClear();
   mocks.runImportStage.mockClear();
   mocks.setAnnotations.mockClear();
   mocks.stageDroppedInputs.mockClear();
@@ -146,6 +168,7 @@ describe("autosave", () => {
       expect(mocks.setAnnotations).toHaveBeenCalled();
     });
   });
+
 });
 
 describe("tutorial preferences", () => {
