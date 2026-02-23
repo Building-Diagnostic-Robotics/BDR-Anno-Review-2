@@ -60,12 +60,14 @@ main {
 
 input,
 button,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   padding: 0.45rem;
   border: 1px solid #d1d5db;

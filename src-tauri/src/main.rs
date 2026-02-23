@@ -10,11 +10,23 @@ use std::time::Instant;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod llm;
+mod settings;
+
+use llm::{
+    generate_suggestions_with_retry, QueueStateResponse, SuggestionQueue, SuggestionQueuePrefetchRequest,
+    SuggestionRequest, SuggestionResponse,
+};
+use settings::{
+    anthropic_key, clear_provider_key, get_settings_response, load_settings, openai_key,
+    save_settings_request, ClearProviderKeyRequest, LlmSettingsResponse, SaveLlmSettingsRequest,
+};
+
 use engine::{
     export_coco, extract_frames_from_mp4_with_progress, generate_review_dataset_with_progress,
     get_annotations, init_empty_manifest, run_import_stage, set_annotations, AnnotationEdit,
     ExportCocoOptions, ExportCocoReport, ExtractFramesFromMp4Options, ExtractFramesFromMp4Report,
-    FramesSource, GenerateReviewDatasetOptions, ImportStageOptions, ManifestInputs,
+    FaceView, FramesSource, GenerateReviewDatasetOptions, ImportStageOptions, ManifestInputs,
     ProjectionConfig, RenderConfig, ViewManifest,
 };
 
@@ -23,9 +35,20 @@ const STAGING_WORKSPACE_PREFIX: &str = "bdr-anno-review-drop-";
 const STAGING_REGISTRY_FILE: &str = "staging-workspaces.json";
 const STAGING_WORKSPACE_MARKER_FILE: &str = ".bdr-anno-review-owned";
 
-#[derive(Default)]
 struct AppState {
     annotation_cache: Mutex<HashMap<(String, String), Vec<AnnotationEdit>>>,
+    suggestion_cache: Mutex<HashMap<(String, String), SuggestionResponse>>,
+    suggestion_queue: Mutex<SuggestionQueue>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            annotation_cache: Mutex::new(HashMap::new()),
+            suggestion_cache: Mutex::new(HashMap::new()),
+            suggestion_queue: Mutex::new(SuggestionQueue::new()),
+        }
+    }
 }
 
 struct AppSession {
@@ -998,6 +1021,182 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
+
+
+#[tauri::command]
+fn get_llm_settings_command(app: AppHandle) -> Result<LlmSettingsResponse, String> {
+    get_settings_response(&app)
+}
+
+#[tauri::command]
+fn save_llm_settings_command(
+    app: AppHandle,
+    request: SaveLlmSettingsRequest,
+) -> Result<LlmSettingsResponse, String> {
+    save_settings_request(&app, request)
+}
+
+#[tauri::command]
+fn clear_provider_key_command(request: ClearProviderKeyRequest) -> Result<(), String> {
+    clear_provider_key(request)
+}
+
+fn load_manifest(dataset_root: &str) -> Result<ViewManifest, String> {
+    let manifest_path = PathBuf::from(dataset_root).join(VIEW_MANIFEST_PATH);
+    let raw = fs::read_to_string(&manifest_path).map_err(|source| {
+        format!(
+            "failed to read manifest `{}`: {source}",
+            manifest_path.display()
+        )
+    })?;
+    serde_json::from_str(&raw).map_err(|source| {
+        format!(
+            "failed to parse manifest `{}`: {source}",
+            manifest_path.display()
+        )
+    })
+}
+
+fn get_face_by_id(dataset_root: &str, face_id: &str) -> Result<FaceView, String> {
+    let manifest = load_manifest(dataset_root)?;
+    manifest
+        .faces
+        .into_iter()
+        .find(|face| face.face_id == face_id)
+        .ok_or_else(|| format!("unknown face_id: {face_id}"))
+}
+
+#[tauri::command]
+fn get_suggestions_command(
+    app: AppHandle,
+    state: State<AppState>,
+    request: SuggestionRequest,
+) -> Result<SuggestionResponse, String> {
+    let settings = load_settings(&app)?;
+    if !settings.llm_suggestions_enabled {
+        return Err("LLM suggestions are disabled in settings".to_owned());
+    }
+
+    let cache_key = (request.dataset_root.clone(), request.face_id.clone());
+    if let Some(cached) = state
+        .suggestion_cache
+        .lock()
+        .map_err(|_| "suggestion cache lock poisoned".to_owned())?
+        .get(&cache_key)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+
+    {
+        let mut queue = state
+            .suggestion_queue
+            .lock()
+            .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
+        queue.states.insert(request.face_id.clone(), "in_flight".to_owned());
+    }
+
+    let face = get_face_by_id(&request.dataset_root, &request.face_id)?;
+    let generated = generate_suggestions_with_retry(
+        &settings,
+        &face,
+        &request.dataset_root,
+        openai_key().as_deref(),
+        anthropic_key().as_deref(),
+        request.timeout_ms,
+    );
+
+    match generated {
+        Ok(response) => {
+            state
+                .suggestion_cache
+                .lock()
+                .map_err(|_| "suggestion cache lock poisoned".to_owned())?
+                .insert(cache_key, response.clone());
+            state
+                .suggestion_queue
+                .lock()
+                .map_err(|_| "suggestion queue lock poisoned".to_owned())?
+                .states
+                .insert(request.face_id, "ready".to_owned());
+            Ok(response)
+        }
+        Err(error) => {
+            state
+                .suggestion_queue
+                .lock()
+                .map_err(|_| "suggestion queue lock poisoned".to_owned())?
+                .states
+                .insert(request.face_id, "failed".to_owned());
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn prefetch_suggestions_command(
+    app: AppHandle,
+    state: State<AppState>,
+    request: SuggestionQueuePrefetchRequest,
+) -> Result<QueueStateResponse, String> {
+    let settings = load_settings(&app)?;
+    if !settings.llm_suggestions_enabled {
+        return Ok(QueueStateResponse { items: Vec::new() });
+    }
+
+    let limited: Vec<String> = request
+        .face_ids
+        .into_iter()
+        .take(settings.prefetch_buffer_size)
+        .collect();
+
+    for face_id in &limited {
+        {
+            let cache = state
+                .suggestion_cache
+                .lock()
+                .map_err(|_| "suggestion cache lock poisoned".to_owned())?;
+            if cache.contains_key(&(request.dataset_root.clone(), face_id.clone())) {
+                continue;
+            }
+        }
+
+        state
+            .suggestion_queue
+            .lock()
+            .map_err(|_| "suggestion queue lock poisoned".to_owned())?
+            .states
+            .insert(face_id.clone(), "queued".to_owned());
+
+        let _ = get_suggestions_command(
+            app.clone(),
+            state.clone(),
+            SuggestionRequest {
+                dataset_root: request.dataset_root.clone(),
+                face_id: face_id.clone(),
+                timeout_ms: Some(20_000),
+            },
+        );
+    }
+
+    let queue = state
+        .suggestion_queue
+        .lock()
+        .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
+    Ok(queue.state(&limited))
+}
+
+#[tauri::command]
+fn get_suggestion_queue_state_command(
+    state: State<AppState>,
+    face_ids: Vec<String>,
+) -> Result<QueueStateResponse, String> {
+    let queue = state
+        .suggestion_queue
+        .lock()
+        .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
+    Ok(queue.state(&face_ids))
+}
 #[tauri::command]
 fn check_runtime_dependencies_command(app: AppHandle) -> Result<RuntimeDependencyReport, String> {
     let ffmpeg = resolve_ffmpeg_binary(&app, "ffmpeg")?;
@@ -1177,6 +1376,12 @@ fn main() {
             generate_review_dataset_command,
             extract_frames_from_mp4_command,
             check_runtime_dependencies_command,
+            get_llm_settings_command,
+            save_llm_settings_command,
+            clear_provider_key_command,
+            get_suggestions_command,
+            prefetch_suggestions_command,
+            get_suggestion_queue_state_command,
             stage_dropped_inputs_command,
             cleanup_staging_workspaces_command
         ])

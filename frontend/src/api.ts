@@ -13,6 +13,11 @@ import type {
   OpenDatasetReport,
   RuntimeDependencyReport,
   StageDroppedInputsReport,
+  LlmSettingsResponse,
+  SaveLlmSettingsRequest,
+  SuggestionResponse,
+  QueueStateResponse,
+  LlmProviderId,
 } from "./types";
 
 export const runImportStage = async (options: ImportStageOptions) =>
@@ -63,3 +68,25 @@ export const stageDroppedInputs = async (paths: string[]) =>
   invoke<StageDroppedInputsReport>("stage_dropped_inputs_command", {
     request: { paths },
   });
+
+
+export const getLlmSettings = async () => invoke<LlmSettingsResponse>("get_llm_settings_command");
+
+export const saveLlmSettings = async (request: SaveLlmSettingsRequest) =>
+  invoke<LlmSettingsResponse>("save_llm_settings_command", { request });
+
+export const clearProviderKey = async (provider: LlmProviderId) =>
+  invoke<void>("clear_provider_key_command", { request: { provider } });
+
+export const getSuggestions = async (datasetRoot: string, faceId: string, timeoutMs?: number) =>
+  invoke<SuggestionResponse>("get_suggestions_command", {
+    request: { datasetRoot, faceId, timeoutMs },
+  });
+
+export const prefetchSuggestions = async (datasetRoot: string, faceIds: string[]) =>
+  invoke<QueueStateResponse>("prefetch_suggestions_command", {
+    request: { datasetRoot, faceIds },
+  });
+
+export const getSuggestionQueueState = async (faceIds: string[]) =>
+  invoke<QueueStateResponse>("get_suggestion_queue_state_command", { faceIds });
