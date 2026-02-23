@@ -190,6 +190,29 @@ describe("tutorial preferences", () => {
   });
 });
 
+
+describe("home progressive disclosure and editor focus", () => {
+  it("shows advanced path fields on demand and toggles focus mode", async () => {
+    render(<App />);
+
+    expect(screen.queryByLabelText("COCO JSON")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show advanced file paths" }));
+    expect(screen.getByLabelText("COCO JSON")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Focus mode" })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Focus mode" }));
+    expect(screen.getByRole("button", { name: "Exit focus" })).toBeTruthy();
+  });
+});
+
 describe("delete flow", () => {
   it("deletes active box and persists through manual save", async () => {
     render(<App />);

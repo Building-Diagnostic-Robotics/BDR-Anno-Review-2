@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { LlmProviderId, LlmSettingsResponse, ReasoningPreset, SaveLlmSettingsRequest } from "./types";
+import { Button, Field } from "./ui-primitives";
 
 type Props = {
   initial: LlmSettingsResponse | null;
@@ -32,6 +33,28 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const preset = useMemo(() => {
+    if (reasoningPreset === "low" && prefetchBufferSize <= 4) return "Fast";
+    if (reasoningPreset === "high" && prefetchBufferSize >= 10) return "Quality";
+    return "Balanced";
+  }, [reasoningPreset, prefetchBufferSize]);
+
+  const applyPreset = (nextPreset: "Fast" | "Balanced" | "Quality") => {
+    if (nextPreset === "Fast") {
+      setReasoningPreset("low");
+      setPrefetchBufferSize(4);
+      return;
+    }
+    if (nextPreset === "Quality") {
+      setReasoningPreset("high");
+      setPrefetchBufferSize(12);
+      return;
+    }
+    setReasoningPreset("balanced");
+    setPrefetchBufferSize(8);
+  };
 
   useEffect(() => {
     setLlmSuggestionsEnabled(seed.llmSuggestionsEnabled);
@@ -45,26 +68,60 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
     setAnthropicApiKey("");
     setShowOpenaiKey(false);
     setShowAnthropicKey(false);
+    setShowAdvanced(false);
   }, [seed]);
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="LLM settings">
       <div className="modal-card">
         <h3>LLM settings</h3>
-        <label className="row">
-          <span>Enable suggestions feature flag</span>
+        <p className="hint">Default behavior is optimized for low-friction suggestions. Use Advanced only when tuning is needed.</p>
+
+        <label className="row spread">
+          <span>Enable suggestions</span>
           <input type="checkbox" checked={llmSuggestionsEnabled} onChange={(e) => setLlmSuggestionsEnabled(e.target.checked)} />
         </label>
 
-        <label>Reasoning preset</label>
-        <select value={reasoningPreset} onChange={(e) => setReasoningPreset(e.target.value as ReasoningPreset)}>
-          <option value="high">High</option>
-          <option value="balanced">Balanced</option>
-          <option value="low">Low</option>
-        </select>
+        <Field label="Provider">
+          <select
+            value={openaiEnabled ? "openai" : anthropicEnabled ? "anthropic" : "none"}
+            onChange={(event) => {
+              const provider = event.target.value;
+              setOpenaiEnabled(provider === "openai");
+              setAnthropicEnabled(provider === "anthropic");
+            }}
+          >
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="none">Disabled</option>
+          </select>
+        </Field>
 
-        <label>Prefetch buffer size</label>
-        <input type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
+        <Field label="Preset" hint="Fast prioritizes speed, Quality prioritizes accuracy.">
+          <div className="row compact">
+            <Button variant={preset === "Fast" ? "filled" : "outlined"} onClick={() => applyPreset("Fast")}>Fast</Button>
+            <Button variant={preset === "Balanced" ? "filled" : "outlined"} onClick={() => applyPreset("Balanced")}>Balanced</Button>
+            <Button variant={preset === "Quality" ? "filled" : "outlined"} onClick={() => applyPreset("Quality")}>Quality</Button>
+          </div>
+        </Field>
+
+        <button className="link-button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} advanced settings</button>
+
+        {showAdvanced ? (
+          <>
+            <Field label="Reasoning preset">
+              <select value={reasoningPreset} onChange={(e) => setReasoningPreset(e.target.value as ReasoningPreset)}>
+                <option value="high">High</option>
+                <option value="balanced">Balanced</option>
+                <option value="low">Low</option>
+              </select>
+            </Field>
+
+            <Field label="Prefetch buffer size">
+              <input type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
+            </Field>
+          </>
+        ) : null}
 
         <h4>OpenAI</h4>
         <label className="row">
@@ -83,8 +140,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
             onChange={(e) => setOpenaiApiKey(e.target.value)}
             placeholder="sk-..."
           />
-          <button onClick={() => setShowOpenaiKey((v) => !v)}>{showOpenaiKey ? "Hide" : "Show"}</button>
-          <button onClick={() => void onClearProviderKey("openai")}>Clear key</button>
+          <Button variant="tonal" onClick={() => setShowOpenaiKey((v) => !v)}>{showOpenaiKey ? "Hide" : "Show"}</Button>
+          <Button variant="outlined" onClick={() => void onClearProviderKey("openai")}>Clear key</Button>
         </div>
 
         <h4>Anthropic</h4>
@@ -105,12 +162,12 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
             onChange={(e) => setAnthropicApiKey(e.target.value)}
             placeholder="sk-ant-..."
           />
-          <button onClick={() => setShowAnthropicKey((v) => !v)}>{showAnthropicKey ? "Hide" : "Show"}</button>
-          <button onClick={() => void onClearProviderKey("anthropic")}>Clear key</button>
+          <Button variant="tonal" onClick={() => setShowAnthropicKey((v) => !v)}>{showAnthropicKey ? "Hide" : "Show"}</Button>
+          <Button variant="outlined" onClick={() => void onClearProviderKey("anthropic")}>Clear key</Button>
         </div>
 
         <div className="row">
-          <button
+          <Button
             onClick={() =>
               void onSave({
                 llmSuggestionsEnabled,
@@ -124,9 +181,10 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
             }
           >
             Save
-          </button>
-          <button onClick={onClose}>Close</button>
+          </Button>
+          <Button variant="outlined" onClick={onClose}>Close</Button>
         </div>
+        <p className="hint">Effective config: {llmSuggestionsEnabled ? "Suggestions enabled" : "Suggestions disabled"}, {preset} profile.</p>
       </div>
     </div>
   );
