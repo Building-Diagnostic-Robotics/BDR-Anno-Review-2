@@ -14,10 +14,17 @@ import {
   setAnnotations,
   checkRuntimeDependencies,
   stageDroppedInputs,
+  getLlmSettings,
+  saveLlmSettings,
+  clearProviderKey,
+  getSuggestions,
+  prefetchSuggestions,
+  getSuggestionQueueState,
 } from "./api";
-import type { AnnotationEdit, FaceListItem } from "./types";
+import type { AnnotationEdit, FaceListItem, LlmSettingsResponse, QueueStateItem, ReasoningPreset, SaveLlmSettingsRequest, SuggestionBox } from "./types";
 import "./styles.css";
 import { removeEditAtIndex, validateEdits } from "./editing";
+import { LlmSettingsModal } from "./settings-modal";
 
 const nowIso = () => new Date().toISOString();
 const AUTOSAVE_DEBOUNCE_MS = 1000;
@@ -53,6 +60,10 @@ export function App() {
   const [sourceFramesDir] = useState("(auto-managed after extraction)");
   const [outputPath, setOutputPath] = useState("");
   const [dropModalOpen, setDropModalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [llmSettings, setLlmSettings] = useState<LlmSettingsResponse | null>(null);
+  const [queueState, setQueueState] = useState<Record<string, string>>({});
+  const [suggestionsByFace, setSuggestionsByFace] = useState<Record<string, SuggestionBox[]>>({});
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
   const [selectedFaceId, setSelectedFaceId] = useState<string>("");
@@ -116,6 +127,45 @@ export function App() {
   const imageSrc = selectedFace ? convertFileSrc(selectedFaceImagePath) : "";
 
   const progress = faces.length === 0 ? 0 : ((selectedIndex + 1) / faces.length) * 100;
+
+  const refreshLlmSettings = useCallback(async () => {
+    try {
+      const response = await getLlmSettings();
+      setLlmSettings(response);
+    } catch (cause) {
+      updateDiagnostics("Settings load failed", String(cause));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshLlmSettings();
+  }, [refreshLlmSettings]);
+
+  const prefetchLinearSuggestions = useCallback(async () => {
+    if (!llmSettings?.llmSuggestionsEnabled || !datasetRoot || faces.length === 0 || selectedIndex < 0) {
+      return;
+    }
+    const bufferStart = selectedIndex + 1;
+    const bufferEnd = Math.min(faces.length, bufferStart + llmSettings.prefetchBufferSize);
+    const faceIds = faces.slice(bufferStart, bufferEnd).map((face) => face.faceId);
+    if (faceIds.length === 0) return;
+    try {
+      const queued = await prefetchSuggestions(datasetRoot, faceIds);
+      setQueueState((prev) => {
+        const next = { ...prev };
+        queued.items.forEach((item) => {
+          next[item.faceId] = item.status;
+        });
+        return next;
+      });
+    } catch (cause) {
+      updateDiagnostics("Suggestion prefetch failed", String(cause));
+    }
+  }, [llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, datasetRoot, faces, selectedIndex]);
+
+  useEffect(() => {
+    void prefetchLinearSuggestions();
+  }, [prefetchLinearSuggestions]);
 
   const datasetRootError = datasetRoot.trim() ? "" : "Dataset root is required.";
   const cocoPathError = cocoJsonPath.trim() ? "" : "COCO JSON path is required.";
@@ -489,6 +539,45 @@ export function App() {
   }, [selectedFaceId, loadAnnotations]);
 
   useEffect(() => {
+    const faceId = selectedFaceId;
+    if (!faceId || !datasetRoot || !llmSettings?.llmSuggestionsEnabled) {
+      return;
+    }
+    if (suggestionsByFace[faceId]) {
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const response = await getSuggestions(datasetRoot, faceId, 30000);
+        if (cancelled) return;
+        setSuggestionsByFace((prev) => ({ ...prev, [faceId]: response.suggestions }));
+      } catch (cause) {
+        if (cancelled) return;
+        updateDiagnostics("Suggestion fetch failed", String(cause));
+      }
+
+      try {
+        const queue = await getSuggestionQueueState(faces.map((f) => f.faceId));
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        queue.items.forEach((item: QueueStateItem) => {
+          map[item.faceId] = item.status;
+        });
+        setQueueState(map);
+      } catch {
+        // no-op
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFaceId, datasetRoot, llmSettings?.llmSuggestionsEnabled, suggestionsByFace, faces]);
+
+  useEffect(() => {
     const onResize = () => {
       const img = imageRef.current;
       if (!img || !img.naturalWidth || !img.naturalHeight) {
@@ -838,9 +927,12 @@ export function App() {
 
   return (
     <main className="app-shell">
-      <header className="app-header">
-        <h1>bdr-anno-review</h1>
-        <p className="hint">Workflow: Home → Annotate → Export</p>
+      <header className="app-header row spread">
+        <div>
+          <h1>bdr-anno-review</h1>
+          <p className="hint">Workflow: Home → Annotate → Export</p>
+        </div>
+        <button aria-label="Open settings" onClick={() => setSettingsOpen(true)} disabled={isBusy}>⚙ Settings</button>
       </header>
 
       {page === "home" ? (
@@ -1004,6 +1096,8 @@ export function App() {
 
           <div className="card">
             <h3>Bounding boxes</h3>
+            <p className="hint">Queue status: {selectedFaceId ? (queueState[selectedFaceId] ?? "unseen") : "-"}</p>
+            <p className="hint">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
             {edits.map((edit, index) => (
               <div className={`row ${activeBoxIndex === index ? "active-row" : ""}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
                 {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
@@ -1050,6 +1144,23 @@ export function App() {
         </section>
       ) : null}
 
+
+
+      {settingsOpen ? (
+        <LlmSettingsModal
+          initial={llmSettings}
+          onClose={() => setSettingsOpen(false)}
+          onSave={async (request: SaveLlmSettingsRequest) => {
+            const response = await saveLlmSettings(request);
+            setLlmSettings(response);
+            updateDiagnostics("Settings saved", "");
+          }}
+          onClearProviderKey={async (provider) => {
+            await clearProviderKey(provider);
+            await refreshLlmSettings();
+          }}
+        />
+      ) : null}
       {dropModalOpen ? (
         <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Drop input files">
           <div className="modal-card">

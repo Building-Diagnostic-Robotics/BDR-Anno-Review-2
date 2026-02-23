@@ -115,3 +115,54 @@ export type StageDroppedInputsReport = {
   stagedMp4Path?: string;
   ignoredPaths: string[];
 };
+
+export type LlmProviderId = "openai" | "anthropic";
+export type ReasoningPreset = "high" | "balanced" | "low";
+
+export type ProviderSettings = {
+  enabled: boolean;
+  model: string;
+  apiKeyConfigured: boolean;
+  maskedKeyPreview?: string;
+};
+
+export type LlmSettingsResponse = {
+  llmSuggestionsEnabled: boolean;
+  reasoningPreset: ReasoningPreset;
+  prefetchBufferSize: number;
+  openai: ProviderSettings;
+  anthropic: ProviderSettings;
+};
+
+export type SaveLlmSettingsRequest = {
+  llmSuggestionsEnabled: boolean;
+  reasoningPreset: ReasoningPreset;
+  prefetchBufferSize: number;
+  openai: { enabled: boolean; model: string };
+  anthropic: { enabled: boolean; model: string };
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+};
+
+export type SuggestionBox = {
+  bbox: [number, number, number, number];
+  confidence?: number;
+  source: string;
+};
+
+export type SuggestionResponse = {
+  faceId: string;
+  provider: string;
+  model: string;
+  suggestions: SuggestionBox[];
+  attempts: number;
+};
+
+export type QueueStateItem = {
+  faceId: string;
+  status: string;
+};
+
+export type QueueStateResponse = {
+  items: QueueStateItem[];
+};

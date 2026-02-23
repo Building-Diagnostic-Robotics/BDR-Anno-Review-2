@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Resolved LLM prompt loading in packaged builds by reading `suggest_boxes_v1.txt` from Tauri bundled resources (with explicit diagnostics and a dev fallback path).
+- Synced the LLM settings modal form state whenever async-loaded settings arrive to prevent stale default values from overwriting saved configuration.
+- Updated linear prefetch to skip the currently selected face so suggestion prefetch avoids duplicate requests for the active item.
+
+## [0.6.0] - 2026-02-23
+
+### Added
+- Added secure LLM settings management and backend commands for reading/saving provider configuration, clearing provider keys, and feature-gating suggestions with reasoning + prefetch controls.
+- Added OpenAI (`gpt-5.2`) and Anthropic (`claude-opus-4-6`, `claude-sonnet-4-6`) suggestion provider adapters with a shared normalized suggestion parser, prompt file loading (`src-tauri/prompts/suggest_boxes_v1.txt`), and deterministic bbox normalization/sorting.
+- Added end-to-end suggestion commands (`get_suggestions`, queue prefetch/state commands) plus backend retry/backoff handling for transient API failures and queue state tracking for linear review buffering.
+- Added a Home-page settings entry (gear button) and a new LLM Settings modal with masked API key fields, show/hide toggles, provider/model selection, reasoning preset, and prefetch buffer controls.
+
+### Changed
+- Updated frontend editor flow to maintain suggestion queue state and prefetch next linear faces from the current position to reduce annotation interruptions from LLM request latency.
+- Bumped workspace, Tauri app config, and frontend package versions from `0.5.1` to `0.6.0` for the LLM suggestions feature release.
+
 ## [0.5.1] - 2026-02-23
 
 ### Fixed
