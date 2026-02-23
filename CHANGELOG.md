@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Resolved LLM prompt loading in packaged builds by reading `suggest_boxes_v1.txt` from Tauri bundled resources (with explicit diagnostics and a dev fallback path).
+- Synced the LLM settings modal form state whenever async-loaded settings arrive to prevent stale default values from overwriting saved configuration.
+- Updated linear prefetch to skip the currently selected face so suggestion prefetch avoids duplicate requests for the active item.
+
 ## [0.6.0] - 2026-02-23
 
 ### Added

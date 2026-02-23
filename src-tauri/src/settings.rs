@@ -90,7 +90,11 @@ fn mask_key(value: &str) -> Option<String> {
     if trimmed.len() <= 8 {
         return Some("••••••••".to_owned());
     }
-    Some(format!("{}...{}", &trimmed[0..4], &trimmed[trimmed.len() - 4..]))
+    Some(format!(
+        "{}...{}",
+        &trimmed[0..4],
+        &trimmed[trimmed.len() - 4..]
+    ))
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -98,8 +102,12 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_config_dir()
         .map_err(|source| format!("failed to resolve app config dir: {source}"))?;
-    fs::create_dir_all(&dir)
-        .map_err(|source| format!("failed to create app config dir `{}`: {source}", dir.display()))?;
+    fs::create_dir_all(&dir).map_err(|source| {
+        format!(
+            "failed to create app config dir `{}`: {source}",
+            dir.display()
+        )
+    })?;
     Ok(dir.join(SETTINGS_FILE))
 }
 
@@ -108,18 +116,30 @@ pub fn load_settings(app: &AppHandle) -> Result<LlmSettings, String> {
     if !path.exists() {
         return Ok(LlmSettings::default());
     }
-    let raw = fs::read_to_string(&path)
-        .map_err(|source| format!("failed to read settings file `{}`: {source}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|source| format!("failed to parse settings file `{}`: {source}", path.display()))
+    let raw = fs::read_to_string(&path).map_err(|source| {
+        format!(
+            "failed to read settings file `{}`: {source}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&raw).map_err(|source| {
+        format!(
+            "failed to parse settings file `{}`: {source}",
+            path.display()
+        )
+    })
 }
 
 pub fn save_settings(app: &AppHandle, settings: &LlmSettings) -> Result<(), String> {
     let path = settings_path(app)?;
     let raw = serde_json::to_string_pretty(settings)
         .map_err(|source| format!("failed to serialize settings: {source}"))?;
-    fs::write(&path, raw)
-        .map_err(|source| format!("failed to write settings file `{}`: {source}", path.display()))
+    fs::write(&path, raw).map_err(|source| {
+        format!(
+            "failed to write settings file `{}`: {source}",
+            path.display()
+        )
+    })
 }
 
 fn load_key(username: &str) -> Option<String> {
@@ -181,7 +201,10 @@ pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, Str
     })
 }
 
-pub fn save_settings_request(app: &AppHandle, request: SaveLlmSettingsRequest) -> Result<LlmSettingsResponse, String> {
+pub fn save_settings_request(
+    app: &AppHandle,
+    request: SaveLlmSettingsRequest,
+) -> Result<LlmSettingsResponse, String> {
     if request.reasoning_preset != "high"
         && request.reasoning_preset != "balanced"
         && request.reasoning_preset != "low"

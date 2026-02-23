@@ -51,6 +51,9 @@
       "nsis": {
         "installerHooks": "scripts/nsis-hooks.nsh"
       }
-    }
+    },
+    "resources": [
+      "prompts/suggest_boxes_v1.txt"
+    ]
   }
 }

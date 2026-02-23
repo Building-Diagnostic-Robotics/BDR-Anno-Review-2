@@ -145,8 +145,9 @@ export function App() {
     if (!llmSettings?.llmSuggestionsEnabled || !datasetRoot || faces.length === 0 || selectedIndex < 0) {
       return;
     }
-    const bufferEnd = Math.min(faces.length, selectedIndex + llmSettings.prefetchBufferSize);
-    const faceIds = faces.slice(selectedIndex, bufferEnd).map((face) => face.faceId);
+    const bufferStart = selectedIndex + 1;
+    const bufferEnd = Math.min(faces.length, bufferStart + llmSettings.prefetchBufferSize);
+    const faceIds = faces.slice(bufferStart, bufferEnd).map((face) => face.faceId);
     if (faceIds.length === 0) return;
     try {
       const queued = await prefetchSuggestions(datasetRoot, faceIds);

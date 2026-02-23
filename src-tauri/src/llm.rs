@@ -6,6 +6,7 @@ use std::time::Duration;
 use engine::FaceView;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use tauri::{path::BaseDirectory, AppHandle, Manager};
 
 use crate::settings::{LlmProviderSettings, LlmSettings};
 
@@ -99,10 +100,35 @@ struct ParsedSuggestionItem {
     confidence: Option<f64>,
 }
 
-pub fn prompt_text() -> Result<String, String> {
-    let path = PathBuf::from("src-tauri/prompts/suggest_boxes_v1.txt");
-    fs::read_to_string(&path)
-        .map_err(|source| format!("failed to read prompt file `{}`: {source}", path.display()))
+pub fn prompt_text(app: &AppHandle) -> Result<String, String> {
+    let resource_path = app
+        .path()
+        .resolve("prompts/suggest_boxes_v1.txt", BaseDirectory::Resource)
+        .map_err(|source| format!("failed to resolve bundled prompt resource path: {source}"))?;
+    if resource_path.is_file() {
+        return fs::read_to_string(&resource_path).map_err(|source| {
+            format!(
+                "failed to read bundled prompt resource `{}`: {source}",
+                resource_path.display()
+            )
+        });
+    }
+
+    let dev_path = PathBuf::from("src-tauri/prompts/suggest_boxes_v1.txt");
+    if dev_path.is_file() {
+        return fs::read_to_string(&dev_path).map_err(|source| {
+            format!(
+                "failed to read prompt file `{}`: {source}",
+                dev_path.display()
+            )
+        });
+    }
+
+    Err(format!(
+        "prompt file was not found in bundled resources (`{}`) or dev fallback (`{}`)",
+        resource_path.display(),
+        dev_path.display()
+    ))
 }
 
 pub fn build_face_context(
@@ -129,9 +155,13 @@ pub fn build_face_context(
     Ok((base64_image, [dimensions.0 as f64, dimensions.1 as f64]))
 }
 
-fn parse_json_suggestions(raw: &str, width: f64, height: f64) -> Result<Vec<SuggestionBox>, String> {
-    let parsed: ParsedSuggestions =
-        serde_json::from_str(raw).map_err(|source| format!("provider response was not valid suggestion JSON: {source}"))?;
+fn parse_json_suggestions(
+    raw: &str,
+    width: f64,
+    height: f64,
+) -> Result<Vec<SuggestionBox>, String> {
+    let parsed: ParsedSuggestions = serde_json::from_str(raw)
+        .map_err(|source| format!("provider response was not valid suggestion JSON: {source}"))?;
 
     let mut out = Vec::new();
     for entry in parsed.suggestions {
@@ -219,7 +249,10 @@ fn run_openai(
     timeout: Duration,
     reasoning_preset: &str,
 ) -> Result<String, String> {
-    let client = Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
+    let client = Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())?;
     let body = serde_json::json!({
         "model": model,
         "reasoning": reasoning_budget(reasoning_preset),
@@ -258,7 +291,10 @@ fn run_anthropic(
     timeout: Duration,
     reasoning_preset: &str,
 ) -> Result<String, String> {
-    let client = Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
+    let client = Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())?;
     let body = serde_json::json!({
         "model": model,
         "max_tokens": 1200,
@@ -298,7 +334,9 @@ fn run_anthropic(
         .ok_or_else(|| "anthropic response did not contain text content".to_owned())
 }
 
-fn selected_provider(settings: &LlmSettings) -> Result<(&'static str, &LlmProviderSettings), String> {
+fn selected_provider(
+    settings: &LlmSettings,
+) -> Result<(&'static str, &LlmProviderSettings), String> {
     if settings.openai.enabled {
         return Ok(("openai", &settings.openai));
     }
@@ -319,6 +357,7 @@ fn sanitize_error(error: &str, secrets: &[String]) -> String {
 }
 
 pub fn generate_suggestions_with_retry(
+    app: &AppHandle,
     settings: &LlmSettings,
     face: &FaceView,
     dataset_root: &str,
@@ -332,13 +371,16 @@ pub fn generate_suggestions_with_retry(
         return Err(format!("{provider_id} model is not configured"));
     }
 
-    let prompt = prompt_text()?;
+    let prompt = prompt_text(app)?;
     let (image_b64, [width, height]) = build_face_context(dataset_root, face)?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
 
     let mut attempts = 0usize;
     let mut last_error = String::new();
-    let keys = vec![openai_key.unwrap_or_default().to_owned(), anthropic_key.unwrap_or_default().to_owned()];
+    let keys = vec![
+        openai_key.unwrap_or_default().to_owned(),
+        anthropic_key.unwrap_or_default().to_owned(),
+    ];
 
     for backoff_ms in [0_u64, 400, 1200] {
         if backoff_ms > 0 {
@@ -347,7 +389,8 @@ pub fn generate_suggestions_with_retry(
         attempts += 1;
         let result = match provider_id {
             "openai" => {
-                let key = openai_key.ok_or_else(|| "OpenAI API key is not configured".to_owned())?;
+                let key =
+                    openai_key.ok_or_else(|| "OpenAI API key is not configured".to_owned())?;
                 run_openai(
                     key,
                     model,
@@ -358,7 +401,8 @@ pub fn generate_suggestions_with_retry(
                 )
             }
             "anthropic" => {
-                let key = anthropic_key.ok_or_else(|| "Anthropic API key is not configured".to_owned())?;
+                let key = anthropic_key
+                    .ok_or_else(|| "Anthropic API key is not configured".to_owned())?;
                 run_anthropic(
                     key,
                     model,
@@ -403,7 +447,6 @@ pub fn generate_suggestions_with_retry(
         "suggestion request failed after {attempts} attempt(s): {last_error}"
     ))
 }
-
 
 #[cfg(test)]
 mod tests {

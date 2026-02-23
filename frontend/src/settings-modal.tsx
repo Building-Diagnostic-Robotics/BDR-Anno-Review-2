@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { LlmProviderId, LlmSettingsResponse, ReasoningPreset, SaveLlmSettingsRequest } from "./types";
 
 type Props = {
@@ -32,6 +32,20 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
+
+  useEffect(() => {
+    setLlmSuggestionsEnabled(seed.llmSuggestionsEnabled);
+    setReasoningPreset(seed.reasoningPreset);
+    setPrefetchBufferSize(seed.prefetchBufferSize);
+    setOpenaiEnabled(seed.openai.enabled);
+    setOpenaiModel(seed.openai.model);
+    setAnthropicEnabled(seed.anthropic.enabled);
+    setAnthropicModel(seed.anthropic.model);
+    setOpenaiApiKey("");
+    setAnthropicApiKey("");
+    setShowOpenaiKey(false);
+    setShowAnthropicKey(false);
+  }, [seed]);
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="LLM settings">

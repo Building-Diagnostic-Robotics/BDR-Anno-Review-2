@@ -14,8 +14,8 @@ mod llm;
 mod settings;
 
 use llm::{
-    generate_suggestions_with_retry, QueueStateResponse, SuggestionQueue, SuggestionQueuePrefetchRequest,
-    SuggestionRequest, SuggestionResponse,
+    generate_suggestions_with_retry, QueueStateResponse, SuggestionQueue,
+    SuggestionQueuePrefetchRequest, SuggestionRequest, SuggestionResponse,
 };
 use settings::{
     anthropic_key, clear_provider_key, get_settings_response, load_settings, openai_key,
@@ -1021,8 +1021,6 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
-
-
 #[tauri::command]
 fn get_llm_settings_command(app: AppHandle) -> Result<LlmSettingsResponse, String> {
     get_settings_response(&app)
@@ -1093,11 +1091,14 @@ fn get_suggestions_command(
             .suggestion_queue
             .lock()
             .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
-        queue.states.insert(request.face_id.clone(), "in_flight".to_owned());
+        queue
+            .states
+            .insert(request.face_id.clone(), "in_flight".to_owned());
     }
 
     let face = get_face_by_id(&request.dataset_root, &request.face_id)?;
     let generated = generate_suggestions_with_retry(
+        &app,
         &settings,
         &face,
         &request.dataset_root,
