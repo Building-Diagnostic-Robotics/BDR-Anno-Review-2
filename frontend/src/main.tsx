@@ -1031,22 +1031,23 @@ export function App() {
 
   return (
     <main className="relative min-h-screen bg-anno-bg px-4 pb-28 pt-6 text-anno-text-main md:px-8">
-      <div className="mx-auto flex w-full max-w-[1480px] items-center justify-between gap-3 pb-4">
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(99,102,241,0.10),transparent_42%)]" />
+      <div className="relative mx-auto flex w-full max-w-[1480px] items-center justify-between gap-3 pb-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Anno Review Workspace</h1>
-          <p className="text-sm text-anno-text-muted">Refined annotation tooling with layered surfaces and focused flow.</p>
+          <h1 className="text-xl font-semibold tracking-tight">Anno Review Workspace</h1>
+          <p className="text-xs text-zinc-500">Refined annotation tooling with layered surfaces and focused flow.</p>
         </div>
         <Button aria-label="Open settings" variant="tonal" onClick={() => setSettingsOpen(true)} disabled={isHomeBusy || isFaceBusy || isExportBusy}>⚙ Settings</Button>
       </div>
 
       {page === "home" ? (
-        <section className="mx-auto grid w-full max-w-[1200px] gap-5 lg:grid-cols-[1.45fr_1fr]">
-          <Card elevated className="bg-anno-surface-low">
+        <section className="relative mx-auto grid w-full max-w-[1200px] gap-5 lg:grid-cols-[1.45fr_1fr]">
+          <Card elevated className="min-h-[540px] rounded-2xl bg-anno-surface-low">
             <SectionHeading title="Create new dataset" subtitle="Create a new review-ready dataset through a unified import wizard." />
             <Field label="Project directory" hint="Where Anno stores project metadata and generated assets.">
               <div className="flex gap-2">
                 <input className={inputClassName} aria-label="Dataset root" value={datasetRoot} placeholder="Choose project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
-                <Button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+                <Button variant="ghost" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
               </div>
             </Field>
 
@@ -1054,14 +1055,14 @@ export function App() {
               <Field label="Import COCO" hint="Select your instances JSON file.">
                 <div className="flex gap-2">
                   <input className={inputClassName} aria-label="COCO JSON" value={cocoJsonPath} placeholder="Choose COCO annotations (.json)" onChange={(event) => setCocoJsonPath(event.target.value)} />
-                  <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
+                  <Button variant="ghost" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
                 </div>
               </Field>
 
               <Field label="Import MP4/frames" hint="Pick the source video (.mp4) used for frame generation.">
                 <div className="flex gap-2">
                   <input className={inputClassName} aria-label="Source MP4" value={mp4Path} placeholder="Choose source video (.mp4)" onChange={(event) => setMp4Path(event.target.value)} />
-                  <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
+                  <Button variant="ghost" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
                 </div>
               </Field>
             </div>
@@ -1070,10 +1071,15 @@ export function App() {
               <input className={inputClassName} aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
             </Field>
 
-            {importInputError ? <p className="mb-3 text-sm text-rose-300">{importInputError}</p> : null}
+            {importInputError ? (
+              <div className="mb-3 inline-flex items-center gap-1.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200">
+                <span aria-hidden="true" className="text-rose-300">ⓘ</span>
+                <span>{importInputError}</span>
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>{isGenerating ? "Generating…" : "Generate"}</Button>
+              <Button className="shadow-indigo-500/20 shadow-lg hover:scale-[1.02]" onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>{isGenerating ? "Generating…" : "Generate"}</Button>
               {showGenerationSpinner ? <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-anno-primary border-t-transparent" aria-label="Generation in progress" /> : null}
               <Button variant="outlined" onClick={() => void handleAbortGeneration()} disabled={!isGenerating || !generationJobId}>Abort</Button>
             </div>
@@ -1083,15 +1089,15 @@ export function App() {
             <p className="mt-2 text-xs text-anno-text-muted">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
           </Card>
 
-          <Card className="bg-anno-surface-low">
+          <Card className="min-h-[540px] rounded-2xl bg-anno-surface-low p-6">
             <SectionHeading title="Resume existing dataset" subtitle="Jump straight into annotation review." />
             <Field label="Open project directory" hint="Resume from an existing dataset root.">
               <div className="flex gap-2">
                 <input className={inputClassName} aria-label="Resume dataset directory" value={datasetRoot} placeholder="Choose existing project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
-                <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+                <Button variant="ghost" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
               </div>
             </Field>
-            {datasetRootError ? <p className="mb-3 text-sm text-rose-300">{datasetRootError}</p> : null}
+            {datasetRootError ? <div className="mb-3 inline-flex items-center gap-1.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200"><span aria-hidden="true" className="text-rose-300">ⓘ</span><span>{datasetRootError}</span></div> : null}
             <div className="flex flex-wrap gap-2">
               <Button onClick={handleOpen} disabled={isHomeBusy || !!datasetRootError}>Open dataset</Button>
               <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
@@ -1126,7 +1132,7 @@ export function App() {
             </Card>
 
             <Card className="bg-anno-surface-med">
-              <div className="relative rounded-3xl bg-anno-surface-low p-3 ring-1 ring-white/5">
+              <div className="relative rounded-2xl bg-anno-surface-low p-3 ring-1 ring-white/5">
                 {selectedFace ? (
                   <>
                     <img
@@ -1212,12 +1218,12 @@ export function App() {
         <section className="mx-auto flex min-h-[62vh] w-full max-w-[900px] items-center justify-center">
           <Card elevated className="w-full bg-anno-surface-low">
             <SectionHeading title="Export final annotations" subtitle="Export reviewed annotations to COCO JSON." />
-            <div className="rounded-3xl bg-gradient-to-br from-anno-surface-med via-anno-surface-low to-anno-surface-med p-5 ring-1 ring-white/5">
+            <div className="rounded-2xl bg-gradient-to-br from-anno-surface-med via-anno-surface-low to-anno-surface-med p-5 ring-1 ring-white/5">
               <div className="mb-3 flex gap-2">
                 <input className={inputClassName} value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
-                <Button onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</Button>
+                <Button variant="ghost" onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</Button>
               </div>
-              {outputPathError ? <p className="mb-3 text-sm text-rose-300">{outputPathError}</p> : null}
+              {outputPathError ? <div className="mb-3 inline-flex items-center gap-1.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200"><span aria-hidden="true" className="text-rose-300">ⓘ</span><span>{outputPathError}</span></div> : null}
               <div className="flex flex-wrap gap-2">
                 <Button onClick={handleExport} disabled={isExportBusy}>Export COCO</Button>
                 <Button variant="outlined" onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</Button>
@@ -1228,19 +1234,19 @@ export function App() {
         </section>
       ) : null}
 
-      <section className="fixed bottom-0 left-0 right-0 z-30 border-t border-anno-surface-high bg-black/40" aria-live="polite" aria-label="Application diagnostics terminal">
+      <section className="fixed bottom-0 left-0 right-0 z-30 border-t border-anno-surface-high bg-[#09090b]/90" aria-live="polite" aria-label="Application diagnostics terminal">
         <div className="mx-auto flex w-full max-w-[1480px] items-center justify-between px-4 py-2 text-xs md:px-8">
           <button className="font-medium text-anno-text-main transition hover:text-anno-primary" onClick={() => setDiagnosticsOpen((value) => !value)}>
-            Diagnostics terminal {diagnosticsOpen ? "▾" : "▸"}
+            Diagnostics terminal <span className={`inline-block transition-transform duration-200 ${diagnosticsOpen ? "rotate-180" : "rotate-0"}`}>⌄</span>
           </button>
           <span className={`rounded-full px-2 py-0.5 font-semibold ${error ? "bg-rose-500/20 text-rose-200" : "bg-emerald-500/20 text-emerald-200"}`}>{error ? "ERROR" : "READY"}</span>
         </div>
-        {diagnosticsOpen ? <pre className={`terminal-scrollbar max-h-48 overflow-auto px-4 pb-3 text-xs text-anno-text-muted md:px-8 ${error ? "text-rose-200" : ""}`}>{diagnosticsText}</pre> : null}
+        {diagnosticsOpen ? <pre className={`terminal-scrollbar max-h-48 overflow-auto bg-[#09090b] px-4 pb-3 text-xs text-anno-text-muted md:px-8 ${error ? "text-rose-200" : ""}`}>{diagnosticsText}</pre> : null}
       </section>
 
       {noticeMessage ? (
         <div className={modalOverlayClassName} role="alertdialog" aria-modal="true" aria-label="Generation notice">
-          <div className="w-full max-w-xl rounded-3xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
+          <div className="w-full max-w-xl rounded-2xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
             <h3 className="text-lg font-semibold">Generation notice</h3>
             <p className="mt-1 text-sm text-anno-text-muted">Generation could not continue. See diagnostics for details.</p>
             <pre className="mt-3 max-h-44 overflow-auto rounded-2xl bg-anno-surface-low p-3 text-xs text-anno-text-muted">{noticeMessage}</pre>
@@ -1269,7 +1275,7 @@ export function App() {
       ) : null}
       {dropModalOpen ? (
         <div className={modalOverlayClassName} role="dialog" aria-modal="true" aria-label="Drop input files">
-          <div className="w-full max-w-lg rounded-3xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
+          <div className="w-full max-w-lg rounded-2xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
             <h3 className="text-lg font-semibold">Drop input files</h3>
             <p className="mt-1 text-sm text-anno-text-muted">Drop dataset directory, COCO JSON, and MP4 anywhere on this window.</p>
             <div className="mt-3 flex gap-2">

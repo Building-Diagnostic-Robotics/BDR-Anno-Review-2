@@ -23,7 +23,7 @@
   }
 
   .face-preview {
-    @apply block h-auto max-h-[68vh] w-full rounded-3xl object-contain;
+    @apply block h-auto max-h-[68vh] w-full rounded-2xl object-contain;
   }
 
   .terminal-scrollbar::-webkit-scrollbar {

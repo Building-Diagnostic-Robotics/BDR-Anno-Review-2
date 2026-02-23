@@ -7,10 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-02-23
+
 ### Changed
 - Performed a full frontend UI overhaul by migrating styling to Tailwind CSS with a shared `anno` design token palette, replacing legacy handcrafted CSS surfaces with utility-driven, modular component styling for consistent dark-mode hierarchy and responsive behavior.
 - Redesigned Home, Editor, Export, and modal flows into a cohesive Anno workspace aesthetic with layered solid surfaces, softer rounded geometry, improved action hierarchy, focused input states, and refined micro-interactions across controls.
 - Reworked diagnostics into a collapsible bottom status drawer styled as an integrated developer terminal panel instead of a raw always-open command block.
+- Applied final Anno Midnight polish pass across Home/Editor/Export/settings surfaces: refined header hierarchy, added subtle indigo ambient background glow, standardized rounded-2xl corners, aligned Create/Resume card proportions, upgraded ghost Browse controls, improved focus-ring input feedback, enhanced Generate button emphasis, and introduced toast-style inline validation alerts with iconography.
+- Tuned the diagnostics terminal treatment with a distinct tinted panel and animated chevron affordance for open/close state transitions to better mimic high-end desktop suite behavior.
 
 ### Fixed
 - Made MP4 extraction cancellation interrupt in-flight `ffmpeg` processes immediately so abort requests stop heavy decode work without waiting for process completion.

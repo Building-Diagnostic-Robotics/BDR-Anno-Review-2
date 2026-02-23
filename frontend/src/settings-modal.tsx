@@ -134,7 +134,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
 
   return (
     <div className={modalOverlayClassName} role="dialog" aria-modal="true" aria-label="LLM settings">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-anno-surface-med p-6 ring-1 ring-white/5 shadow-2xl shadow-black/60" ref={modalRef}>
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-anno-surface-med p-6 ring-1 ring-white/5 shadow-2xl shadow-black/60" ref={modalRef}>
         <div className="mb-4 flex items-start justify-between gap-3">
           <h3 className="text-xl font-semibold text-anno-text-main">LLM settings</h3>
           <Button variant="outlined" onClick={onClose} aria-label="Close LLM settings">
@@ -143,7 +143,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
         </div>
         <p className="mb-5 text-sm text-anno-text-muted">Default behavior is optimized for low-friction suggestions. Use Advanced only when tuning is needed.</p>
 
-        <section className="mb-5 space-y-4 rounded-3xl bg-anno-surface-low p-4 ring-1 ring-white/5">
+        <section className="mb-5 space-y-4 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
           <h4 className="text-base font-semibold">General</h4>
           <label className="flex items-center justify-between gap-2 text-sm text-anno-text-main">
             <span>Enable suggestions</span>
@@ -173,7 +173,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </Field>
         </section>
 
-        <section className="mb-5 space-y-3 rounded-3xl bg-anno-surface-low p-4 ring-1 ring-white/5">
+        <section className="mb-5 space-y-3 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
           <h4 className="text-base font-semibold">Credentials</h4>
           <Field label={`OpenAI model${seed.openai.maskedKeyPreview ? ` (saved key: ${seed.openai.maskedKeyPreview})` : ""}`}>
             <select className={inputClassName} value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
@@ -211,7 +211,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </div>
         </section>
 
-        <section className="mb-5 space-y-3 rounded-3xl bg-anno-surface-low p-4 ring-1 ring-white/5">
+        <section className="mb-5 space-y-3 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
           <h4 className="text-base font-semibold">Advanced</h4>
           <button className="text-sm text-anno-secondary transition hover:text-purple-300" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} advanced settings</button>
           {showAdvanced ? (
