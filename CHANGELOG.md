@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Kept auto-inferred Home file paths (`COCO JSON`, `Source MP4`) synchronized with dataset root edits until the user explicitly overrides either field, preventing stale hidden-path defaults after iterative root input changes.
+
 ## [0.7.0] - 2026-02-23
 
 ### Added

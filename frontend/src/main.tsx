@@ -116,6 +116,8 @@ export function App() {
   const pendingSaveRef = useRef<Promise<void> | null>(null);
   const editsRef = useRef<AnnotationEdit[]>([]);
   const selectedFaceIdRef = useRef("");
+  const inferredCocoPathRef = useRef("");
+  const inferredMp4PathRef = useRef("");
 
   useEffect(() => {
     editsRef.current = edits;
@@ -197,12 +199,19 @@ export function App() {
       return;
     }
     const root = datasetRoot.replace(/\\/g, "/").replace(/\/+$/, "");
-    if (!cocoJsonPath.trim()) {
-      setCocoJsonPath(`${root}/annotations/instances_default.json`);
+    const nextInferredCocoPath = `${root}/annotations/instances_default.json`;
+    const nextInferredMp4Path = `${root}/source.mp4`;
+
+    if (!cocoJsonPath.trim() || cocoJsonPath === inferredCocoPathRef.current) {
+      setCocoJsonPath(nextInferredCocoPath);
     }
-    if (!mp4Path.trim()) {
-      setMp4Path(`${root}/source.mp4`);
+
+    if (!mp4Path.trim() || mp4Path === inferredMp4PathRef.current) {
+      setMp4Path(nextInferredMp4Path);
     }
+
+    inferredCocoPathRef.current = nextInferredCocoPath;
+    inferredMp4PathRef.current = nextInferredMp4Path;
   }, [datasetRoot, cocoJsonPath, mp4Path]);
 
   const datasetRootError = datasetRoot.trim() ? "" : "Dataset root is required.";
