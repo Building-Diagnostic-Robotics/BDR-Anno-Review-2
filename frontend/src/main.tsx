@@ -52,7 +52,6 @@ type PointerMode = "idle" | "draw" | "move" | "resize";
 type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "done";
 type AppPage = "home" | "editor" | "export";
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
-type HomeStep = 1 | 2 | 3;
 
 const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   const normalizedRoot = datasetRoot.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -88,8 +87,8 @@ export function App() {
   const [saveStateMessage, setSaveStateMessage] = useState("No changes yet.");
   const [lastSavedAt, setLastSavedAt] = useState("");
   const [isFaceLoading, setIsFaceLoading] = useState(false);
-  const [homeStep, setHomeStep] = useState<HomeStep>(1);
   const [showGenerationSpinner, setShowGenerationSpinner] = useState(false);
+  const [noticeMessage, setNoticeMessage] = useState("");
 
   const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
     if (typeof window === "undefined") {
@@ -215,7 +214,6 @@ export function App() {
 
   const importInputError = datasetRootError || cocoPathError || mp4PathError;
   const exportInputError = datasetRootError || outputPathError;
-  const homeReadiness = !datasetRootError ? (!cocoPathError && !mp4PathError ? 3 : 2) : 1;
 
   const updateDiagnostics = (nextStatus: string, nextError = "") => {
     setStatus(nextStatus);
@@ -398,28 +396,10 @@ export function App() {
     }
   };
 
-  const handleImport = async () => {
-    if (importInputError) {
-      updateDiagnostics("Import validation blocked", importInputError);
-      return;
-    }
-
-    setIsImporting(true);
-    try {
-      const report = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
-      updateDiagnostics(
-        `Import validation complete\nimages=${report.imageCount}, annotations=${report.annotationCount}, categories=${report.categoryCount}, referenced=${report.referencedImageCount}`
-      );
-    } catch (cause) {
-      updateDiagnostics("Import validation failed", String(cause));
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
   const handleGenerate = async () => {
     if (importInputError) {
       updateDiagnostics("Review dataset generation blocked", importInputError);
+      setNoticeMessage(importInputError);
       return;
     }
 
@@ -473,7 +453,9 @@ export function App() {
       setGenerationPercent(0);
       setGenerationDetail("Idle.");
       setGenerationHeartbeat("Idle");
-      updateDiagnostics("Review dataset generation failed", String(cause));
+      const message = String(cause);
+      updateDiagnostics("Review dataset generation failed", message);
+      setNoticeMessage(message);
     } finally {
       setIsGenerating(false);
       setShowGenerationSpinner(false);
@@ -1007,103 +989,96 @@ export function App() {
     setPage("home");
   };
 
-  useEffect(() => {
-    setHomeStep(homeReadiness as HomeStep);
-  }, [homeReadiness]);
+  const diagnosticsText = "$ bdr-anno-review\n" + status + (error ? `\n\n[error] ${error}` : "\n\n[ok] No active errors.");
 
   return (
     <main className="app-shell">
-      <header className="app-header row spread">
-        <div>
-          <h1>bdr-anno-review</h1>
-          <p className="hint">Workflow: Home → Annotate → Export</p>
-        </div>
+      <div className="top-right-actions">
         <Button aria-label="Open settings" variant="tonal" onClick={() => setSettingsOpen(true)} disabled={isHomeBusy || isFaceBusy || isExportBusy}>⚙ Settings</Button>
-      </header>
+      </div>
 
       {page === "home" ? (
-        <section className="home-layout">
-          <Card elevated>
-            <SectionHeading title="Create new dataset" subtitle="A guided flow with sensible defaults." />
-            <div className="stepper" role="status" aria-label="Home setup progress">
-              <span className={homeStep >= 1 ? "step active" : "step"}>1. Choose dataset folder</span>
-              <span className={homeStep >= 2 ? "step active" : "step"}>2. Confirm detected files</span>
-              <span className={homeStep >= 3 ? "step active" : "step"}>3. Generate</span>
+        <section className="home-auth-shell">
+          <div className="home-brand">
+            <h2>Anno</h2>
+            <p className="hint">Create a new review project or continue where you left off.</p>
+          </div>
+
+          <div className="home-auth-grid">
+            <Card elevated className="auth-card">
+              <SectionHeading title="Create new dataset" subtitle="1. Start new project — import source files and generate a review-ready dataset." />
+
+              <Field label="Project directory" hint="Where Anno stores project metadata and generated assets.">
+                <div className="row input-row">
+                  <input
+                    aria-label="Dataset root"
+                    value={datasetRoot}
+                    placeholder="Choose project directory"
+                    onChange={(event) => setDatasetRoot(event.target.value)}
+                  />
+                  <Button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+                </div>
+              </Field>
+
+              <Field label="Import COCO" hint="Select your instances JSON file.">
+                <div className="row input-row">
+                  <input
+                    aria-label="COCO JSON"
+                    value={cocoJsonPath}
+                    placeholder="Choose COCO annotations (.json)"
+                    onChange={(event) => setCocoJsonPath(event.target.value)}
+                  />
+                  <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
+                </div>
+              </Field>
+
+              <Field label="Import MP4/frames" hint="Pick the source video (.mp4) used for frame generation.">
+                <div className="row input-row">
+                  <input
+                    aria-label="Source MP4"
+                    value={mp4Path}
+                    placeholder="Choose source video (.mp4)"
+                    onChange={(event) => setMp4Path(event.target.value)}
+                  />
+                  <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
+                </div>
+              </Field>
+
+              <Field label="Source frames directory (auto-managed)">
+                <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
+              </Field>
+
+              {importInputError ? <p className="error">{importInputError}</p> : null}
+
+              <div className="actions-primary">
+                <Button onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>{isGenerating ? "Generating…" : "Generate"}</Button>
+                {showGenerationSpinner ? <span className="spinner" aria-label="Generation in progress" /> : null}
+              </div>
+              <div className="progress" aria-label="generation progress">
+                <span style={{ width: `${generationPercent}%` }} />
+              </div>
+              <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
+            </Card>
+
+            <div className="home-or-divider" aria-hidden="true">
+              <span>OR</span>
             </div>
 
-            <Field label="Dataset root">
-              <div className="row">
-                <input
-                  aria-label="Dataset root"
-                  value={datasetRoot}
-                  placeholder="Select dataset directory"
-                  onChange={(event) => setDatasetRoot(event.target.value)}
-                />
-                <Button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+            <Card className="auth-card">
+              <SectionHeading title="Resume existing dataset" subtitle="2. Open existing project and jump directly into annotation review." />
+              <Field label="Open project directory" hint="Resume from an existing dataset root.">
+                <div className="row input-row">
+                  <input aria-label="Resume dataset directory" value={datasetRoot} placeholder="Choose existing project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
+                  <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+                </div>
+              </Field>
+              {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
+              <div className="actions-secondary">
+                <Button onClick={handleOpen} disabled={isHomeBusy || !!datasetRootError}>Open dataset</Button>
+                <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
               </div>
-            </Field>
-
-            <Field label="COCO JSON" hint="Auto-filled from {datasetRoot}/annotations/instances_default.json when empty.">
-              <div className="row input-row">
-                <input
-                  aria-label="COCO JSON"
-                  value={cocoJsonPath}
-                  placeholder="Select instances_default.json"
-                  onChange={(event) => setCocoJsonPath(event.target.value)}
-                />
-                <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
-              </div>
-            </Field>
-
-            <Field label="Source MP4" hint="Auto-filled from {datasetRoot}/source.mp4 when empty.">
-              <div className="row input-row">
-                <input
-                  aria-label="Source MP4"
-                  value={mp4Path}
-                  placeholder="Select source .mp4"
-                  onChange={(event) => setMp4Path(event.target.value)}
-                />
-                <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
-              </div>
-            </Field>
-
-            <Field label="Source frames directory (auto-managed)">
-              <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
-            </Field>
-
-            {(datasetRootError || cocoPathError || mp4PathError) ? <p className="error">{datasetRootError || cocoPathError || mp4PathError}</p> : null}
-
-            <div className="actions-primary">
-              <Button onClick={handleGenerate} disabled={isHomeBusy}>{isGenerating ? "Generating…" : "Generate review dataset"}</Button>
-              <Button variant="outlined" onClick={handleImport} disabled={isHomeBusy}>Validate inputs only</Button>
-              {showGenerationSpinner ? <span className="spinner" aria-label="Generation in progress" /> : null}
-            </div>
-            <div className="progress" aria-label="generation progress">
-              <span style={{ width: `${generationPercent}%` }} />
-            </div>
-            <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
-          </Card>
-
-          <Card>
-            <SectionHeading title="Resume existing dataset" subtitle="Jump straight into annotation review." />
-            <Field label="Resume dataset directory">
-              <div className="row">
-                <input aria-label="Resume dataset directory" value={datasetRoot} onChange={(event) => setDatasetRoot(event.target.value)} />
-                <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
-              </div>
-            </Field>
-            <div className="actions-secondary">
-              <Button onClick={handleOpen} disabled={isHomeBusy}>Open dataset</Button>
-              <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
-            </div>
-            {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
-          </Card>
-
-          <Card>
-            <SectionHeading title="Diagnostics" />
-            {error ? <p className="error">Error: {error}</p> : null}
-            <pre className="status">{status}</pre>
-          </Card>
+            </Card>
+          </div>
         </section>
       ) : null}
 
@@ -1228,12 +1203,28 @@ export function App() {
             </div>
           </Card>
 
-          <Card>
-            <SectionHeading title="Diagnostics" />
-            {error ? <p className="error">Error: {error}</p> : null}
-            <pre className="status">{status}</pre>
-          </Card>
         </section>
+      ) : null}
+
+      <section className="diagnostics-dock" aria-live="polite" aria-label="Application diagnostics terminal">
+        <div className="diagnostics-dock-head">
+          <span className="diagnostics-title">Diagnostics terminal</span>
+          <span className={`diagnostics-state ${error ? "error" : "ok"}`}>{error ? "ERROR" : "READY"}</span>
+        </div>
+        <pre className={`status terminal-status ${error ? "has-error" : ""}`}>{diagnosticsText}</pre>
+      </section>
+
+      {noticeMessage ? (
+        <div className="modal-overlay" role="alertdialog" aria-modal="true" aria-label="Generation notice">
+          <div className="modal-card notice-card">
+            <h3>Generation notice</h3>
+            <p className="hint">Generation could not continue. See diagnostics for details.</p>
+            <pre className="status">{noticeMessage}</pre>
+            <div className="row">
+              <Button variant="outlined" onClick={() => setNoticeMessage("")}>Dismiss</Button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {settingsOpen ? (

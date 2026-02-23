@@ -7,8 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-02-23
+
 ### Changed
 - Refined frontend visual polish across Home/Editor/Export and settings surfaces with stronger typography hierarchy, tokenized status colors, richer focus/active control states, grouped action rows, and a cleaner sectioned LLM settings modal for a more professional UI presentation.
+- Reworked global component styling with richer gradient surfaces, polished cards, stronger control states, improved inspector readability, and elevated modal/preview treatments so the full UI feels more premium and consistent across Home, Editor, and Export flows.
+- Replaced page-local diagnostics panels with a persistent bottom diagnostics terminal that matches the app theme, starts collapsed, and expands on hover/focus to reveal deeper status history across Home, Editor, and Export screens.
+- Redesigned the Home experience around a GitHub-style centered split flow with bold Anno branding, dedicated “Start new project” and “Open existing project” paths, streamlined project/Coco/MP4 intake, and a Generate-first workflow with modal failure notices while keeping diagnostics and settings persistent.
+- Refined Home layout ergonomics by removing the bulky top banner, relocating settings to a clean top-right floating action, tightening card spacing to reduce crowding/overflow, and re-anchoring the diagnostics terminal to hover near the viewport bottom without intruding into content cards.
 
 ### Fixed
 - Prevented editor ArrowLeft/ArrowRight face-navigation hotkeys from firing while typing in bbox input fields, so caret movement inside inputs no longer triggers unintended face switches.
@@ -21,6 +27,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Preserved bbox width/height during pointer drag moves at image edges by clamping move origin without shrinking box dimensions.
 - Fixed LLM settings coherence by enforcing a single provider selection when suggestions are enabled (frontend validation + backend fail-loud guardrails).
 - Added keyboard-accessible dialog behavior for LLM settings (Escape to close, focus trap, and focus restoration) and close the modal after a successful save.
+- Corrected frontend layout fitment issues by clamping the diagnostics dock to a true bottom hover position, adding robust content-safe spacing, truncating long read-only path fields, and making bbox coordinate editors adapt better to constrained widths.
+- Packaged all unreleased frontend and UX updates into version `0.8.0` by bumping workspace/Tauri/frontend version metadata.
 
 ## [0.7.1] - 2026-02-23
 
