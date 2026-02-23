@@ -196,7 +196,9 @@ describe("delete flow", () => {
 
 describe("face switching and save concurrency", () => {
   it("does not autosave stale edits for the next face while annotations are loading", async () => {
-    let resolveFace2Load: ((value: AnnotationEdit[]) => void) | null = null;
+    let resolveFace2Load: (value: AnnotationEdit[]) => void = () => {
+      throw new Error("Expected face-2 annotation loader to be initialized");
+    };
     const delayedFace2 = new Promise<AnnotationEdit[]>((resolve) => {
       resolveFace2Load = resolve;
     });
@@ -232,7 +234,7 @@ describe("face switching and save concurrency", () => {
       mocks.setAnnotations.mock.calls.some(([, faceId]) => faceId === "face-2")
     ).toBe(false);
 
-    resolveFace2Load?.([]);
+    resolveFace2Load([]);
 
     await waitFor(() => {
       expect(screen.getByText(/Editing: face-2/)).toBeTruthy();
@@ -240,7 +242,9 @@ describe("face switching and save concurrency", () => {
   });
 
   it("keeps newer local edits when an older save response returns", async () => {
-    let resolveSave: ((value: AnnotationEdit[]) => void) | null = null;
+    let resolveSave: (value: AnnotationEdit[]) => void = () => {
+      throw new Error("Expected save resolver to be initialized");
+    };
     mocks.setAnnotations.mockImplementation(
       (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) =>
         new Promise<AnnotationEdit[]>((resolve) => {
@@ -264,7 +268,7 @@ describe("face switching and save concurrency", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save now" }));
 
     fireEvent.change(firstXInput, { target: { value: "15" } });
-    resolveSave?.(annotationStore["face-1"]);
+    resolveSave(annotationStore["face-1"]);
 
     await waitFor(() => {
       expect(firstXInput.value).toBe("15");

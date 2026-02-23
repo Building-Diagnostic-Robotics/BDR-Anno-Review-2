@@ -10,6 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Fixed
 - Prevented autosave from treating stale edits as dirty during face switches by gating dirty-check/autosave while target face annotations are still loading.
 - Preserved newer in-flight UI edits when an older save request resolves by only applying save responses when the current editor snapshot still matches the saved request snapshot.
+- Fixed frontend test resolver typing in `main.test.tsx` so production frontend builds no longer fail TypeScript compilation with `Type 'never' has no call signatures` errors.
 
 ## [0.5.0] - 2026-02-23
 
