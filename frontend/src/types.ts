@@ -44,6 +44,19 @@ export type GenerateReviewDatasetReport = {
   skippedExistingCount: number;
 };
 
+export type StartGenerationResponse = {
+  jobId: string;
+};
+
+export type GenerationJobState = "pending" | "running" | "done" | "error";
+
+export type GenerationStatusResponse = {
+  jobId: string;
+  state: GenerationJobState;
+  message: string;
+  result?: GenerateReviewDatasetReport;
+};
+
 export type GenerationProgressEvent = {
   phase: string;
   detail: string;

@@ -6,7 +6,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   exportCoco,
-  generateReviewDataset,
+  startGenerateReviewDataset,
+  getGenerationStatus,
   getAnnotations,
   listFaces,
   openDataset,
@@ -23,7 +24,14 @@ import {
 } from "./api";
 import type { AnnotationEdit, FaceListItem, LlmSettingsResponse, QueueStateItem, ReasoningPreset, SaveLlmSettingsRequest, SuggestionBox } from "./types";
 import "./styles.css";
-import { removeEditAtIndex, validateEdits } from "./editing";
+import {
+  detectPointerIntent,
+  getHandlePoint,
+  removeEditAtIndex,
+  resizeBboxFromHandle,
+  type ResizeHandle,
+  validateEdits,
+} from "./editing";
 import { LlmSettingsModal } from "./settings-modal";
 
 const nowIso = () => new Date().toISOString();
@@ -90,6 +98,8 @@ export function App() {
   const dragState = useRef({
     mode: "idle" as PointerMode,
     index: null as number | null,
+    handle: null as ResizeHandle | null,
+    originBbox: null as [number, number, number, number] | null,
     startX: 0,
     startY: 0,
     offsetX: 0,
@@ -110,13 +120,22 @@ export function App() {
     selectedFaceIdRef.current = selectedFaceId;
   }, [selectedFaceId]);
 
-  const [isBusy, setIsBusy] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [canvasCursor, setCanvasCursor] = useState("crosshair");
   const [status, setStatus] = useState("Ready.");
   const [error, setError] = useState("");
   const [generationStep, setGenerationStep] = useState<GenerationStep>("idle");
   const [generationPercent, setGenerationPercent] = useState(0);
   const [generationDetail, setGenerationDetail] = useState("Idle.");
   const [generationHeartbeat, setGenerationHeartbeat] = useState("Idle");
+
+  const isFaceBusy = isFaceLoading;
+  const isEditorBusy = isImporting || isExporting;
+  const isHomeBusy = isGenerating || isImporting;
+  const isExportBusy = isExporting;
+
 
   const selectedIndex = useMemo(
     () => faces.findIndex((face) => face.faceId === selectedFaceId),
@@ -344,7 +363,7 @@ export function App() {
       return;
     }
 
-    setIsBusy(true);
+    setIsImporting(true);
     try {
       const { openReport } = await refreshFaces();
       setPage("editor");
@@ -352,7 +371,7 @@ export function App() {
     } catch (cause) {
       updateDiagnostics("Open dataset failed", String(cause));
     } finally {
-      setIsBusy(false);
+      setIsImporting(false);
     }
   };
 
@@ -362,7 +381,7 @@ export function App() {
       return;
     }
 
-    setIsBusy(true);
+    setIsImporting(true);
     try {
       const report = await runImportStage({ datasetRoot, cocoJsonPath, mp4Path });
       updateDiagnostics(
@@ -371,7 +390,7 @@ export function App() {
     } catch (cause) {
       updateDiagnostics("Import validation failed", String(cause));
     } finally {
-      setIsBusy(false);
+      setIsImporting(false);
     }
   };
 
@@ -381,7 +400,7 @@ export function App() {
       return;
     }
 
-    setIsBusy(true);
+    setIsGenerating(true);
     setGenerationStep("validating");
     setGenerationPercent(0);
     setGenerationDetail("Starting generation pipeline...");
@@ -389,7 +408,7 @@ export function App() {
 
     try {
       const runtimeReport = await ensureRuntimeDependencies();
-      const report = await generateReviewDataset({
+      const start = await startGenerateReviewDataset({
         datasetRoot,
         cocoJsonPath,
         mp4Path,
@@ -400,6 +419,21 @@ export function App() {
         minProjectedBoxArea: 1,
         qualityProfile: "balanced",
       });
+
+      setGenerationHeartbeat(`Job ${start.jobId} running`);
+      let report;
+      while (!report) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        const status = await getGenerationStatus(start.jobId);
+        if (status.state === "done" && status.result) {
+          report = status.result;
+          break;
+        }
+        if (status.state === "error") {
+          throw new Error(status.message || "Generation job failed.");
+        }
+        setGenerationDetail(status.message || "Running...");
+      }
 
       await refreshFaces();
       setPage("editor");
@@ -417,7 +451,7 @@ export function App() {
       setGenerationHeartbeat("Idle");
       updateDiagnostics("Review dataset generation failed", String(cause));
     } finally {
-      setIsBusy(false);
+      setIsGenerating(false);
     }
   };
 
@@ -431,7 +465,6 @@ export function App() {
     }
 
     setIsFaceLoading(true);
-    setIsBusy(true);
     try {
       const current = await getAnnotations(datasetRoot, faceId);
       if (selectedFaceIdRef.current !== faceId) {
@@ -449,7 +482,6 @@ export function App() {
       updateDiagnostics("Load annotations failed", String(cause));
     } finally {
       setIsFaceLoading(false);
-      setIsBusy(false);
     }
   }, [datasetRoot]);
 
@@ -625,7 +657,10 @@ export function App() {
 
       if (isActive) {
         context.fillStyle = "#dc2626";
-        context.fillRect((x + w) * scaleX - 4, (y + h) * scaleY - 4, 8, 8);
+        (["nw", "n", "ne", "e", "se", "s", "sw", "w"] as ResizeHandle[]).forEach((handle) => {
+          const point = getHandlePoint([x, y, w, h], handle);
+          context.fillRect(point.x * scaleX - 4, point.y * scaleY - 4, 8, 8);
+        });
       }
     });
   }, [edits, imageViewport, activeBoxIndex]);
@@ -642,9 +677,7 @@ export function App() {
       return;
     }
 
-    const snapshot = JSON.stringify(edits);
-    const baseline = lastSavedSnapshotRef.current[selectedFaceId] ?? "";
-    if (snapshot === baseline) {
+    if (!hasUnsavedChanges(selectedFaceId, edits)) {
       return;
     }
 
@@ -664,7 +697,7 @@ export function App() {
         window.clearTimeout(autosaveTimerRef.current);
       }
     };
-  }, [edits, selectedFaceId, isFaceLoading, commitSave]);
+  }, [edits, selectedFaceId, isFaceLoading, commitSave, hasUnsavedChanges]);
 
   const navigateToFace = async (faceId: string) => {
     if (faceId === selectedFaceId) {
@@ -723,6 +756,15 @@ export function App() {
     setEditValidationError("");
   };
 
+  function hasUnsavedChanges(faceId: string, nextEdits: AnnotationEdit[]) {
+    if (!faceId) {
+      return false;
+    }
+    const snapshot = JSON.stringify(nextEdits);
+    const baseline = lastSavedSnapshotRef.current[faceId] ?? "";
+    return snapshot !== baseline;
+  }
+
   const handleAddBox = () => {
     setEdits((previous) => [
       ...previous,
@@ -744,7 +786,7 @@ export function App() {
       setActiveBoxIndex(next.activeBoxIndex);
       if (dragState.current.index !== null) {
         if (dragState.current.index === activeBoxIndex) {
-          dragState.current = { mode: "idle", index: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
+          dragState.current = { mode: "idle", index: null, handle: null, originBbox: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
         } else if (dragState.current.index > activeBoxIndex) {
           dragState.current = {
             ...dragState.current,
@@ -761,7 +803,7 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isBusy || faces.length === 0 || page !== "editor") {
+      if (isFaceBusy || isEditorBusy || faces.length === 0 || page !== "editor") {
         return;
       }
 
@@ -787,7 +829,7 @@ export function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isBusy, faces, selectedIndex, handleDeleteActiveBox, page]);
+  }, [isFaceBusy, isEditorBusy, faces, selectedIndex, handleDeleteActiveBox, page]);
 
   const getPointerInImageSpace = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -803,34 +845,15 @@ export function App() {
 
   const handleCanvasPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const pointer = getPointerInImageSpace(event);
-    if (!pointer || isBusy) {
+    if (!pointer || isFaceBusy || isEditorBusy) {
       return;
     }
 
-    const handleRadius = 8;
-    let mode: PointerMode = "draw";
-    let targetIndex: number | null = null;
-    let offsetX = 0;
-    let offsetY = 0;
-
-    for (let index = edits.length - 1; index >= 0; index -= 1) {
-      const [x, y, w, h] = edits[index].bbox;
-      const inHandle = Math.abs(pointer.x - (x + w)) <= handleRadius && Math.abs(pointer.y - (y + h)) <= handleRadius;
-      if (inHandle) {
-        mode = "resize";
-        targetIndex = index;
-        break;
-      }
-
-      const inBox = pointer.x >= x && pointer.x <= x + w && pointer.y >= y && pointer.y <= y + h;
-      if (inBox) {
-        mode = "move";
-        targetIndex = index;
-        offsetX = pointer.x - x;
-        offsetY = pointer.y - y;
-        break;
-      }
-    }
+    const intent = detectPointerIntent(edits, pointer, 12);
+    let mode: PointerMode = intent.mode;
+    let targetIndex: number | null = intent.index;
+    let offsetX = intent.offsetX;
+    let offsetY = intent.offsetY;
 
     if (targetIndex === null) {
       targetIndex = edits.length;
@@ -846,6 +869,8 @@ export function App() {
     dragState.current = {
       mode,
       index: targetIndex,
+      handle: intent.handle,
+      originBbox: edits[targetIndex]?.bbox ?? null,
       startX: pointer.x,
       startY: pointer.y,
       offsetX,
@@ -853,13 +878,24 @@ export function App() {
     };
     setActiveBoxIndex(targetIndex);
     setEditValidationError("");
+    setCanvasCursor(mode === "move" ? "grabbing" : intent.cursor);
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handleCanvasPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const pointer = getPointerInImageSpace(event);
     const state = dragState.current;
-    if (!pointer || state.mode === "idle" || state.index === null) {
+    if (!pointer) {
+      return;
+    }
+
+    if (state.mode === "idle") {
+      const intent = detectPointerIntent(edits, pointer, 12);
+      setCanvasCursor(intent.cursor);
+      return;
+    }
+
+    if (state.index === null) {
       return;
     }
 
@@ -875,7 +911,11 @@ export function App() {
     }
 
     if (state.mode === "resize") {
-      updateBoxFromPointer(state.index, [x, y, Math.max(0, pointer.x - x), Math.max(0, pointer.y - y)]);
+      if (!state.handle) {
+        return;
+      }
+      const resizeBase = state.originBbox ?? [x, y, w, h];
+      updateBoxFromPointer(state.index, resizeBboxFromHandle(resizeBase, state.handle, pointer));
       return;
     }
 
@@ -888,7 +928,17 @@ export function App() {
   };
 
   const handleCanvasPointerUp = () => {
-    dragState.current = { mode: "idle", index: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
+    dragState.current = { mode: "idle", index: null, handle: null, originBbox: null, startX: 0, startY: 0, offsetX: 0, offsetY: 0 };
+    setCanvasCursor("crosshair");
+    const currentFaceId = selectedFaceIdRef.current;
+    if (hasUnsavedChanges(currentFaceId, editsRef.current)) {
+      if (autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
+      autosaveTimerRef.current = window.setTimeout(() => {
+        void commitSave("autosave");
+      }, AUTOSAVE_DEBOUNCE_MS);
+    }
   };
 
   const handleSave = async () => {
@@ -901,14 +951,14 @@ export function App() {
       return;
     }
 
-    setIsBusy(true);
+    setIsExporting(true);
     try {
       const report = await exportCoco({ datasetRoot, outputPath });
       updateDiagnostics(`Export finished\noutput: ${report.outputPath}\nimages=${report.imageCount}\nannotations=${report.annotationCount}`);
     } catch (cause) {
       updateDiagnostics("Export failed", String(cause));
     } finally {
-      setIsBusy(false);
+      setIsExporting(false);
     }
   };
 
@@ -932,7 +982,7 @@ export function App() {
           <h1>bdr-anno-review</h1>
           <p className="hint">Workflow: Home → Annotate → Export</p>
         </div>
-        <button aria-label="Open settings" onClick={() => setSettingsOpen(true)} disabled={isBusy}>⚙ Settings</button>
+        <button aria-label="Open settings" onClick={() => setSettingsOpen(true)} disabled={isHomeBusy || isFaceBusy || isExportBusy}>⚙ Settings</button>
       </header>
 
       {page === "home" ? (
@@ -948,7 +998,7 @@ export function App() {
                 placeholder="Select dataset directory"
                 onChange={(event) => setDatasetRoot(event.target.value)}
               />
-              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isBusy}>Browse</button>
+              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</button>
             </div>
             <div className="row">
               <label>COCO JSON</label>
@@ -958,7 +1008,7 @@ export function App() {
                 placeholder="Select instances_default.json"
                 onChange={(event) => setCocoJsonPath(event.target.value)}
               />
-              <button onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isBusy}>Browse</button>
+              <button onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</button>
             </div>
             <div className="row">
               <label>Source MP4</label>
@@ -968,7 +1018,7 @@ export function App() {
                 placeholder="Select source .mp4"
                 onChange={(event) => setMp4Path(event.target.value)}
               />
-              <button onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isBusy}>Browse</button>
+              <button onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</button>
             </div>
             <div className="row">
               <label>Source frames directory (auto-managed)</label>
@@ -980,14 +1030,14 @@ export function App() {
             ) : null}
 
             <div className="row">
-              <button onClick={handleGenerate} disabled={isBusy}>Generate review dataset</button>
-              <button onClick={handleImport} disabled={isBusy}>Validate inputs only</button>
+              <button onClick={handleGenerate} disabled={isHomeBusy}>Generate review dataset</button>
+              <button onClick={handleImport} disabled={isHomeBusy}>Validate inputs only</button>
             </div>
 
             <div className="progress" aria-label="generation progress">
               <span style={{ width: `${generationPercent}%` }} />
             </div>
-            <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
+            <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat} • {isGenerating ? "Running" : "Idle"}</p>
           </div>
 
           <div className="card">
@@ -1000,11 +1050,11 @@ export function App() {
                 placeholder="Select dataset directory"
                 onChange={(event) => setDatasetRoot(event.target.value)}
               />
-              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isBusy}>Browse</button>
+              <button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</button>
             </div>
             <div className="row">
-              <button onClick={handleOpen} disabled={isBusy}>Open dataset</button>
-              <button onClick={() => setDropModalOpen(true)} disabled={isBusy}>Drop input</button>
+              <button onClick={handleOpen} disabled={isHomeBusy}>Open dataset</button>
+              <button onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</button>
             </div>
             {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
           </div>
@@ -1027,17 +1077,17 @@ export function App() {
               </div>
               <div className="row compact">
                 <span className={`save-pill ${saveState}`}>{saveStateMessage}{lastSavedAt ? ` (${lastSavedAt})` : ""}</span>
-                <button onClick={handleSave} disabled={isBusy || !selectedFaceId}>Save now</button>
-                <button onClick={() => setPage("export")} disabled={isBusy || !selectedFaceId}>Finish & export</button>
+                <button onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Save now</button>
+                <button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Finish & export</button>
               </div>
             </div>
             <div className="progress" aria-label="review progress">
               <span style={{ width: `${progress}%` }} />
             </div>
             <div className="row compact">
-              <button onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isBusy || selectedIndex <= 0}>Previous</button>
-              <button onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</button>
-              <button onClick={() => void goHome()} disabled={isBusy}>Return home</button>
+              <button onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex <= 0}>Previous</button>
+              <button onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</button>
+              <button onClick={() => void goHome()} disabled={isFaceBusy || isEditorBusy}>Return home</button>
             </div>
           </div>
 
@@ -1048,7 +1098,7 @@ export function App() {
             {!tutorialCollapsed ? (
               <ul className="hint">
                 <li>Draw a box by dragging on the image.</li>
-                <li>Drag inside a box to move it. Drag bottom-right corner to resize.</li>
+                <li>Drag inside a box to move it. Drag any corner or edge handle to resize.</li>
                 <li>Use Delete/Backspace to remove the active box.</li>
                 <li>Use ↑/↓ or j/k to move between faces.</li>
                 <li>Autosave runs after edits; use Save now for immediate persistence.</li>
@@ -1081,10 +1131,12 @@ export function App() {
                   <canvas
                     ref={canvasRef}
                     className="bbox-canvas"
+                    aria-label="Bounding box canvas"
                     onPointerDown={handleCanvasPointerDown}
                     onPointerMove={handleCanvasPointerMove}
                     onPointerUp={handleCanvasPointerUp}
                     onPointerLeave={handleCanvasPointerUp}
+                    style={{ cursor: canvasCursor }}
                   />
                 </>
               ) : (
@@ -1110,8 +1162,8 @@ export function App() {
             ))}
             {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
             <div className="row">
-              <button onClick={handleAddBox} disabled={isBusy || !selectedFaceId}>Add box</button>
-              <button onClick={handleDeleteActiveBox} disabled={isBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</button>
+              <button onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Add box</button>
+              <button onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</button>
             </div>
           </div>
         </section>
@@ -1124,15 +1176,15 @@ export function App() {
             <p className="hint">Export reviewed annotations to COCO JSON.</p>
             <div className="row">
               <input value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
-              <button onClick={() => void pickSaveFile()} disabled={isBusy}>Browse</button>
+              <button onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</button>
             </div>
             {outputPathError ? <p className="error">{outputPathError}</p> : null}
             <div className="row">
-              <button onClick={handleExport} disabled={isBusy}>Export COCO</button>
+              <button onClick={handleExport} disabled={isExportBusy}>Export COCO</button>
             </div>
             <div className="row">
-              <button onClick={() => setPage("editor")} disabled={isBusy}>Continue editing</button>
-              <button onClick={() => void goHome()} disabled={isBusy}>Return home</button>
+              <button onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</button>
+              <button onClick={() => void goHome()} disabled={isExportBusy}>Return home</button>
             </div>
           </div>
 
