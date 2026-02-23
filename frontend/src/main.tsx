@@ -36,7 +36,7 @@ import {
   clampBboxMoveToBounds,
 } from "./editing";
 import { LlmSettingsModal } from "./settings-modal";
-import { Button, Card, Field, SectionHeading } from "./ui-primitives";
+import { Button, Card, Field, SectionHeading, inputClassName, modalOverlayClassName } from "./ui-primitives";
 
 const nowIso = () => new Date().toISOString();
 const AUTOSAVE_DEBOUNCE_MS = 1000;
@@ -90,6 +90,7 @@ export function App() {
   const [isFaceLoading, setIsFaceLoading] = useState(false);
   const [showGenerationSpinner, setShowGenerationSpinner] = useState(false);
   const [noticeMessage, setNoticeMessage] = useState("");
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
     if (typeof window === "undefined") {
@@ -1018,130 +1019,160 @@ export function App() {
   };
 
   const diagnosticsText = "$ bdr-anno-review\n" + status + (error ? `\n\n[error] ${error}` : "\n\n[ok] No active errors.");
+  const saveStateClassName: Record<SaveState, string> = {
+    idle: "bg-anno-surface-high text-anno-text-muted",
+    dirty: "bg-amber-500/20 text-amber-200",
+    saving: "bg-sky-500/20 text-sky-200",
+    saved: "bg-emerald-500/20 text-emerald-200",
+    error: "bg-rose-500/20 text-rose-200",
+  };
+
+  const coord = (value: number) => (Number.isFinite(value) ? Number(value.toFixed(2)) : value);
 
   return (
-    <main className="app-shell">
-      <div className="top-right-actions">
+    <main className="relative min-h-screen bg-anno-bg px-4 pb-28 pt-6 text-anno-text-main md:px-8">
+      <div className="mx-auto flex w-full max-w-[1480px] items-center justify-between gap-3 pb-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Anno Review Workspace</h1>
+          <p className="text-sm text-anno-text-muted">Refined annotation tooling with layered surfaces and focused flow.</p>
+        </div>
         <Button aria-label="Open settings" variant="tonal" onClick={() => setSettingsOpen(true)} disabled={isHomeBusy || isFaceBusy || isExportBusy}>⚙ Settings</Button>
       </div>
 
       {page === "home" ? (
-        <section className="home-auth-shell">
-          <div className="home-brand">
-            <h2>Anno</h2>
-            <p className="hint">Create a new review project or continue where you left off.</p>
-          </div>
+        <section className="mx-auto grid w-full max-w-[1200px] gap-5 lg:grid-cols-[1.45fr_1fr]">
+          <Card elevated className="bg-anno-surface-low">
+            <SectionHeading title="Create new dataset" subtitle="Create a new review-ready dataset through a unified import wizard." />
+            <Field label="Project directory" hint="Where Anno stores project metadata and generated assets.">
+              <div className="flex gap-2">
+                <input className={inputClassName} aria-label="Dataset root" value={datasetRoot} placeholder="Choose project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
+                <Button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
+              </div>
+            </Field>
 
-          <div className="home-auth-grid">
-            <Card elevated className="auth-card">
-              <SectionHeading title="Create new dataset" subtitle="1. Start new project — import source files and generate a review-ready dataset." />
-
-              <Field label="Project directory" hint="Where Anno stores project metadata and generated assets.">
-                <div className="row input-row">
-                  <input
-                    aria-label="Dataset root"
-                    value={datasetRoot}
-                    placeholder="Choose project directory"
-                    onChange={(event) => setDatasetRoot(event.target.value)}
-                  />
-                  <Button onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
-                </div>
-              </Field>
-
+            <div className="grid gap-3 md:grid-cols-2">
               <Field label="Import COCO" hint="Select your instances JSON file.">
-                <div className="row input-row">
-                  <input
-                    aria-label="COCO JSON"
-                    value={cocoJsonPath}
-                    placeholder="Choose COCO annotations (.json)"
-                    onChange={(event) => setCocoJsonPath(event.target.value)}
-                  />
+                <div className="flex gap-2">
+                  <input className={inputClassName} aria-label="COCO JSON" value={cocoJsonPath} placeholder="Choose COCO annotations (.json)" onChange={(event) => setCocoJsonPath(event.target.value)} />
                   <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
                 </div>
               </Field>
 
               <Field label="Import MP4/frames" hint="Pick the source video (.mp4) used for frame generation.">
-                <div className="row input-row">
-                  <input
-                    aria-label="Source MP4"
-                    value={mp4Path}
-                    placeholder="Choose source video (.mp4)"
-                    onChange={(event) => setMp4Path(event.target.value)}
-                  />
+                <div className="flex gap-2">
+                  <input className={inputClassName} aria-label="Source MP4" value={mp4Path} placeholder="Choose source video (.mp4)" onChange={(event) => setMp4Path(event.target.value)} />
                   <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
                 </div>
               </Field>
-
-              <Field label="Source frames directory (auto-managed)">
-                <input aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
-              </Field>
-
-              {importInputError ? <p className="error">{importInputError}</p> : null}
-
-              <div className="actions-primary">
-                <Button onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>{isGenerating ? "Generating…" : "Generate"}</Button>
-                {showGenerationSpinner ? <span className="spinner" aria-label="Generation in progress" /> : null}
-                <Button variant="outlined" onClick={() => void handleAbortGeneration()} disabled={!isGenerating || !generationJobId}>Abort</Button>
-              </div>
-              <div className="progress" aria-label="generation progress">
-                <span style={{ width: `${generationPercent}%` }} />
-              </div>
-              <p className="hint">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
-            </Card>
-
-            <div className="home-or-divider" aria-hidden="true">
-              <span>OR</span>
             </div>
 
-            <Card className="auth-card">
-              <SectionHeading title="Resume existing dataset" subtitle="2. Open existing project and jump directly into annotation review." />
-              <Field label="Open project directory" hint="Resume from an existing dataset root.">
-                <div className="row input-row">
-                  <input aria-label="Resume dataset directory" value={datasetRoot} placeholder="Choose existing project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
-                  <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
-                </div>
-              </Field>
-              {datasetRootError ? <p className="error">{datasetRootError}</p> : null}
-              <div className="actions-secondary">
-                <Button onClick={handleOpen} disabled={isHomeBusy || !!datasetRootError}>Open dataset</Button>
-                <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
+            <Field label="Source frames directory (auto-managed)">
+              <input className={inputClassName} aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
+            </Field>
+
+            {importInputError ? <p className="mb-3 text-sm text-rose-300">{importInputError}</p> : null}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>{isGenerating ? "Generating…" : "Generate"}</Button>
+              {showGenerationSpinner ? <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-anno-primary border-t-transparent" aria-label="Generation in progress" /> : null}
+              <Button variant="outlined" onClick={() => void handleAbortGeneration()} disabled={!isGenerating || !generationJobId}>Abort</Button>
+            </div>
+            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-anno-surface-high" aria-label="generation progress">
+              <span className="block h-full rounded-full bg-anno-primary transition-all duration-300" style={{ width: `${generationPercent}%` }} />
+            </div>
+            <p className="mt-2 text-xs text-anno-text-muted">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
+          </Card>
+
+          <Card className="bg-anno-surface-low">
+            <SectionHeading title="Resume existing dataset" subtitle="Jump straight into annotation review." />
+            <Field label="Open project directory" hint="Resume from an existing dataset root.">
+              <div className="flex gap-2">
+                <input className={inputClassName} aria-label="Resume dataset directory" value={datasetRoot} placeholder="Choose existing project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
+                <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
               </div>
-            </Card>
-          </div>
+            </Field>
+            {datasetRootError ? <p className="mb-3 text-sm text-rose-300">{datasetRootError}</p> : null}
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={handleOpen} disabled={isHomeBusy || !!datasetRootError}>Open dataset</Button>
+              <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
+            </div>
+          </Card>
         </section>
       ) : null}
 
       {page === "editor" ? (
-        <section className="editor-layout">
-          <Card className="editor-toolbar" elevated>
-            <div className="row spread">
-              <div>
-                <h2>Editing: {selectedFace?.faceId ?? "(none)"}</h2>
-                <p className="hint">Progress {Math.max(0, selectedIndex + 1)}/{faces.length} ({Math.round(progress)}%)</p>
+        <section className="mx-auto grid w-full max-w-[1480px] gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <Card elevated className="bg-anno-surface-low">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-semibold">Editing: {selectedFace?.faceId ?? "(none)"}</h2>
+                  <p className="text-sm text-anno-text-muted">Progress {Math.max(0, selectedIndex + 1)}/{faces.length} ({Math.round(progress)}%)</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-full px-3 py-1 text-xs font-medium ${saveStateClassName[saveState]}`}>{saveStateMessage}{lastSavedAt ? ` (${lastSavedAt})` : ""}</span>
+                  <Button variant="tonal" onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Save now</Button>
+                  <Button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Finish & export</Button>
+                </div>
               </div>
-              <div className="row compact">
-                <span className={`save-pill ${saveState}`}>{saveStateMessage}{lastSavedAt ? ` (${lastSavedAt})` : ""}</span>
-                <Button variant="tonal" onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Save now</Button>
-                <Button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Finish & export</Button>
+              <div className="h-1.5 overflow-hidden rounded-full bg-anno-surface-high" aria-label="review progress">
+                <span className="block h-full rounded-full bg-anno-primary transition-all duration-300" style={{ width: `${progress}%` }} />
               </div>
-            </div>
-            <div className="progress" aria-label="review progress">
-              <span style={{ width: `${progress}%` }} />
-            </div>
-            <div className="row compact">
-              <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex <= 0}>Previous</Button>
-              <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</Button>
-              <Button variant="text" onClick={() => void goHome()} disabled={isFaceBusy || isEditorBusy}>Return home</Button>
-            </div>
-          </Card>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex <= 0}>Previous</Button>
+                <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</Button>
+                <Button variant="text" onClick={() => void goHome()} disabled={isFaceBusy || isEditorBusy}>Return home</Button>
+              </div>
+            </Card>
 
-          <Card className="editor-nav-pane">
-            <div className="card tutorial-card">
-              <button className="link-button" onClick={toggleTutorial} aria-expanded={!tutorialCollapsed}>
+            <Card className="bg-anno-surface-med">
+              <div className="relative rounded-3xl bg-anno-surface-low p-3 ring-1 ring-white/5">
+                {selectedFace ? (
+                  <>
+                    <img
+                      ref={imageRef}
+                      className="face-preview"
+                      src={imageSrc}
+                      alt={`Face preview for ${selectedFace.faceId}`}
+                      onLoad={(event) => {
+                        setPreviewError("");
+                        setImageViewport({
+                          naturalWidth: event.currentTarget.naturalWidth,
+                          naturalHeight: event.currentTarget.naturalHeight,
+                          displayWidth: event.currentTarget.clientWidth,
+                          displayHeight: event.currentTarget.clientHeight,
+                        });
+                      }}
+                      onError={() => {
+                        setPreviewError(`Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}. Resolved src: ${imageSrc}. Dataset root: ${datasetRoot || "(empty)"}.`);
+                      }}
+                    />
+                    <canvas
+                      ref={canvasRef}
+                      className="bbox-canvas"
+                      aria-label="Bounding box canvas"
+                      onPointerDown={handleCanvasPointerDown}
+                      onPointerMove={handleCanvasPointerMove}
+                      onPointerUp={handleCanvasPointerUp}
+                      onPointerLeave={handleCanvasPointerUp}
+                      style={{ cursor: canvasCursor }}
+                    />
+                  </>
+                ) : (
+                  <p className="py-16 text-center text-sm text-anno-text-muted">Open a dataset and select a face to start reviewing.</p>
+                )}
+              </div>
+              {previewError ? <p className="mt-2 text-sm text-rose-300">{previewError}</p> : null}
+            </Card>
+          </div>
+
+          <Card className="bg-anno-surface-low">
+            <div className="mb-4 rounded-2xl bg-anno-surface-med p-3 ring-1 ring-white/5">
+              <button className="text-sm font-medium text-anno-secondary transition hover:text-purple-300" onClick={toggleTutorial} aria-expanded={!tutorialCollapsed}>
                 {tutorialCollapsed ? "Show quick tutorial" : "Hide quick tutorial"}
               </button>
               {!tutorialCollapsed ? (
-                <ul className="hint">
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-anno-text-muted">
                   <li>Click and drag to draw a box.</li>
                   <li>Drag center to move the active box.</li>
                   <li>Drag corners/edges to resize from any handle.</li>
@@ -1150,63 +1181,26 @@ export function App() {
                 </ul>
               ) : null}
             </div>
-          </Card>
 
-          <Card className="canvas-card">
-            <div className="preview-shell preview-large">
-              {selectedFace ? (
-                <>
-                  <img
-                    ref={imageRef}
-                    className="face-preview"
-                    src={imageSrc}
-                    alt={`Face preview for ${selectedFace.faceId}`}
-                    onLoad={(event) => {
-                      setPreviewError("");
-                      setImageViewport({
-                        naturalWidth: event.currentTarget.naturalWidth,
-                        naturalHeight: event.currentTarget.naturalHeight,
-                        displayWidth: event.currentTarget.clientWidth,
-                        displayHeight: event.currentTarget.clientHeight,
-                      });
-                    }}
-                    onError={() => {
-                      setPreviewError(`Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}. Resolved src: ${imageSrc}. Dataset root: ${datasetRoot || "(empty)"}.`);
-                    }}
-                  />
-                  <canvas
-                    ref={canvasRef}
-                    className="bbox-canvas"
-                    aria-label="Bounding box canvas"
-                    onPointerDown={handleCanvasPointerDown}
-                    onPointerMove={handleCanvasPointerMove}
-                    onPointerUp={handleCanvasPointerUp}
-                    onPointerLeave={handleCanvasPointerUp}
-                    style={{ cursor: canvasCursor }}
-                  />
-                </>
-              ) : (
-                <p className="empty-preview">Open a dataset and select a face to start reviewing.</p>
-              )}
+            <h3 className="text-lg font-semibold">Bounding boxes</h3>
+            <p className="mb-3 text-xs text-anno-text-muted">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
+            <div className="max-h-[52vh] space-y-2 overflow-auto pr-1">
+              {edits.map((edit, index) => (
+                <div className={`bbox-editor rounded-2xl p-3 ring-1 transition ${activeBoxIndex === index ? "bg-anno-surface-high ring-anno-primary/40" : "bg-anno-surface-med ring-white/5"}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
+                  <div className="mb-2 text-xs text-anno-text-muted">Box {index + 1}: {edit.bbox.map(coord).join(", ")}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
+                      <label key={axis} className="text-xs text-anno-text-muted">
+                        {axis}
+                        <input className={inputClassName} aria-label={axis} value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
-            {previewError ? <p className="error">{previewError}</p> : null}
-          </Card>
-
-          <Card className="editor-inspector">
-            <h3>Bounding boxes</h3>
-            <p className="hint">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
-            {edits.map((edit, index) => (
-              <div className={`bbox-editor ${activeBoxIndex === index ? "active-row" : ""}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
-                {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
-                  <label key={axis} className="bbox-field">
-                    {axis}
-                    <input aria-label={axis} value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
-                  </label>
-                ))}
-              </div>
-            ))}
-            {editValidationError ? <p className="error">Invalid edits: {editValidationError}</p> : null}
-            <div className="row wrap-row">
+            {editValidationError ? <p className="mt-2 text-sm text-rose-300">Invalid edits: {editValidationError}</p> : null}
+            <div className="mt-3 flex flex-wrap gap-2">
               <Button variant="tonal" onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Add box</Button>
               <Button variant="outlined" onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</Button>
             </div>
@@ -1215,41 +1209,42 @@ export function App() {
       ) : null}
 
       {page === "export" ? (
-        <section className="export-layout">
-          <Card elevated>
+        <section className="mx-auto flex min-h-[62vh] w-full max-w-[900px] items-center justify-center">
+          <Card elevated className="w-full bg-anno-surface-low">
             <SectionHeading title="Export final annotations" subtitle="Export reviewed annotations to COCO JSON." />
-            <div className="row">
-              <input value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
-              <Button onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</Button>
-            </div>
-            {outputPathError ? <p className="error">{outputPathError}</p> : null}
-            <div className="actions-primary">
-              <Button onClick={handleExport} disabled={isExportBusy}>Export COCO</Button>
-            </div>
-            <div className="actions-secondary">
-              <Button variant="outlined" onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</Button>
-              <Button variant="text" onClick={() => void goHome()} disabled={isExportBusy}>Return home</Button>
+            <div className="rounded-3xl bg-gradient-to-br from-anno-surface-med via-anno-surface-low to-anno-surface-med p-5 ring-1 ring-white/5">
+              <div className="mb-3 flex gap-2">
+                <input className={inputClassName} value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
+                <Button onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</Button>
+              </div>
+              {outputPathError ? <p className="mb-3 text-sm text-rose-300">{outputPathError}</p> : null}
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={handleExport} disabled={isExportBusy}>Export COCO</Button>
+                <Button variant="outlined" onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</Button>
+                <Button variant="text" onClick={() => void goHome()} disabled={isExportBusy}>Return home</Button>
+              </div>
             </div>
           </Card>
-
         </section>
       ) : null}
 
-      <section className="diagnostics-dock" aria-live="polite" aria-label="Application diagnostics terminal">
-        <div className="diagnostics-dock-head">
-          <span className="diagnostics-title">Diagnostics terminal</span>
-          <span className={`diagnostics-state ${error ? "error" : "ok"}`}>{error ? "ERROR" : "READY"}</span>
+      <section className="fixed bottom-0 left-0 right-0 z-30 border-t border-anno-surface-high bg-black/40" aria-live="polite" aria-label="Application diagnostics terminal">
+        <div className="mx-auto flex w-full max-w-[1480px] items-center justify-between px-4 py-2 text-xs md:px-8">
+          <button className="font-medium text-anno-text-main transition hover:text-anno-primary" onClick={() => setDiagnosticsOpen((value) => !value)}>
+            Diagnostics terminal {diagnosticsOpen ? "▾" : "▸"}
+          </button>
+          <span className={`rounded-full px-2 py-0.5 font-semibold ${error ? "bg-rose-500/20 text-rose-200" : "bg-emerald-500/20 text-emerald-200"}`}>{error ? "ERROR" : "READY"}</span>
         </div>
-        <pre className={`status terminal-status ${error ? "has-error" : ""}`}>{diagnosticsText}</pre>
+        {diagnosticsOpen ? <pre className={`terminal-scrollbar max-h-48 overflow-auto px-4 pb-3 text-xs text-anno-text-muted md:px-8 ${error ? "text-rose-200" : ""}`}>{diagnosticsText}</pre> : null}
       </section>
 
       {noticeMessage ? (
-        <div className="modal-overlay" role="alertdialog" aria-modal="true" aria-label="Generation notice">
-          <div className="modal-card notice-card">
-            <h3>Generation notice</h3>
-            <p className="hint">Generation could not continue. See diagnostics for details.</p>
-            <pre className="status">{noticeMessage}</pre>
-            <div className="row">
+        <div className={modalOverlayClassName} role="alertdialog" aria-modal="true" aria-label="Generation notice">
+          <div className="w-full max-w-xl rounded-3xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
+            <h3 className="text-lg font-semibold">Generation notice</h3>
+            <p className="mt-1 text-sm text-anno-text-muted">Generation could not continue. See diagnostics for details.</p>
+            <pre className="mt-3 max-h-44 overflow-auto rounded-2xl bg-anno-surface-low p-3 text-xs text-anno-text-muted">{noticeMessage}</pre>
+            <div className="mt-3 flex gap-2">
               <Button variant="outlined" onClick={() => { setNoticeMessage(""); if (error) { clearDiagnostics("Ready."); } }}>Dismiss</Button>
             </div>
           </div>
@@ -1273,11 +1268,11 @@ export function App() {
         />
       ) : null}
       {dropModalOpen ? (
-        <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Drop input files">
-          <div className="modal-card">
-            <h3>Drop input files</h3>
-            <p className="hint">Drop dataset directory, COCO JSON, and MP4 anywhere on this window.</p>
-            <div className="row">
+        <div className={modalOverlayClassName} role="dialog" aria-modal="true" aria-label="Drop input files">
+          <div className="w-full max-w-lg rounded-3xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
+            <h3 className="text-lg font-semibold">Drop input files</h3>
+            <p className="mt-1 text-sm text-anno-text-muted">Drop dataset directory, COCO JSON, and MP4 anywhere on this window.</p>
+            <div className="mt-3 flex gap-2">
               <Button variant="outlined" onClick={() => setDropModalOpen(false)}>Close</Button>
             </div>
           </div>

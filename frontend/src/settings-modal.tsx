@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { LlmProviderId, LlmSettingsResponse, ReasoningPreset, SaveLlmSettingsRequest } from "./types";
-import { Button, Field } from "./ui-primitives";
+import { Button, Field, inputClassName, modalOverlayClassName } from "./ui-primitives";
 
 type Props = {
   initial: LlmSettingsResponse | null;
@@ -133,30 +133,31 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
   }, [onClose]);
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="LLM settings">
-      <div className="modal-card" ref={modalRef}>
-        <div className="row spread">
-          <h3>LLM settings</h3>
+    <div className={modalOverlayClassName} role="dialog" aria-modal="true" aria-label="LLM settings">
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-3xl bg-anno-surface-med p-6 ring-1 ring-white/5 shadow-2xl shadow-black/60" ref={modalRef}>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <h3 className="text-xl font-semibold text-anno-text-main">LLM settings</h3>
           <Button variant="outlined" onClick={onClose} aria-label="Close LLM settings">
             Close
           </Button>
         </div>
-        <p className="hint">Default behavior is optimized for low-friction suggestions. Use Advanced only when tuning is needed.</p>
+        <p className="mb-5 text-sm text-anno-text-muted">Default behavior is optimized for low-friction suggestions. Use Advanced only when tuning is needed.</p>
 
-        <section className="settings-group">
-          <h4>General</h4>
-          <label className="row spread">
+        <section className="mb-5 space-y-4 rounded-3xl bg-anno-surface-low p-4 ring-1 ring-white/5">
+          <h4 className="text-base font-semibold">General</h4>
+          <label className="flex items-center justify-between gap-2 text-sm text-anno-text-main">
             <span>Enable suggestions</span>
             <input
               ref={firstControlRef}
               type="checkbox"
               checked={llmSuggestionsEnabled}
               onChange={(e) => setLlmSuggestionsEnabled(e.target.checked)}
+              className="h-5 w-5 rounded border-0 bg-anno-surface-high text-anno-primary focus:ring-anno-primary"
             />
           </label>
 
           <Field label="Provider">
-            <select value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as "openai" | "anthropic" | "none") }>
+            <select className={inputClassName} value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as "openai" | "anthropic" | "none") }>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
               <option value="none">Disabled</option>
@@ -164,7 +165,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </Field>
 
           <Field label="Preset" hint="Fast prioritizes speed, Quality prioritizes accuracy.">
-            <div className="row compact">
+            <div className="flex flex-wrap gap-2">
               <Button variant={preset === "Fast" ? "filled" : "outlined"} onClick={() => applyPreset("Fast")}>Fast</Button>
               <Button variant={preset === "Balanced" ? "filled" : "outlined"} onClick={() => applyPreset("Balanced")}>Balanced</Button>
               <Button variant={preset === "Quality" ? "filled" : "outlined"} onClick={() => applyPreset("Quality")}>Quality</Button>
@@ -172,15 +173,16 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </Field>
         </section>
 
-        <section className="settings-group">
-          <h4>Credentials</h4>
+        <section className="mb-5 space-y-3 rounded-3xl bg-anno-surface-low p-4 ring-1 ring-white/5">
+          <h4 className="text-base font-semibold">Credentials</h4>
           <Field label={`OpenAI model${seed.openai.maskedKeyPreview ? ` (saved key: ${seed.openai.maskedKeyPreview})` : ""}`}>
-            <select value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
+            <select className={inputClassName} value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
               <option value="gpt-5.2">gpt-5.2</option>
             </select>
           </Field>
-          <div className="row">
+          <div className="flex flex-wrap items-center gap-2">
             <input
+              className={inputClassName}
               type={showOpenaiKey ? "text" : "password"}
               value={openaiApiKey}
               onChange={(e) => setOpenaiApiKey(e.target.value)}
@@ -191,13 +193,14 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </div>
 
           <Field label={`Anthropic model${seed.anthropic.maskedKeyPreview ? ` (saved key: ${seed.anthropic.maskedKeyPreview})` : ""}`}>
-            <select value={anthropicModel} onChange={(e) => setAnthropicModel(e.target.value)}>
+            <select className={inputClassName} value={anthropicModel} onChange={(e) => setAnthropicModel(e.target.value)}>
               <option value="claude-opus-4-6">claude-opus-4-6</option>
               <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
             </select>
           </Field>
-          <div className="row">
+          <div className="flex flex-wrap items-center gap-2">
             <input
+              className={inputClassName}
               type={showAnthropicKey ? "text" : "password"}
               value={anthropicApiKey}
               onChange={(e) => setAnthropicApiKey(e.target.value)}
@@ -208,13 +211,13 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </div>
         </section>
 
-        <section className="settings-group">
-          <h4>Advanced</h4>
-          <button className="link-button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} advanced settings</button>
+        <section className="mb-5 space-y-3 rounded-3xl bg-anno-surface-low p-4 ring-1 ring-white/5">
+          <h4 className="text-base font-semibold">Advanced</h4>
+          <button className="text-sm text-anno-secondary transition hover:text-purple-300" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} advanced settings</button>
           {showAdvanced ? (
             <>
               <Field label="Reasoning preset">
-                <select value={reasoningPreset} onChange={(e) => setReasoningPreset(e.target.value as ReasoningPreset)}>
+                <select className={inputClassName} value={reasoningPreset} onChange={(e) => setReasoningPreset(e.target.value as ReasoningPreset)}>
                   <option value="high">High</option>
                   <option value="balanced">Balanced</option>
                   <option value="low">Low</option>
@@ -222,15 +225,15 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
               </Field>
 
               <Field label="Prefetch buffer size">
-                <input type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
+                <input className={inputClassName} type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
               </Field>
             </>
           ) : null}
         </section>
 
-        {providerValidation ? <p className="error">{providerValidation}</p> : null}
+        {providerValidation ? <p className="mb-3 text-sm text-rose-300">{providerValidation}</p> : null}
 
-        <div className="row">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             onClick={() =>
               void onSave({
@@ -249,7 +252,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </Button>
           <Button variant="outlined" onClick={onClose}>Close</Button>
         </div>
-        <p className="hint">Effective config: {llmSuggestionsEnabled ? "Suggestions enabled" : "Suggestions disabled"}, {preset} profile.</p>
+        <p className="mt-3 text-xs text-anno-text-muted">Effective config: {llmSuggestionsEnabled ? "Suggestions enabled" : "Suggestions disabled"}, {preset} profile.</p>
       </div>
     </div>
   );
