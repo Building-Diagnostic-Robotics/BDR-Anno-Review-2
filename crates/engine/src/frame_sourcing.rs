@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -340,6 +343,56 @@ fn command_for_tool(tool: &str) -> Command {
 
 const SELECT_EXPRESSION_MAX_FRAMES: usize = 1000;
 
+struct CommandRunOutput {
+    status: ExitStatus,
+    stderr: Vec<u8>,
+}
+
+fn run_command_with_cancel<C>(
+    mut command: Command,
+    should_cancel: &C,
+    cancel_context: &'static str,
+) -> Result<CommandRunOutput, EngineError>
+where
+    C: Fn() -> bool,
+{
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| {
+            EngineError::InvalidConfiguration(format!(
+                "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
+            ))
+        })?;
+
+    loop {
+        if should_cancel() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(EngineError::Cancelled(cancel_context));
+        }
+
+        if let Some(status) = child.try_wait().map_err(|source| {
+            EngineError::InvalidConfiguration(format!(
+                "failed while waiting for ffmpeg frame extraction process: {source}"
+            ))
+        })? {
+            let mut stderr = Vec::new();
+            if let Some(mut stderr_pipe) = child.stderr.take() {
+                stderr_pipe.read_to_end(&mut stderr).map_err(|source| {
+                    EngineError::InvalidConfiguration(format!(
+                        "failed to read ffmpeg stderr output: {source}"
+                    ))
+                })?;
+            }
+            return Ok(CommandRunOutput { status, stderr });
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn extract_frames_batch<F, C>(
     ffmpeg_bin: &str,
     mp4_path: &Path,
@@ -401,7 +454,8 @@ where
             reason: format!("could not create temporary frame extraction directory: {source}"),
         })?;
 
-        let ffmpeg_output = command_for_tool(ffmpeg_bin)
+        let mut ffmpeg_command = command_for_tool(ffmpeg_bin);
+        ffmpeg_command
             .arg("-v")
             .arg("error")
             .arg("-nostdin")
@@ -414,13 +468,9 @@ where
             .arg("-start_number")
             .arg("0")
             .arg("-y")
-            .arg(temp_batch_dir.join("frame_%06d.png"))
-            .output()
-            .map_err(|source| {
-                EngineError::InvalidConfiguration(format!(
-                    "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
-                ))
-            })?;
+            .arg(temp_batch_dir.join("frame_%06d.png"));
+        let ffmpeg_output =
+            run_command_with_cancel(ffmpeg_command, should_cancel, "frame extraction")?;
 
         if !ffmpeg_output.status.success() {
             return Err(EngineError::UnreadableFile {
@@ -487,7 +537,8 @@ where
             reason: format!("could not create temporary frame extraction directory: {source}"),
         })?;
 
-        let ffmpeg_output = command_for_tool(ffmpeg_bin)
+        let mut ffmpeg_command = command_for_tool(ffmpeg_bin);
+        ffmpeg_command
             .arg("-v")
             .arg("error")
             .arg("-nostdin")
@@ -498,13 +549,9 @@ where
             .arg("-start_number")
             .arg("0")
             .arg("-y")
-            .arg(temp_batch_dir.join("frame_%06d.png"))
-            .output()
-            .map_err(|source| {
-                EngineError::InvalidConfiguration(format!(
-                    "failed to run ffmpeg for frame extraction; ensure ffmpeg is installed and available on PATH: {source}"
-                ))
-            })?;
+            .arg(temp_batch_dir.join("frame_%06d.png"));
+        let ffmpeg_output =
+            run_command_with_cancel(ffmpeg_command, should_cancel, "frame extraction")?;
 
         if !ffmpeg_output.status.success() {
             return Err(EngineError::UnreadableFile {

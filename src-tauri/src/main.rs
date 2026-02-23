@@ -837,6 +837,14 @@ fn abort_generation_job_command(
         .get_mut(&request.job_id)
         .ok_or_else(|| format!("generation job not found: {}", request.job_id))?;
 
+    if matches!(record.state.as_str(), "done" | "error" | "cancelled") {
+        return Ok(AbortGenerationResponse {
+            job_id: request.job_id,
+            state: record.state.clone(),
+            message: record.message.clone(),
+        });
+    }
+
     record.cancellation_token.cancel();
     record.state = "aborting".to_owned();
     record.message = "Abort requested by user".to_owned();

@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Made MP4 extraction cancellation interrupt in-flight `ffmpeg` processes immediately so abort requests stop heavy decode work without waiting for process completion.
+- Prevented abort requests from regressing already terminal generation jobs (`done`, `error`, `cancelled`) back to `aborting`.
+
 ## [0.9.0] - 2026-02-23
 
 ### Added
