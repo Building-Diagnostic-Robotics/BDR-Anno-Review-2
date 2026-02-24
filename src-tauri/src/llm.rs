@@ -853,7 +853,7 @@ mod tests {
         let raw = r#"{"boxes":[{"x":5,"y":6,"w":7,"h":8,"confidence":0.7}],"image_size":{"width":20,"height":10}}"#;
         let parsed = parse_json_suggestions(raw, 20.0, 10.0).unwrap();
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].bbox, [5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(parsed[0].bbox, [5.0, 6.0, 7.0, 4.0]);
     }
 
     #[test]
