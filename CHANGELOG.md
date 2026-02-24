@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- Updated OpenAI Responses payload construction for bbox suggestions to use the documented multimodal `input` content format (`input_text` + `input_image`) and added built-in Code Interpreter tool configuration with `container: { type: "auto", memory_limit: "4g" }`.
+- Added a debug-only toggle (`BDR_OPENAI_TOOL_CHOICE_REQUIRED=1`) to force `tool_choice: "required"` when validating Code Interpreter execution without changing default bbox-labeling behavior.
+- Hardened bbox suggestion parsing to fail loudly when any returned bbox entry is invalid instead of silently accepting partial results.
+
+### Added
+- Added OpenAI payload “golden JSON” and schema-shape tests for multimodal + Code Interpreter request bodies, plus response-shape detection tests for Code Interpreter tool outputs.
+- Added an ignored network smoke test that can assert Code Interpreter execution against the live Responses API when `OPENAI_API_KEY` is available.
+
 ## [1.1.1] - 2026-02-24
 
 ### Fixed
