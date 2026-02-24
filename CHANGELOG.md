@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-02-24
+
+### Changed
+- Parallelized review face generation across source images using Rayon, while preserving deterministic manifest ordering and thread-safe progress reporting/cancellation checks to improve multi-core throughput on large frame sets.
+- Optimized face projection rendering hot loops by hoisting row invariants and precomputing x-axis world components once per output image, reducing repeated math in pixel loops.
+- Switched rendered face PNG writing to explicit fast-profile encoding (`CompressionType::Fast`, `FilterType::NoFilter`) to reduce per-image write latency during dataset generation.
+- Added early yaw-range intersection rejection before box projection to skip non-visible annotations earlier and reduce unnecessary projection work.
+
 ## [1.0.0] - 2026-02-23
 
 ### Changed
