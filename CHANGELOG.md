@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-02-24
+
+### Changed
+- Improved MP4 frame-count probing to use a fast ffprobe metadata-first path (`nb_frames`, `avg_frame_rate` + `duration` estimation) before falling back to full `-count_frames`, reducing long startup stalls on large videos while preserving explicit diagnostics when probing fails.
+- Added optional GPU-acceleration mode selection for ffmpeg frame extraction with a new generation request field (`gpuAcceleration`) and engine option (`ffmpeg_hwaccel`), including auto mode that runs a short CPU-vs-platform-GPU probe and only enables hardware decode when the probe is successful and faster.
+- Expanded generation progress phases to include early `probing_video` and `planning_frames` updates so long video setup phases are visible in UI progress events.
+- Added a frontend heartbeat ticker that keeps `Last update Ns` moving between backend events, improving responsiveness perception during long-running extraction/probe steps.
+
 ### Fixed
 - Corrected OpenAI suggestion call wiring and image base64 encoding in `llm` so argument order matches `run_openai`, media type is passed through to data URLs, and image bytes are no longer moved before format detection.
 - Improved LLM credential UX and diagnostics by adding explicit per-provider key status messaging in Settings, surfacing keychain read failures without silently treating them as missing keys, and validating secure key save via readback before accepting a save request.
