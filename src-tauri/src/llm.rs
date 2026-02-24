@@ -12,6 +12,8 @@ use crate::settings::{LlmProviderSettings, LlmSettings};
 
 const OPENAI_URL: &str = "https://api.openai.com/v1/responses";
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
+const CODE_INTERPRETER_MEMORY_LIMIT: &str = "4g";
+const TOOL_CHOICE_REQUIRED_ENV: &str = "BDR_OPENAI_TOOL_CHOICE_REQUIRED";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -183,6 +185,7 @@ fn parse_json_suggestions(
         };
 
     let mut out = Vec::new();
+    let mut invalid_count = 0usize;
     for entry in entries {
         let ParsedSuggestionItem {
             xmin,
@@ -192,6 +195,7 @@ fn parse_json_suggestions(
             confidence,
         } = entry;
         if !(xmin.is_finite() && ymin.is_finite() && xmax.is_finite() && ymax.is_finite()) {
+            invalid_count += 1;
             continue;
         }
         let clamped_xmin = xmin.clamp(0.0, 1.0);
@@ -199,6 +203,7 @@ fn parse_json_suggestions(
         let clamped_xmax = xmax.clamp(0.0, 1.0);
         let clamped_ymax = ymax.clamp(0.0, 1.0);
         if clamped_xmax <= clamped_xmin || clamped_ymax <= clamped_ymin {
+            invalid_count += 1;
             continue;
         }
 
@@ -220,6 +225,13 @@ fn parse_json_suggestions(
             .then_with(|| a.bbox[1].total_cmp(&b.bbox[1]))
             .then_with(|| a.bbox[0].total_cmp(&b.bbox[0]))
     });
+
+    if invalid_count > 0 {
+        return Err(format!(
+            "provider response contained {invalid_count} invalid bbox entr{}; refusing partial parse",
+            if invalid_count == 1 { "y" } else { "ies" }
+        ));
+    }
 
     Ok(out)
 }
@@ -277,11 +289,35 @@ fn run_openai(
     timeout: Duration,
     reasoning_preset: &str,
 ) -> Result<String, String> {
-    let client = Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let body = serde_json::json!({
+    let tool_choice_required = std::env::var(TOOL_CHOICE_REQUIRED_ENV)
+        .ok()
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let body = build_openai_response_body(
+        model,
+        prompt,
+        image_b64,
+        reasoning_preset,
+        tool_choice_required,
+    );
+
+    let value = post_openai_response(api_key, timeout, &body)?;
+    extract_openai_text(&value)
+        .ok_or_else(|| "openai response did not contain message text".to_owned())
+}
+
+fn build_openai_response_body(
+    model: &str,
+    prompt: &str,
+    image_b64: &str,
+    reasoning_preset: &str,
+    tool_choice_required: bool,
+) -> serde_json::Value {
+    // Responses multimodal format (Vision guide): input = [{ role, content: [input_text, input_image] }]
+    // https://developers.openai.com/api/docs/guides/images-vision/
+    // Code Interpreter tool shape + container settings:
+    // https://developers.openai.com/api/docs/guides/tools-code-interpreter/
+    let mut body = serde_json::json!({
         "model": model,
         "reasoning": reasoning_budget(reasoning_preset),
         "input": [{
@@ -290,8 +326,31 @@ fn run_openai(
                 {"type": "input_text", "text": prompt},
                 {"type": "input_image", "image_url": format!("data:image/png;base64,{image_b64}")}
             ]
+        }],
+        "tools": [{
+            "type": "code_interpreter",
+            "container": {
+                "type": "auto",
+                "memory_limit": CODE_INTERPRETER_MEMORY_LIMIT
+            }
         }]
     });
+    if tool_choice_required {
+        body["tool_choice"] = serde_json::Value::String("required".to_owned());
+    }
+    body
+}
+
+fn post_openai_response(
+    api_key: &str,
+    timeout: Duration,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let client = Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())?;
+
     let response = client
         .post(OPENAI_URL)
         .bearer_auth(api_key)
@@ -306,9 +365,7 @@ fn run_openai(
     if !status.is_success() {
         return Err(format!("openai returned HTTP {status}: {value}"));
     }
-
-    extract_openai_text(&value)
-        .ok_or_else(|| "openai response did not contain message text".to_owned())
+    Ok(value)
 }
 
 fn run_anthropic(
@@ -478,7 +535,22 @@ pub fn generate_suggestions_with_retry(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_json_suggestions, SuggestionQueue};
+    use super::{build_openai_response_body, parse_json_suggestions, SuggestionQueue};
+    use std::time::Duration;
+
+    fn response_has_code_interpreter_output(value: &serde_json::Value) -> bool {
+        let output = match value.get("output").and_then(|v| v.as_array()) {
+            Some(items) => items,
+            None => return false,
+        };
+        output.iter().any(|item| {
+            item.get("type").and_then(|v| v.as_str()) == Some("code_interpreter_call")
+                || item.get("tool_name").and_then(|v| v.as_str()) == Some("code_interpreter")
+        })
+    }
+
+    const TEST_IMAGE_B64_PNG_1X1: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W7xkAAAAASUVORK5CYII=";
 
     #[test]
     fn parser_converts_normalized_boxes_and_sorts() {
@@ -502,6 +574,13 @@ mod tests {
     }
 
     #[test]
+    fn parser_rejects_any_invalid_bbox_entry() {
+        let raw = r#"[{"xmin":0.1,"ymin":0.1,"xmax":0.2,"ymax":0.2},{"xmin":0.8,"ymin":0.8,"xmax":0.7,"ymax":0.9}]"#;
+        let err = parse_json_suggestions(raw, 20.0, 20.0).unwrap_err();
+        assert!(err.contains("invalid bbox"));
+    }
+
+    #[test]
     fn queue_state_is_scoped_by_dataset_root() {
         let mut queue = SuggestionQueue::new();
         queue.states.insert(
@@ -514,5 +593,108 @@ mod tests {
 
         let response_b = queue.state("/dataset-b", &["face-001".to_owned()]);
         assert_eq!(response_b.items[0].status, "unseen");
+    }
+
+    #[test]
+    fn openai_payload_matches_responses_multimodal_tool_format() {
+        let payload = build_openai_response_body(
+            "gpt-5.2",
+            "find boxes",
+            TEST_IMAGE_B64_PNG_1X1,
+            "high",
+            false,
+        );
+        assert_eq!(payload["input"][0]["role"], "user");
+        assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(payload["input"][0]["content"][1]["type"], "input_image");
+        assert_eq!(payload["tools"][0]["type"], "code_interpreter");
+        assert_eq!(payload["tools"][0]["container"]["type"], "auto");
+        assert_eq!(payload["tools"][0]["container"]["memory_limit"], "4g");
+        assert!(payload.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn openai_payload_can_require_tool_choice_for_debug_smoke() {
+        let payload = build_openai_response_body(
+            "gpt-5.2",
+            "run python",
+            TEST_IMAGE_B64_PNG_1X1,
+            "high",
+            true,
+        );
+        assert_eq!(payload["tool_choice"], "required");
+    }
+
+    #[test]
+    fn openai_payload_golden_json() {
+        let payload = build_openai_response_body(
+            "gpt-5.2",
+            "find boxes",
+            TEST_IMAGE_B64_PNG_1X1,
+            "low",
+            false,
+        );
+        let actual = serde_json::to_string_pretty(&payload).expect("payload should serialize");
+        let expected = r#"{
+  "input": [
+    {
+      "content": [
+        {
+          "text": "find boxes",
+          "type": "input_text"
+        },
+        {
+          "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W7xkAAAAASUVORK5CYII=",
+          "type": "input_image"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-5.2",
+  "reasoning": {
+    "effort": "low"
+  },
+  "tools": [
+    {
+      "container": {
+        "memory_limit": "4g",
+        "type": "auto"
+      },
+      "type": "code_interpreter"
+    }
+  ]
+}"#;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn detects_code_interpreter_output_items() {
+        let response = serde_json::json!({
+            "output": [
+                {"type": "message", "content": [{"type": "output_text", "text": "ok"}]},
+                {"type": "code_interpreter_call", "id": "tool_123"}
+            ]
+        });
+        assert!(response_has_code_interpreter_output(&response));
+    }
+
+    #[test]
+    #[ignore = "requires OPENAI_API_KEY and network access"]
+    fn code_interpreter_smoke_executes_python_when_required() {
+        let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
+        let body = build_openai_response_body(
+            "gpt-5.2",
+            "Run Python to compute the sum of [2, 3, 5], then respond with just the integer result.",
+            TEST_IMAGE_B64_PNG_1X1,
+            "low",
+            true,
+        );
+        let response = super::post_openai_response(&api_key, Duration::from_secs(45), &body)
+            .expect("responses API request should succeed");
+        assert!(
+            response_has_code_interpreter_output(&response),
+            "expected code interpreter output item in response: {response}"
+        );
     }
 }
