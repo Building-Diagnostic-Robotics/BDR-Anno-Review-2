@@ -354,9 +354,11 @@ export function App() {
         const nextStep: GenerationStep =
           phase === "rendering"
             ? "generating"
-            : (["idle", "validating", "dependencies", "extracting", "generating", "aborting", "done"].includes(phase)
-              ? (phase as GenerationStep)
-              : "generating");
+            : (phase === "probing_video" || phase === "planning_frames")
+              ? "extracting"
+              : (["idle", "validating", "dependencies", "extracting", "generating", "aborting", "done"].includes(phase)
+                ? (phase as GenerationStep)
+                : "generating");
         setGenerationStep(nextStep);
         setGenerationPercent(payload.percent ?? 0);
         setGenerationDetail(payload.detail ?? "Working...");
@@ -371,6 +373,20 @@ export function App() {
         unlistenProgress();
       }
     };
+  }, []);
+
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setGenerationHeartbeat((current) => {
+        const match = /Last update (\d+)s/.exec(current);
+        if (!match) return current;
+        const next = Number(match[1]) + 1;
+        return `Last update ${next}s`;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
   }, []);
 
   const refreshFaces = async () => {
@@ -430,6 +446,7 @@ export function App() {
         horizontalFovDegrees: 90,
         minProjectedBoxArea: 1,
         qualityProfile: "balanced",
+        gpuAcceleration: "auto",
       });
 
       setGenerationJobId(start.jobId);

@@ -161,6 +161,7 @@ struct GenerateReviewDatasetRequest {
     horizontal_fov_degrees: f64,
     min_projected_box_area: f64,
     quality_profile: Option<String>,
+    gpu_acceleration: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -615,11 +616,21 @@ async fn run_generation_pipeline(
         return Err("operation cancelled: generation job".to_owned());
     }
 
+    emit_progress(
+        "probing_video",
+        "Probing video and planning extraction",
+        0,
+        1,
+        started,
+        &app,
+    );
+
     let extraction_report = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
         let dataset_root = request.dataset_root.clone();
         let coco_json_path = request.coco_json_path.clone();
         let mp4_path = request.mp4_path.clone();
+        let gpu_acceleration = request.gpu_acceleration.clone();
         let cancellation_token = cancellation_token.clone();
         move || {
             extract_frames_from_mp4_with_progress_and_cancel(
@@ -629,13 +640,21 @@ async fn run_generation_pipeline(
                     mp4_path,
                     ffmpeg_bin: Some(ffmpeg_bin),
                     ffprobe_bin: Some(ffprobe_bin),
+                    ffmpeg_hwaccel: gpu_acceleration,
                 },
                 |completed, total, phase| {
-                    let detail = format!("Extracting source frames ({completed}/{total})");
+                    let detail = match phase {
+                        "planned" => "Planning source frame extraction".to_owned(),
+                        _ => format!("Extracting source frames ({completed}/{total})"),
+                    };
                     let _ = app.emit(
                         "generation-progress",
                         GenerationProgressEvent {
-                            phase: phase.to_owned(),
+                            phase: if phase == "planned" {
+                                "planning_frames".to_owned()
+                            } else {
+                                phase.to_owned()
+                            },
                             detail,
                             completed,
                             total,
@@ -894,6 +913,7 @@ async fn extract_frames_from_mp4_command(
                 mp4_path: request.mp4_path,
                 ffmpeg_bin: Some(ffmpeg_bin),
                 ffprobe_bin: Some(ffprobe_bin),
+                ffmpeg_hwaccel: None,
             },
             |_, _, _| {},
             || false,

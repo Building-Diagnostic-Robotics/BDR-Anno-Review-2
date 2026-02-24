@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,8 @@ pub struct ExtractFramesFromMp4Options {
     pub ffmpeg_bin: Option<String>,
     #[serde(default)]
     pub ffprobe_bin: Option<String>,
+    #[serde(default)]
+    pub ffmpeg_hwaccel: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -136,6 +138,7 @@ where
         ffmpeg_bin,
         &mp4_path,
         &plan.mappings,
+        options.ffmpeg_hwaccel.as_deref(),
         &mut on_progress,
         &should_cancel,
     )?;
@@ -397,6 +400,7 @@ fn extract_frames_batch<F, C>(
     ffmpeg_bin: &str,
     mp4_path: &Path,
     mappings: &[FrameMapping],
+    hwaccel_mode: Option<&str>,
     on_progress: &mut F,
     should_cancel: &C,
 ) -> Result<usize, EngineError>
@@ -423,6 +427,7 @@ where
 
     pending.sort_by_key(|(frame_index, _)| *frame_index);
     let total_pending = pending.len();
+    let selected_hwaccel = choose_hwaccel_mode(ffmpeg_bin, mp4_path, hwaccel_mode)?;
     let extraction_dir = pending[0]
         .1
         .parent()
@@ -455,6 +460,9 @@ where
         })?;
 
         let mut ffmpeg_command = command_for_tool(ffmpeg_bin);
+        if let Some(hwaccel) = selected_hwaccel.as_deref() {
+            ffmpeg_command.arg("-hwaccel").arg(hwaccel);
+        }
         ffmpeg_command
             .arg("-v")
             .arg("error")
@@ -538,6 +546,9 @@ where
         })?;
 
         let mut ffmpeg_command = command_for_tool(ffmpeg_bin);
+        if let Some(hwaccel) = selected_hwaccel.as_deref() {
+            ffmpeg_command.arg("-hwaccel").arg(hwaccel);
+        }
         ffmpeg_command
             .arg("-v")
             .arg("error")
@@ -595,7 +606,105 @@ where
     Ok(skipped_existing_count)
 }
 
+fn choose_hwaccel_mode(
+    ffmpeg_bin: &str,
+    mp4_path: &Path,
+    requested_mode: Option<&str>,
+) -> Result<Option<String>, EngineError> {
+    let mode = requested_mode.unwrap_or("off").trim().to_ascii_lowercase();
+    if mode.is_empty() || mode == "off" || mode == "none" {
+        return Ok(None);
+    }
+    if mode != "auto" {
+        return Ok(Some(mode));
+    }
+
+    let platform_default = if cfg!(target_os = "macos") {
+        "videotoolbox"
+    } else if cfg!(target_os = "windows") {
+        "d3d11va"
+    } else {
+        "vaapi"
+    };
+
+    let cpu_probe = quick_decode_probe(ffmpeg_bin, mp4_path, None)?;
+    let gpu_probe = quick_decode_probe(ffmpeg_bin, mp4_path, Some(platform_default))?;
+    if gpu_probe.status.success() && gpu_probe.elapsed <= cpu_probe.elapsed {
+        return Ok(Some(platform_default.to_owned()));
+    }
+    Ok(None)
+}
+
+struct DecodeProbeResult {
+    status: ExitStatus,
+    elapsed: Duration,
+}
+
+fn quick_decode_probe(
+    ffmpeg_bin: &str,
+    mp4_path: &Path,
+    hwaccel: Option<&str>,
+) -> Result<DecodeProbeResult, EngineError> {
+    let mut command = command_for_tool(ffmpeg_bin);
+    if let Some(mode) = hwaccel {
+        command.arg("-hwaccel").arg(mode);
+    }
+    command
+        .arg("-v")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-i")
+        .arg(mp4_path)
+        .arg("-frames:v")
+        .arg("8")
+        .arg("-f")
+        .arg("null")
+        .arg("-");
+
+    let started = Instant::now();
+    let output = command.output().map_err(|source| {
+        EngineError::InvalidConfiguration(format!(
+            "failed to run ffmpeg probe command for hardware acceleration mode selection: {source}"
+        ))
+    })?;
+    Ok(DecodeProbeResult {
+        status: output.status,
+        elapsed: started.elapsed(),
+    })
+}
+
 fn probe_mp4_frame_count(ffprobe_bin: &str, mp4_path: &Path) -> Result<u64, EngineError> {
+    let fast_output = command_for_tool(ffprobe_bin)
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=nb_frames,avg_frame_rate,duration")
+        .arg("-of")
+        .arg("default=nokey=1:noprint_wrappers=1")
+        .arg(mp4_path)
+        .output()
+        .map_err(|source| {
+            EngineError::InvalidConfiguration(format!(
+                "failed to run ffprobe for MP4 introspection; ensure ffprobe is installed and available on PATH: {source}"
+            ))
+        })?;
+
+    if fast_output.status.success() {
+        let fast_stdout = String::from_utf8_lossy(&fast_output.stdout);
+        let lines = fast_stdout
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<&str>>();
+        if let Some(nb_frames) = lines.first().and_then(|value| parse_ffprobe_u64(value)) {
+            if nb_frames > 0 {
+                return Ok(nb_frames);
+            }
+        }
+    }
+
     let output = command_for_tool(ffprobe_bin)
         .arg("-v")
         .arg("error")
@@ -639,6 +748,13 @@ fn probe_mp4_frame_count(ffprobe_bin: &str, mp4_path: &Path) -> Result<u64, Engi
             mp4_path.display()
         ))
     })
+}
+
+fn parse_ffprobe_u64(value: &str) -> Option<u64> {
+    if value.eq_ignore_ascii_case("n/a") {
+        return None;
+    }
+    value.parse::<u64>().ok()
 }
 
 fn validate_and_resolve_dataset_root(dataset_root: &str) -> Result<PathBuf, EngineError> {
@@ -843,6 +959,7 @@ mod tests {
             mp4_path: options.mp4_path,
             ffmpeg_bin: None,
             ffprobe_bin: Some(missing_ffprobe.display().to_string()),
+            ffmpeg_hwaccel: None,
         })
         .unwrap_err();
         assert!(err
@@ -902,6 +1019,7 @@ printf png > "$out"
             mp4_path: options.mp4_path.clone(),
             ffmpeg_bin: Some(ffmpeg_bin),
             ffprobe_bin: Some(ffprobe_bin),
+            ffmpeg_hwaccel: None,
         })
         .unwrap();
 
@@ -950,6 +1068,7 @@ exit /b 0
             mp4_path: options.mp4_path,
             ffmpeg_bin: Some(ffmpeg_bin),
             ffprobe_bin: Some(ffprobe_bin),
+            ffmpeg_hwaccel: None,
         })
         .unwrap_err();
 
@@ -986,6 +1105,7 @@ printf png > "${out//%06d/000000}"
             mp4_path: options.mp4_path,
             ffmpeg_bin: Some(ffmpeg_bin),
             ffprobe_bin: Some(ffprobe_bin),
+            ffmpeg_hwaccel: None,
         })
         .unwrap_err();
 

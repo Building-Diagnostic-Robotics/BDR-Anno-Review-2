@@ -34,6 +34,7 @@ export type GenerateReviewDatasetOptions = {
   horizontalFovDegrees: number;
   minProjectedBoxArea: number;
   qualityProfile?: "high" | "balanced" | "low";
+  gpuAcceleration?: "off" | "auto" | "vaapi" | "qsv" | "videotoolbox" | "d3d11va" | "dxva2";
 };
 
 export type GenerateReviewDatasetReport = {
