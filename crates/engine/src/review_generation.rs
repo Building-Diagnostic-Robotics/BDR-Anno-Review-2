@@ -600,9 +600,7 @@ fn owner_face_index(
         return None;
     }
 
-    let img_w = image.width as f64;
-    let x_center = annotation.bbox[0] + annotation.bbox[2] / 2.0;
-    let center_yaw = normalize_yaw((x_center / img_w) * 360.0 - 180.0);
+    let center_yaw = annotation_center_yaw(annotation, image);
 
     let mut best: Option<(usize, f64)> = None;
     for (index, orientation) in orientations.iter().enumerate() {
@@ -615,20 +613,34 @@ fn owner_face_index(
         }
     }
 
-    best.map(|(index, _)| index)
+    if let Some((index, _)) = best {
+        return Some(index);
+    }
+
+    orientations
+        .iter()
+        .enumerate()
+        .map(|(index, orientation)| {
+            (
+                index,
+                angular_distance_degrees(center_yaw, orientation.yaw_center),
+            )
+        })
+        .min_by(|(_, left_delta), (_, right_delta)| left_delta.total_cmp(right_delta))
+        .map(|(index, _)| index)
 }
 
 fn sample_annotation_perimeter(annotation: &SourceAnnotation) -> Vec<(f64, f64)> {
-    const PER_EDGE_SAMPLES: usize = 6;
+    const EDGE_SEGMENTS: usize = 64;
 
     let x0 = annotation.bbox[0];
     let y0 = annotation.bbox[1];
     let x1 = x0 + annotation.bbox[2];
     let y1 = y0 + annotation.bbox[3];
 
-    let mut points = Vec::with_capacity(PER_EDGE_SAMPLES * 4 + 1);
-    for index in 0..=PER_EDGE_SAMPLES {
-        let t = index as f64 / PER_EDGE_SAMPLES as f64;
+    let mut points = Vec::with_capacity(EDGE_SEGMENTS * 6);
+    for index in 0..=EDGE_SEGMENTS {
+        let t = index as f64 / EDGE_SEGMENTS as f64;
         let x = x0 + (x1 - x0) * t;
         let y = y0 + (y1 - y0) * t;
         points.push((x, y0));
@@ -639,6 +651,12 @@ fn sample_annotation_perimeter(annotation: &SourceAnnotation) -> Vec<(f64, f64)>
 
     points.push(((x0 + x1) / 2.0, (y0 + y1) / 2.0));
     points
+}
+
+fn annotation_center_yaw(annotation: &SourceAnnotation, image: &SourceImage) -> f64 {
+    let img_w = image.width as f64;
+    let x_center = annotation.bbox[0] + annotation.bbox[2] / 2.0;
+    normalize_yaw((x_center / img_w) * 360.0 - 180.0)
 }
 
 fn project_equirectangular_point_to_face(
@@ -1133,6 +1151,31 @@ mod tests {
         let manifest_content = fs::read_to_string(&report.written_manifest_path).unwrap();
         let manifest: crate::ViewManifest = serde_json::from_str(&manifest_content).unwrap();
         assert_eq!(manifest.faces.len(), 2);
+    }
+
+    #[test]
+    fn falls_back_to_nearest_rendered_owner_face_for_subset_renders() {
+        let image = SourceImage {
+            file_name: "frame.png".to_owned(),
+            frame_index: None,
+            width: 2048,
+            height: 1024,
+        };
+        let front_only = vec![FaceOrientation {
+            yaw_start: -45.0,
+            yaw_end: 45.0,
+            yaw_center: 0.0,
+        }];
+
+        let right_centered = SourceAnnotation {
+            id: Some(1),
+            bbox: [1470.0, 320.0, 120.0, 120.0],
+        };
+
+        assert_eq!(
+            owner_face_index(&right_centered, &image, &front_only),
+            Some(0)
+        );
     }
 
     #[test]
