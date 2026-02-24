@@ -2,8 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
-use image::{ImageBuffer, Rgba};
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ImageBuffer, ImageEncoder, Rgba};
+use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::{
@@ -63,6 +67,13 @@ struct SourceAnnotation {
     bbox: [f64; 4],
 }
 
+#[derive(Debug)]
+struct ParallelImageResult {
+    image_id: u64,
+    faces: Vec<FaceView>,
+    filtered_box_count: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FaceOrientation {
     yaw_start: f64,
@@ -80,19 +91,19 @@ pub fn generate_review_dataset_with_progress<F>(
     on_progress: F,
 ) -> Result<GenerateReviewDatasetReport, EngineError>
 where
-    F: FnMut(usize, usize, &str),
+    F: FnMut(usize, usize, &str) + Send,
 {
     generate_review_dataset_with_progress_and_cancel(options, on_progress, || false)
 }
 
 pub fn generate_review_dataset_with_progress_and_cancel<F, C>(
     options: GenerateReviewDatasetOptions,
-    mut on_progress: F,
+    on_progress: F,
     should_cancel: C,
 ) -> Result<GenerateReviewDatasetReport, EngineError>
 where
-    F: FnMut(usize, usize, &str),
-    C: Fn() -> bool,
+    F: FnMut(usize, usize, &str) + Send,
+    C: Fn() -> bool + Sync,
 {
     if options.dataset_root.trim().is_empty() {
         return Err(EngineError::MissingInput("dataset_root"));
@@ -257,6 +268,9 @@ where
     }
 
     let mut manifest = options.manifest;
+    let render_faces = manifest.render.faces.clone();
+    let render_size = manifest.render.size;
+    let projection = manifest.projection.clone();
     manifest.faces.clear();
 
     let raw_frames_dir = dataset_root.join(RAW_FRAMES_DIR);
@@ -265,96 +279,146 @@ where
         reason: format!("could not create output directory: {source}"),
     })?;
 
-    let mut filtered_box_count = 0usize;
+    let referenced_image_ids: Vec<u64> = referenced_image_ids.into_iter().collect();
+    let total_work = referenced_image_ids.len() * render_faces.len();
 
-    let total_work = referenced_image_ids.len() * manifest.render.faces.len();
-    let mut completed_work = 0usize;
-    on_progress(completed_work, total_work.max(1), "rendering");
-
-    for image_id in referenced_image_ids {
-        if should_cancel() {
-            return Err(EngineError::Cancelled("review rendering"));
-        }
-        let source_image = images_by_id
-            .get(&image_id)
-            .expect("referenced image should have been validated");
-        let source_frame_path = resolve_source_frame_path(
-            &manifest.inputs.frames_source,
-            &source_frames_dir,
-            source_image,
-            image_id,
-        )?;
-        ensure_file(&source_frame_path, "source frame")?;
-
-        let source_annotations = annotations_by_image_id
-            .get(&image_id)
-            .expect("referenced image annotations should exist");
-
-        let decoded_source_image = image::open(&source_frame_path)
-            .map_err(|source| EngineError::UnreadableFile {
-                path: source_frame_path.display().to_string(),
-                reason: format!("could not read source frame image: {source}"),
-            })?
-            .to_rgba8();
-
-        for face in &manifest.render.faces {
-            if should_cancel() {
-                return Err(EngineError::Cancelled("review rendering"));
-            }
-            let orientation = face_orientation(face)?;
-            let mut initial_boxes = Vec::new();
-            for annotation in source_annotations {
-                if let Some(projected) = project_box_to_face(
-                    annotation,
-                    source_image,
-                    orientation,
-                    manifest.render.size,
-                    &manifest.projection,
-                ) {
-                    initial_boxes.push(projected);
-                } else {
-                    filtered_box_count += 1;
-                }
-            }
-
-            initial_boxes
-                .sort_by(|left, right| left.source_annotation_id.cmp(&right.source_annotation_id));
-
-            let face_id = build_face_id(
-                image_id,
-                &source_image.file_name,
-                face,
-                manifest.render.size,
-                &manifest.projection,
-            );
-            if initial_boxes.is_empty() {
-                completed_work += 1;
-                on_progress(completed_work, total_work.max(1), "rendering");
-                continue;
-            }
-
-            let image_file_name = format!("{face_id}.png");
-            let face_image_path = raw_frames_dir.join(&image_file_name);
-            render_face_projection(
-                &decoded_source_image,
-                &face_image_path,
-                face,
-                manifest.render.size,
-                manifest.projection.horizontal_fov_degrees,
-            )?;
-
-            manifest.faces.push(FaceView {
-                face_id,
-                source_image_id: image_id,
-                face: face.clone(),
-                image_path: format!("{RAW_FRAMES_DIR}/{image_file_name}"),
-                initial_boxes,
-            });
-            completed_work += 1;
-            on_progress(completed_work, total_work.max(1), "rendering");
-        }
+    let completed_work = AtomicUsize::new(0);
+    let progress = Mutex::new(on_progress);
+    {
+        let mut progress_cb = progress.lock().expect("progress callback lock poisoned");
+        progress_cb(0, total_work.max(1), "rendering");
     }
 
+    let cancelled = AtomicBool::new(false);
+    let results: Vec<ParallelImageResult> = referenced_image_ids
+        .par_iter()
+        .map(|image_id| -> Result<ParallelImageResult, EngineError> {
+            if cancelled.load(Ordering::Relaxed) || should_cancel() {
+                cancelled.store(true, Ordering::Relaxed);
+                return Err(EngineError::Cancelled("review rendering"));
+            }
+
+            let source_image = images_by_id
+                .get(image_id)
+                .expect("referenced image should have been validated");
+            let source_frame_path = resolve_source_frame_path(
+                &manifest.inputs.frames_source,
+                &source_frames_dir,
+                source_image,
+                *image_id,
+            )?;
+            ensure_file(&source_frame_path, "source frame")?;
+
+            let source_annotations = annotations_by_image_id
+                .get(image_id)
+                .expect("referenced image annotations should exist");
+
+            let decoded_source_image = image::open(&source_frame_path)
+                .map_err(|source| EngineError::UnreadableFile {
+                    path: source_frame_path.display().to_string(),
+                    reason: format!("could not read source frame image: {source}"),
+                })?
+                .to_rgba8();
+
+            let mut image_faces = Vec::new();
+            let mut filtered_box_count = 0usize;
+
+            for face in &render_faces {
+                if cancelled.load(Ordering::Relaxed) || should_cancel() {
+                    cancelled.store(true, Ordering::Relaxed);
+                    return Err(EngineError::Cancelled("review rendering"));
+                }
+
+                let orientation = face_orientation(face)?;
+                let mut initial_boxes = Vec::new();
+                for annotation in source_annotations {
+                    if !annotation_may_intersect_face(
+                        annotation,
+                        source_image,
+                        orientation,
+                        &projection,
+                    ) {
+                        filtered_box_count += 1;
+                        continue;
+                    }
+                    if let Some(projected) = project_box_to_face(
+                        annotation,
+                        source_image,
+                        orientation,
+                        render_size,
+                        &projection,
+                    ) {
+                        initial_boxes.push(projected);
+                    } else {
+                        filtered_box_count += 1;
+                    }
+                }
+
+                initial_boxes.sort_by(|left, right| {
+                    left.source_annotation_id.cmp(&right.source_annotation_id)
+                });
+
+                if !initial_boxes.is_empty() {
+                    let face_id = build_face_id(
+                        *image_id,
+                        &source_image.file_name,
+                        face,
+                        render_size,
+                        &projection,
+                    );
+                    let image_file_name = format!("{face_id}.png");
+                    let face_image_path = raw_frames_dir.join(&image_file_name);
+                    render_face_projection(
+                        &decoded_source_image,
+                        &face_image_path,
+                        face,
+                        render_size,
+                        projection.horizontal_fov_degrees,
+                    )?;
+
+                    image_faces.push(FaceView {
+                        face_id,
+                        source_image_id: *image_id,
+                        face: face.clone(),
+                        image_path: format!("{RAW_FRAMES_DIR}/{image_file_name}"),
+                        initial_boxes,
+                    });
+                }
+
+                let done = completed_work.fetch_add(1, Ordering::Relaxed) + 1;
+                let mut progress_cb = progress.lock().expect("progress callback lock poisoned");
+                progress_cb(done, total_work.max(1), "rendering");
+            }
+
+            Ok(ParallelImageResult {
+                image_id: *image_id,
+                faces: image_faces,
+                filtered_box_count,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut filtered_box_count = 0usize;
+    let mut ordered_faces = Vec::new();
+    let face_order: BTreeMap<&str, usize> = render_faces
+        .iter()
+        .enumerate()
+        .map(|(index, face)| (face.as_str(), index))
+        .collect();
+
+    let mut results = results;
+    results.sort_by_key(|result| result.image_id);
+    for mut result in results {
+        filtered_box_count += result.filtered_box_count;
+        result.faces.sort_by_key(|face| {
+            face_order
+                .get(face.face.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        ordered_faces.extend(result.faces);
+    }
+    manifest.faces = ordered_faces;
     let manifest_path = dataset_root.join("annotations/view_manifest.json");
     let manifest_parent = manifest_path.parent().ok_or_else(|| {
         EngineError::InvalidConfiguration(format!(
@@ -375,7 +439,8 @@ where
         reason: format!("could not write manifest file: {source}"),
     })?;
 
-    on_progress(total_work.max(1), total_work.max(1), "rendering");
+    let mut progress_cb = progress.lock().expect("progress callback lock poisoned");
+    progress_cb(total_work.max(1), total_work.max(1), "rendering");
 
     Ok(GenerateReviewDatasetReport {
         rendered_face_count: manifest.faces.len(),
@@ -414,19 +479,24 @@ fn render_face_projection(
 
     let width_f = source_width as f64;
     let height_f = source_height as f64;
+    let render_size_f = render_size as f64;
+
+    let x_world_components: Vec<(f64, f64)> = (0..render_size_u32)
+        .map(|x| {
+            let x_ndc = ((x as f64 + 0.5) / render_size_f) * 2.0 - 1.0;
+            let cam_x = x_ndc * tan_half_fov;
+            let world_x = cos_yaw * cam_x + sin_yaw;
+            let world_z = -sin_yaw * cam_x + cos_yaw;
+            (world_x, world_z)
+        })
+        .collect();
 
     for y in 0..render_size_u32 {
+        let y_ndc = 1.0 - ((y as f64 + 0.5) / render_size_f) * 2.0;
+        let world_y = y_ndc * tan_half_v_fov;
+
         for x in 0..render_size_u32 {
-            let x_ndc = ((x as f64 + 0.5) / render_size as f64) * 2.0 - 1.0;
-            let y_ndc = 1.0 - ((y as f64 + 0.5) / render_size as f64) * 2.0;
-
-            let cam_x = x_ndc * tan_half_fov;
-            let cam_y = y_ndc * tan_half_v_fov;
-            let cam_z = 1.0;
-
-            let world_x = cos_yaw * cam_x + sin_yaw * cam_z;
-            let world_z = -sin_yaw * cam_x + cos_yaw * cam_z;
-            let world_y = cam_y;
+            let (world_x, world_z) = x_world_components[x as usize];
 
             let lon = world_x.atan2(world_z);
             let hyp = (world_x * world_x + world_z * world_z).sqrt();
@@ -442,12 +512,55 @@ fn render_face_projection(
         }
     }
 
-    face_pixels
-        .save(face_image_path)
+    let file = fs::File::create(face_image_path).map_err(|source| EngineError::UnreadableFile {
+        path: face_image_path.display().to_string(),
+        reason: format!("could not create rendered face image: {source}"),
+    })?;
+    let encoder = PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::NoFilter);
+    encoder
+        .write_image(
+            face_pixels.as_raw(),
+            render_size_u32,
+            render_size_u32,
+            image::ExtendedColorType::Rgba8,
+        )
         .map_err(|source| EngineError::UnreadableFile {
             path: face_image_path.display().to_string(),
             reason: format!("could not write rendered face image: {source}"),
         })
+}
+
+fn annotation_may_intersect_face(
+    annotation: &SourceAnnotation,
+    image: &SourceImage,
+    orientation: FaceOrientation,
+    projection: &ProjectionConfig,
+) -> bool {
+    let img_w = image.width as f64;
+    let x0 = annotation.bbox[0];
+    let x1 = annotation.bbox[0] + annotation.bbox[2];
+
+    if annotation.bbox[2] >= img_w {
+        return true;
+    }
+
+    if x1 <= x0 {
+        return false;
+    }
+
+    let yaw_start = normalize_yaw((x0 / img_w) * 360.0 - 180.0);
+    let yaw_end = normalize_yaw((x1 / img_w) * 360.0 - 180.0);
+    let face_start = orientation.yaw_start - projection.horizontal_fov_degrees / 2.0;
+    let face_end = orientation.yaw_end + projection.horizontal_fov_degrees / 2.0;
+
+    yaw_ranges_overlap(yaw_start, yaw_end, face_start, face_end)
+}
+
+fn yaw_ranges_overlap(a_start: f64, a_end: f64, b_start: f64, b_end: f64) -> bool {
+    contains_yaw(a_start, b_start, b_end)
+        || contains_yaw(a_end, b_start, b_end)
+        || contains_yaw(b_start, a_start, a_end)
+        || contains_yaw(b_end, a_start, a_end)
 }
 
 fn project_box_to_face(
@@ -641,7 +754,10 @@ mod tests {
         init_empty_manifest, FramesSource, ManifestInputs, ProjectionConfig, RenderConfig,
     };
 
-    use super::{generate_review_dataset, GenerateReviewDatasetOptions};
+    use super::{
+        annotation_may_intersect_face, generate_review_dataset, FaceOrientation,
+        GenerateReviewDatasetOptions, SourceAnnotation, SourceImage,
+    };
 
     fn unique_temp_dir() -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -936,6 +1052,63 @@ mod tests {
         assert_eq!(manifest.faces.len(), 4);
     }
 
+    #[test]
+    fn prefilter_does_not_reject_wraparound_bbox_crossing_right_edge() {
+        let image = SourceImage {
+            file_name: "frame.png".to_owned(),
+            frame_index: None,
+            width: 2048,
+            height: 1024,
+        };
+        let annotation = SourceAnnotation {
+            id: Some(1),
+            bbox: [2000.0, 200.0, 100.0, 120.0],
+        };
+        let orientation = FaceOrientation {
+            yaw_start: 135.0,
+            yaw_end: -135.0,
+        };
+        let projection = ProjectionConfig {
+            horizontal_fov_degrees: 90.0,
+            min_projected_box_area: 4.0,
+        };
+
+        assert!(annotation_may_intersect_face(
+            &annotation,
+            &image,
+            orientation,
+            &projection
+        ));
+    }
+
+    #[test]
+    fn prefilter_accepts_panorama_spanning_bbox() {
+        let image = SourceImage {
+            file_name: "frame.png".to_owned(),
+            frame_index: None,
+            width: 2048,
+            height: 1024,
+        };
+        let annotation = SourceAnnotation {
+            id: Some(1),
+            bbox: [0.0, 100.0, 4096.0, 300.0],
+        };
+        let orientation = FaceOrientation {
+            yaw_start: -45.0,
+            yaw_end: 45.0,
+        };
+        let projection = ProjectionConfig {
+            horizontal_fov_degrees: 90.0,
+            min_projected_box_area: 4.0,
+        };
+
+        assert!(annotation_may_intersect_face(
+            &annotation,
+            &image,
+            orientation,
+            &projection
+        ));
+    }
     #[test]
     fn reports_missing_extracted_mp4_frame_with_deterministic_name() {
         let options = setup_dataset_mp4_frames();
