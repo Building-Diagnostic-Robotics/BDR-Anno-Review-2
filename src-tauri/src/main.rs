@@ -1322,16 +1322,27 @@ fn generate_and_cache_suggestion(
         );
     }
 
-    let face = get_face_by_id(&request.dataset_root, &request.face_id)?;
-    let generated = generate_suggestions_with_retry(
-        app,
-        &settings,
-        &face,
-        &request.dataset_root,
-        openai_key().as_deref(),
-        anthropic_key().as_deref(),
-        request.timeout_ms,
-    );
+    let generated = (|| {
+        let face = get_face_by_id(&request.dataset_root, &request.face_id)?;
+
+        let (openai_api_key, anthropic_api_key) = if settings.openai.enabled {
+            (openai_key()?, None)
+        } else if settings.anthropic.enabled {
+            (None, anthropic_key()?)
+        } else {
+            (None, None)
+        };
+
+        generate_suggestions_with_retry(
+            app,
+            &settings,
+            &face,
+            &request.dataset_root,
+            openai_api_key.as_deref(),
+            anthropic_api_key.as_deref(),
+            request.timeout_ms,
+        )
+    })();
 
     match generated {
         Ok(response) => {

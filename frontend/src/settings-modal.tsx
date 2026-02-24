@@ -32,6 +32,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
   const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState("");
   const [selectedProvider, setSelectedProvider] = useState<"openai" | "anthropic" | "none">(
     seed.openai.enabled ? "openai" : seed.anthropic.enabled ? "anthropic" : "none"
   );
@@ -77,6 +78,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
     setShowOpenaiKey(false);
     setShowAnthropicKey(false);
     setShowAdvanced(false);
+    setSaveFeedback("");
     setSelectedProvider(seed.openai.enabled ? "openai" : seed.anthropic.enabled ? "anthropic" : "none");
   }, [seed]);
 
@@ -175,7 +177,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
 
         <section className="mb-5 space-y-3 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
           <h4 className="text-base font-semibold">Credentials</h4>
-          <Field label={`OpenAI model${seed.openai.maskedKeyPreview ? ` (saved key: ${seed.openai.maskedKeyPreview})` : ""}`}>
+          <Field label="OpenAI model">
             <select className={inputClassName} value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
               <option value="gpt-5.2">gpt-5.2</option>
             </select>
@@ -191,8 +193,15 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
             <Button variant="tonal" onClick={() => setShowOpenaiKey((v) => !v)}>{showOpenaiKey ? "Hide" : "Show"}</Button>
             <Button variant="outlined" onClick={() => void onClearProviderKey("openai")}>Clear key</Button>
           </div>
+          <p className="text-xs text-anno-text-muted">
+            {seed.openai.apiKeyStatusError
+              ? `OpenAI key status unavailable: ${seed.openai.apiKeyStatusError}`
+              : seed.openai.apiKeyConfigured
+                ? `OpenAI key saved${seed.openai.maskedKeyPreview ? ` (${seed.openai.maskedKeyPreview})` : ""}. Leave blank to keep existing key.`
+                : "No OpenAI key saved. Leave blank to keep unchanged."}
+          </p>
 
-          <Field label={`Anthropic model${seed.anthropic.maskedKeyPreview ? ` (saved key: ${seed.anthropic.maskedKeyPreview})` : ""}`}>
+          <Field label="Anthropic model">
             <select className={inputClassName} value={anthropicModel} onChange={(e) => setAnthropicModel(e.target.value)}>
               <option value="claude-opus-4-6">claude-opus-4-6</option>
               <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
@@ -209,6 +218,13 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
             <Button variant="tonal" onClick={() => setShowAnthropicKey((v) => !v)}>{showAnthropicKey ? "Hide" : "Show"}</Button>
             <Button variant="outlined" onClick={() => void onClearProviderKey("anthropic")}>Clear key</Button>
           </div>
+          <p className="text-xs text-anno-text-muted">
+            {seed.anthropic.apiKeyStatusError
+              ? `Anthropic key status unavailable: ${seed.anthropic.apiKeyStatusError}`
+              : seed.anthropic.apiKeyConfigured
+                ? `Anthropic key saved${seed.anthropic.maskedKeyPreview ? ` (${seed.anthropic.maskedKeyPreview})` : ""}. Leave blank to keep existing key.`
+                : "No Anthropic key saved. Leave blank to keep unchanged."}
+          </p>
         </section>
 
         <section className="mb-5 space-y-3 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
@@ -244,6 +260,16 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
                 anthropic: { enabled: selectedProvider === "anthropic", model: anthropicModel },
                 openaiApiKey: openaiApiKey || undefined,
                 anthropicApiKey: anthropicApiKey || undefined,
+              }).then(() => {
+                const updatedProviders = [
+                  openaiApiKey.trim() ? "OpenAI" : "",
+                  anthropicApiKey.trim() ? "Anthropic" : "",
+                ].filter(Boolean);
+                setSaveFeedback(
+                  updatedProviders.length > 0
+                    ? `${updatedProviders.join(" and ")} key${updatedProviders.length > 1 ? "s" : ""} updated.`
+                    : "Settings saved."
+                );
               })
             }
             disabled={Boolean(providerValidation)}
@@ -252,6 +278,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
           </Button>
           <Button variant="outlined" onClick={onClose}>Close</Button>
         </div>
+        {saveFeedback ? <p className="mt-3 text-xs text-emerald-300">{saveFeedback}</p> : null}
         <p className="mt-3 text-xs text-anno-text-muted">Effective config: {llmSuggestionsEnabled ? "Suggestions enabled" : "Suggestions disabled"}, {preset} profile.</p>
       </div>
     </div>

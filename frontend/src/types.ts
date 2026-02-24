@@ -143,6 +143,7 @@ export type ProviderSettings = {
   model: string;
   apiKeyConfigured: boolean;
   maskedKeyPreview?: string;
+  apiKeyStatusError?: string;
 };
 
 export type LlmSettingsResponse = {

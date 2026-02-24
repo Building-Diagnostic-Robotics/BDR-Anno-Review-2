@@ -1264,7 +1264,6 @@ export function App() {
           onSave={async (request: SaveLlmSettingsRequest) => {
             const response = await saveLlmSettings(request);
             setLlmSettings(response);
-            setSettingsOpen(false);
             updateDiagnostics("Settings saved", "");
           }}
           onClearProviderKey={async (provider) => {

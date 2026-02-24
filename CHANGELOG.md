@@ -9,8 +9,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 - Corrected OpenAI suggestion call wiring and image base64 encoding in `llm` so argument order matches `run_openai`, media type is passed through to data URLs, and image bytes are no longer moved before format detection.
+- Improved LLM credential UX and diagnostics by adding explicit per-provider key status messaging in Settings, surfacing keychain read failures without silently treating them as missing keys, and validating secure key save via readback before accepting a save request.
 - Hardened object-schema bbox parsing by validating returned `image_size` against actual image dimensions and clamping `w`/`h` to remaining bounds from `x`/`y`, preventing out-of-frame suggestion boxes.
 - Updated object-schema parser regression expectation to reflect remaining-bounds clamping when `y + h` exceeds image height.
+- Ensured suggestion queue entries transition to `failed` (instead of getting stuck `in_flight`) when provider key lookup fails, and limited secure-key reads during generation to the currently enabled provider to avoid unrelated keychain errors aborting requests.
 
 ## [1.1.2] - 2026-02-24
 
