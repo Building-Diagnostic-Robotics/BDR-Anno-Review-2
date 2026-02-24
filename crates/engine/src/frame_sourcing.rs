@@ -703,17 +703,6 @@ fn probe_mp4_frame_count(ffprobe_bin: &str, mp4_path: &Path) -> Result<u64, Engi
                 return Ok(nb_frames);
             }
         }
-
-        if lines.len() >= 3 {
-            let avg_frame_rate = parse_ffprobe_ratio(lines[1]);
-            let duration = parse_ffprobe_f64(lines[2]);
-            if let (Some(fps), Some(duration_seconds)) = (avg_frame_rate, duration) {
-                let estimated = (fps * duration_seconds).round() as u64;
-                if estimated > 0 {
-                    return Ok(estimated);
-                }
-            }
-        }
     }
 
     let output = command_for_tool(ffprobe_bin)
@@ -766,26 +755,6 @@ fn parse_ffprobe_u64(value: &str) -> Option<u64> {
         return None;
     }
     value.parse::<u64>().ok()
-}
-
-fn parse_ffprobe_f64(value: &str) -> Option<f64> {
-    if value.eq_ignore_ascii_case("n/a") {
-        return None;
-    }
-    value.parse::<f64>().ok()
-}
-
-fn parse_ffprobe_ratio(value: &str) -> Option<f64> {
-    if value.eq_ignore_ascii_case("n/a") {
-        return None;
-    }
-    let (num_raw, den_raw) = value.split_once('/')?;
-    let num = num_raw.trim().parse::<f64>().ok()?;
-    let den = den_raw.trim().parse::<f64>().ok()?;
-    if den == 0.0 {
-        return None;
-    }
-    Some(num / den)
 }
 
 fn validate_and_resolve_dataset_root(dataset_root: &str) -> Result<PathBuf, EngineError> {
