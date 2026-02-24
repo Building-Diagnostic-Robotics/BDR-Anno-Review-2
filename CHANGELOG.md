@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Corrected OpenAI suggestion call wiring and image base64 encoding in `llm` so argument order matches `run_openai`, media type is passed through to data URLs, and image bytes are no longer moved before format detection.
+- Hardened object-schema bbox parsing by validating returned `image_size` against actual image dimensions and clamping `w`/`h` to remaining bounds from `x`/`y`, preventing out-of-frame suggestion boxes.
+
 ## [1.1.2] - 2026-02-24
 
 ### Changed

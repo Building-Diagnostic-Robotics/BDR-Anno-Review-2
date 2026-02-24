@@ -176,7 +176,7 @@ pub fn build_face_context(
     })?;
     let base64_image = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
     };
     let media_type = match image::guess_format(&bytes).map_err(|source| {
         format!(
@@ -233,6 +233,17 @@ fn parse_json_suggestions(
                     "provider response image_size must contain finite width/height".to_owned(),
                 );
             }
+            if value.image_size.width <= 0.0 || value.image_size.height <= 0.0 {
+                return Err(
+                    "provider response image_size must contain positive width/height".to_owned(),
+                );
+            }
+            if value.image_size.width != width || value.image_size.height != height {
+                return Err(format!(
+                    "provider response image_size ({}, {}) did not match actual image size ({width}, {height})",
+                    value.image_size.width, value.image_size.height
+                ));
+            }
             for entry in value.boxes {
                 let ParsedPixelSuggestionItem {
                     x,
@@ -249,13 +260,18 @@ fn parse_json_suggestions(
                     invalid_count += 1;
                     continue;
                 }
+                let clamped_x = x.clamp(0.0, width.max(0.0));
+                let clamped_y = y.clamp(0.0, height.max(0.0));
+                let max_w = (width - clamped_x).max(0.0);
+                let max_h = (height - clamped_y).max(0.0);
+                let clamped_w = w.clamp(0.0, max_w);
+                let clamped_h = h.clamp(0.0, max_h);
+                if clamped_w <= 0.0 || clamped_h <= 0.0 {
+                    invalid_count += 1;
+                    continue;
+                }
                 out.push(SuggestionBox {
-                    bbox: [
-                        x.clamp(0.0, width.max(0.0)),
-                        y.clamp(0.0, height.max(0.0)),
-                        w.clamp(0.0, width.max(0.0)),
-                        h.clamp(0.0, height.max(0.0)),
-                    ],
+                    bbox: [clamped_x, clamped_y, clamped_w, clamped_h],
                     confidence,
                     source: "llm".to_owned(),
                 });
@@ -394,6 +410,7 @@ fn run_openai(
     model: &str,
     prompt: &str,
     image_b64: &str,
+    image_media_type: &str,
     timeout: Duration,
     reasoning_preset: &str,
 ) -> Result<String, String> {
@@ -406,6 +423,7 @@ fn run_openai(
         model,
         prompt,
         image_b64,
+        image_media_type,
         reasoning_preset,
         code_exec_enabled,
         tool_choice_required,
@@ -420,6 +438,7 @@ fn build_openai_response_body(
     model: &str,
     prompt: &str,
     image_b64: &str,
+    image_media_type: &str,
     reasoning_preset: &str,
     code_exec_enabled: bool,
     tool_choice_required: bool,
@@ -435,7 +454,7 @@ fn build_openai_response_body(
             "role": "user",
             "content": [
                 {"type": "input_text", "text": prompt},
-                {"type": "input_image", "image_url": format!("data:image/png;base64,{image_b64}")}
+                {"type": "input_image", "image_url": format!("data:{image_media_type};base64,{image_b64}")}
             ]
         }]
     });
@@ -742,6 +761,7 @@ mod tests {
             "gpt-5.2",
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
+            "image/png",
             "high",
             true,
             false,
@@ -761,6 +781,7 @@ mod tests {
             "gpt-5.2",
             "run python",
             TEST_IMAGE_B64_PNG_1X1,
+            "image/png",
             "high",
             true,
             true,
@@ -774,6 +795,7 @@ mod tests {
             "gpt-5.2",
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
+            "image/png",
             "low",
             true,
             false,
@@ -818,6 +840,7 @@ mod tests {
             "gpt-5.2",
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
+            "image/png",
             "low",
             false,
             false,
@@ -831,6 +854,21 @@ mod tests {
         let parsed = parse_json_suggestions(raw, 20.0, 10.0).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].bbox, [5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn parser_rejects_object_schema_size_mismatch() {
+        let raw =
+            r#"{"boxes":[{"x":5,"y":6,"w":7,"h":8}],"image_size":{"width":1024,"height":1024}}"#;
+        let err = parse_json_suggestions(raw, 2048.0, 1024.0).unwrap_err();
+        assert!(err.contains("did not match actual image size"));
+    }
+
+    #[test]
+    fn parser_clamps_object_box_to_remaining_bounds() {
+        let raw = r#"{"boxes":[{"x":900,"y":500,"w":300,"h":700}],"image_size":{"width":1024,"height":768}}"#;
+        let parsed = parse_json_suggestions(raw, 1024.0, 768.0).unwrap();
+        assert_eq!(parsed[0].bbox, [900.0, 500.0, 124.0, 268.0]);
     }
 
     #[test]
@@ -893,6 +931,7 @@ mod tests {
             "gpt-5.2",
             "Run Python to compute the sum of [2, 3, 5], then respond with just the integer result.",
             TEST_IMAGE_B64_PNG_1X1,
+            "image/png",
             "low",
             true,
             true,
