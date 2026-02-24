@@ -7,8 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-02-24
+
 ### Fixed
-- Preserved wrapped equirectangular bbox yaw coverage in the `annotation_may_intersect_face` prefilter by avoiding edge clamping for yaw-range checks, preventing seam-crossing boxes from being incorrectly rejected before projection.
+- Fixed review-dataset face assignment so each source annotation is deterministically owned by a single cube face under standard `front/right/back/left` 90° configuration, preventing widespread adjacent-face duplicate boxes in generated manifests.
+- Replaced non-face-relative bbox projection with geometric point sampling + face-plane projection, so projected coordinates are derived from per-face camera geometry instead of copied equirectangular scaling.
+- Added regression tests for face ownership and face-relative projection behavior to prevent recurrence of duplicated/identical bbox patterns across rendered faces.
 
 ## [1.1.0] - 2026-02-24
 

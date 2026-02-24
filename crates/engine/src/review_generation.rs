@@ -78,6 +78,7 @@ struct ParallelImageResult {
 struct FaceOrientation {
     yaw_start: f64,
     yaw_end: f64,
+    yaw_center: f64,
 }
 
 pub fn generate_review_dataset(
@@ -322,22 +323,26 @@ where
 
             let mut image_faces = Vec::new();
             let mut filtered_box_count = 0usize;
+            let face_orientations: Vec<FaceOrientation> = render_faces
+                .iter()
+                .map(|face| face_orientation(face))
+                .collect::<Result<Vec<_>, _>>()?;
 
-            for face in &render_faces {
+            let annotation_owner_faces: Vec<Option<usize>> = source_annotations
+                .iter()
+                .map(|annotation| owner_face_index(annotation, source_image, &face_orientations))
+                .collect();
+
+            for (face_index, face) in render_faces.iter().enumerate() {
                 if cancelled.load(Ordering::Relaxed) || should_cancel() {
                     cancelled.store(true, Ordering::Relaxed);
                     return Err(EngineError::Cancelled("review rendering"));
                 }
 
-                let orientation = face_orientation(face)?;
+                let orientation = face_orientations[face_index];
                 let mut initial_boxes = Vec::new();
-                for annotation in source_annotations {
-                    if !annotation_may_intersect_face(
-                        annotation,
-                        source_image,
-                        orientation,
-                        &projection,
-                    ) {
+                for (annotation_index, annotation) in source_annotations.iter().enumerate() {
+                    if annotation_owner_faces[annotation_index] != Some(face_index) {
                         filtered_box_count += 1;
                         continue;
                     }
@@ -530,39 +535,6 @@ fn render_face_projection(
         })
 }
 
-fn annotation_may_intersect_face(
-    annotation: &SourceAnnotation,
-    image: &SourceImage,
-    orientation: FaceOrientation,
-    projection: &ProjectionConfig,
-) -> bool {
-    let img_w = image.width as f64;
-    let x0 = annotation.bbox[0];
-    let x1 = annotation.bbox[0] + annotation.bbox[2];
-
-    if annotation.bbox[2] >= img_w {
-        return true;
-    }
-
-    if x1 <= x0 {
-        return false;
-    }
-
-    let yaw_start = normalize_yaw((x0 / img_w) * 360.0 - 180.0);
-    let yaw_end = normalize_yaw((x1 / img_w) * 360.0 - 180.0);
-    let face_start = orientation.yaw_start - projection.horizontal_fov_degrees / 2.0;
-    let face_end = orientation.yaw_end + projection.horizontal_fov_degrees / 2.0;
-
-    yaw_ranges_overlap(yaw_start, yaw_end, face_start, face_end)
-}
-
-fn yaw_ranges_overlap(a_start: f64, a_end: f64, b_start: f64, b_end: f64) -> bool {
-    contains_yaw(a_start, b_start, b_end)
-        || contains_yaw(a_end, b_start, b_end)
-        || contains_yaw(b_start, a_start, a_end)
-        || contains_yaw(b_end, a_start, a_end)
-}
-
 fn project_box_to_face(
     annotation: &SourceAnnotation,
     image: &SourceImage,
@@ -570,30 +542,39 @@ fn project_box_to_face(
     render_size: u64,
     projection: &ProjectionConfig,
 ) -> Option<ProjectedBox> {
-    let img_w = image.width as f64;
-    let img_h = image.height as f64;
+    let render_size_f = render_size as f64;
 
-    let x0 = annotation.bbox[0];
-    let y0 = annotation.bbox[1];
-    let x1 = x0 + annotation.bbox[2];
-    let y1 = y0 + annotation.bbox[3];
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut visible_points = 0usize;
 
-    let cx = (x0 + x1) / 2.0;
-    let center_yaw = normalize_yaw((cx / img_w) * 360.0 - 180.0);
-    let half_fov = projection.horizontal_fov_degrees / 2.0;
+    for (sample_x, sample_y) in sample_annotation_perimeter(annotation) {
+        if let Some((px, py)) = project_equirectangular_point_to_face(
+            sample_x,
+            sample_y,
+            image,
+            orientation,
+            projection.horizontal_fov_degrees,
+            render_size_f,
+        ) {
+            min_x = min_x.min(px);
+            min_y = min_y.min(py);
+            max_x = max_x.max(px);
+            max_y = max_y.max(py);
+            visible_points += 1;
+        }
+    }
 
-    if !contains_yaw(
-        center_yaw,
-        orientation.yaw_start - half_fov,
-        orientation.yaw_end + half_fov,
-    ) {
+    if visible_points == 0 {
         return None;
     }
 
-    let left = ((x0 / img_w) * render_size as f64).clamp(0.0, render_size as f64);
-    let right = ((x1 / img_w) * render_size as f64).clamp(0.0, render_size as f64);
-    let top = ((y0 / img_h) * render_size as f64).clamp(0.0, render_size as f64);
-    let bottom = ((y1 / img_h) * render_size as f64).clamp(0.0, render_size as f64);
+    let left = min_x.clamp(0.0, render_size_f);
+    let right = max_x.clamp(0.0, render_size_f);
+    let top = min_y.clamp(0.0, render_size_f);
+    let bottom = max_y.clamp(0.0, render_size_f);
 
     let width = (right - left).max(0.0);
     let height = (bottom - top).max(0.0);
@@ -610,23 +591,123 @@ fn project_box_to_face(
     })
 }
 
+fn owner_face_index(
+    annotation: &SourceAnnotation,
+    image: &SourceImage,
+    orientations: &[FaceOrientation],
+) -> Option<usize> {
+    if orientations.is_empty() {
+        return None;
+    }
+
+    let img_w = image.width as f64;
+    let x_center = annotation.bbox[0] + annotation.bbox[2] / 2.0;
+    let center_yaw = normalize_yaw((x_center / img_w) * 360.0 - 180.0);
+
+    let mut best: Option<(usize, f64)> = None;
+    for (index, orientation) in orientations.iter().enumerate() {
+        if contains_yaw_half_open(center_yaw, orientation.yaw_start, orientation.yaw_end) {
+            let delta = angular_distance_degrees(center_yaw, orientation.yaw_center);
+            match best {
+                Some((_, best_delta)) if best_delta <= delta => {}
+                _ => best = Some((index, delta)),
+            }
+        }
+    }
+
+    best.map(|(index, _)| index)
+}
+
+fn sample_annotation_perimeter(annotation: &SourceAnnotation) -> Vec<(f64, f64)> {
+    const PER_EDGE_SAMPLES: usize = 6;
+
+    let x0 = annotation.bbox[0];
+    let y0 = annotation.bbox[1];
+    let x1 = x0 + annotation.bbox[2];
+    let y1 = y0 + annotation.bbox[3];
+
+    let mut points = Vec::with_capacity(PER_EDGE_SAMPLES * 4 + 1);
+    for index in 0..=PER_EDGE_SAMPLES {
+        let t = index as f64 / PER_EDGE_SAMPLES as f64;
+        let x = x0 + (x1 - x0) * t;
+        let y = y0 + (y1 - y0) * t;
+        points.push((x, y0));
+        points.push((x, y1));
+        points.push((x0, y));
+        points.push((x1, y));
+    }
+
+    points.push(((x0 + x1) / 2.0, (y0 + y1) / 2.0));
+    points
+}
+
+fn project_equirectangular_point_to_face(
+    source_x: f64,
+    source_y: f64,
+    image: &SourceImage,
+    orientation: FaceOrientation,
+    horizontal_fov_degrees: f64,
+    render_size: f64,
+) -> Option<(f64, f64)> {
+    let img_w = image.width as f64;
+    let img_h = image.height as f64;
+
+    let x_wrapped = source_x.rem_euclid(img_w);
+    let y_clamped = source_y.clamp(0.0, img_h);
+
+    let lon = ((x_wrapped / img_w) * 2.0 * std::f64::consts::PI) - std::f64::consts::PI;
+    let lat = std::f64::consts::FRAC_PI_2 - ((y_clamped / img_h) * std::f64::consts::PI);
+
+    let world_x = lat.cos() * lon.sin();
+    let world_y = lat.sin();
+    let world_z = lat.cos() * lon.cos();
+
+    let yaw_rotation = orientation.yaw_center.to_radians();
+    let cos_yaw = yaw_rotation.cos();
+    let sin_yaw = yaw_rotation.sin();
+
+    let cam_x = cos_yaw * world_x - sin_yaw * world_z;
+    let cam_z = sin_yaw * world_x + cos_yaw * world_z;
+    let cam_y = world_y;
+
+    if cam_z <= 0.0 {
+        return None;
+    }
+
+    let tan_half_fov = (horizontal_fov_degrees.to_radians() / 2.0).tan();
+    let x_ndc = cam_x / (cam_z * tan_half_fov);
+    let y_ndc = cam_y / (cam_z * tan_half_fov);
+
+    if x_ndc.abs() > 1.0 || y_ndc.abs() > 1.0 {
+        return None;
+    }
+
+    let px = ((x_ndc + 1.0) / 2.0) * render_size;
+    let py = ((1.0 - y_ndc) / 2.0) * render_size;
+    Some((px, py))
+}
+
 fn face_orientation(face: &str) -> Result<FaceOrientation, EngineError> {
     match face {
         "front" => Ok(FaceOrientation {
             yaw_start: -45.0,
             yaw_end: 45.0,
+            yaw_center: 0.0,
         }),
         "right" => Ok(FaceOrientation {
             yaw_start: 45.0,
             yaw_end: 135.0,
+            yaw_center: 90.0,
         }),
         "back" => Ok(FaceOrientation {
             yaw_start: 135.0,
             yaw_end: -135.0,
+            yaw_center: 180.0,
         }),
         "left" => Ok(FaceOrientation {
             yaw_start: -135.0,
             yaw_end: -45.0,
+            yaw_center: -90.0,
         }),
         _ => Err(EngineError::InvalidConfiguration(format!(
             "render.faces contains unsupported face `{face}`; expected one of front/right/back/left"
@@ -646,16 +727,21 @@ fn face_center_yaw(face: &str) -> Result<f64, EngineError> {
     }
 }
 
-fn contains_yaw(value: f64, start: f64, end: f64) -> bool {
+fn contains_yaw_half_open(value: f64, start: f64, end: f64) -> bool {
     let value = normalize_yaw(value);
     let start = normalize_yaw(start);
     let end = normalize_yaw(end);
 
     if start <= end {
-        value >= start && value <= end
+        value >= start && value < end
     } else {
-        value >= start || value <= end
+        value >= start || value < end
     }
+}
+
+fn angular_distance_degrees(a: f64, b: f64) -> f64 {
+    let delta = (normalize_yaw(a) - normalize_yaw(b)).abs();
+    delta.min(360.0 - delta)
 }
 
 fn normalize_yaw(value: f64) -> f64 {
@@ -755,7 +841,7 @@ mod tests {
     };
 
     use super::{
-        annotation_may_intersect_face, generate_review_dataset, FaceOrientation,
+        generate_review_dataset, owner_face_index, project_box_to_face, FaceOrientation,
         GenerateReviewDatasetOptions, SourceAnnotation, SourceImage,
     };
 
@@ -783,8 +869,8 @@ mod tests {
                     {"id": 1, "file_name": "frame_0001.png", "width": 2048, "height": 1024}
                 ],
                 "annotations": [
-                    {"id": 22, "image_id": 2, "bbox": [1500, 100, 200, 100]},
-                    {"id": 11, "image_id": 1, "bbox": [100, 50, 300, 200]}
+                    {"id": 22, "image_id": 2, "bbox": [1500, 420, 200, 100]},
+                    {"id": 11, "image_id": 1, "bbox": [100, 420, 300, 200]}
                 ]
             }"#,
         )
@@ -838,7 +924,7 @@ mod tests {
                     {"id": 1, "file_name": "frame_0001.png", "width": 2048, "height": 1024}
                 ],
                 "annotations": [
-                    {"id": 11, "image_id": 1, "bbox": [100, 50, 300, 200]}
+                    {"id": 11, "image_id": 1, "bbox": [100, 420, 300, 200]}
                 ]
             }"#,
         )
@@ -887,8 +973,8 @@ mod tests {
                     {"id": 2, "file_name": "cam0_frame_0002.jpg", "frame_index": 2, "width": 2048, "height": 1024}
                 ],
                 "annotations": [
-                    {"id": 11, "image_id": 1, "bbox": [100, 50, 300, 200]},
-                    {"id": 22, "image_id": 2, "bbox": [1500, 100, 200, 100]}
+                    {"id": 11, "image_id": 1, "bbox": [100, 420, 300, 200]},
+                    {"id": 22, "image_id": 2, "bbox": [1500, 420, 200, 100]}
                 ]
             }"#,
         )
@@ -947,8 +1033,8 @@ mod tests {
         let first = generate_review_dataset(options.clone()).unwrap();
         let second = generate_review_dataset(options.clone()).unwrap();
 
-        assert_eq!(first.rendered_face_count, 4);
-        assert_eq!(first.filtered_box_count, 4);
+        assert_eq!(first.rendered_face_count, 2);
+        assert_eq!(first.filtered_box_count, 6);
         assert_eq!(first.written_manifest_path, second.written_manifest_path);
 
         let manifest_content = fs::read_to_string(&first.written_manifest_path).unwrap();
@@ -959,10 +1045,7 @@ mod tests {
             .iter()
             .map(|item| (item.source_image_id, item.face.as_str()))
             .collect();
-        assert_eq!(
-            order,
-            vec![(1, "back"), (1, "left"), (2, "right"), (2, "back"),]
-        );
+        assert_eq!(order, vec![(1, "back"), (2, "right"),]);
 
         let ids_first: Vec<String> = manifest
             .faces
@@ -997,9 +1080,9 @@ mod tests {
             hashes_by_face.insert(face.face.clone(), hasher.finish());
         }
 
-        assert_eq!(hashes_by_face.len(), 2);
+        assert_eq!(hashes_by_face.len(), 1);
         let unique_hashes: BTreeSet<u64> = hashes_by_face.values().copied().collect();
-        assert_eq!(unique_hashes.len(), 2);
+        assert_eq!(unique_hashes.len(), 1);
     }
 
     #[test]
@@ -1045,15 +1128,64 @@ mod tests {
         let options = setup_dataset_mp4_frames();
 
         let report = generate_review_dataset(options.clone()).unwrap();
-        assert_eq!(report.rendered_face_count, 4);
+        assert_eq!(report.rendered_face_count, 2);
 
         let manifest_content = fs::read_to_string(&report.written_manifest_path).unwrap();
         let manifest: crate::ViewManifest = serde_json::from_str(&manifest_content).unwrap();
-        assert_eq!(manifest.faces.len(), 4);
+        assert_eq!(manifest.faces.len(), 2);
     }
 
     #[test]
-    fn prefilter_does_not_reject_wraparound_bbox_crossing_right_edge() {
+    fn assigns_owner_face_without_adjacent_duplication() {
+        let image = SourceImage {
+            file_name: "frame.png".to_owned(),
+            frame_index: None,
+            width: 2048,
+            height: 1024,
+        };
+        let orientations = vec![
+            FaceOrientation {
+                yaw_start: -45.0,
+                yaw_end: 45.0,
+                yaw_center: 0.0,
+            },
+            FaceOrientation {
+                yaw_start: 45.0,
+                yaw_end: 135.0,
+                yaw_center: 90.0,
+            },
+            FaceOrientation {
+                yaw_start: 135.0,
+                yaw_end: -135.0,
+                yaw_center: 180.0,
+            },
+            FaceOrientation {
+                yaw_start: -135.0,
+                yaw_end: -45.0,
+                yaw_center: -90.0,
+            },
+        ];
+
+        let front = SourceAnnotation {
+            id: Some(1),
+            bbox: [1000.0, 200.0, 100.0, 100.0],
+        };
+        let right = SourceAnnotation {
+            id: Some(2),
+            bbox: [1500.0, 200.0, 100.0, 100.0],
+        };
+        let left = SourceAnnotation {
+            id: Some(3),
+            bbox: [500.0, 200.0, 100.0, 100.0],
+        };
+
+        assert_eq!(owner_face_index(&front, &image, &orientations), Some(0));
+        assert_eq!(owner_face_index(&right, &image, &orientations), Some(1));
+        assert_eq!(owner_face_index(&left, &image, &orientations), Some(3));
+    }
+
+    #[test]
+    fn projection_is_face_relative_not_identical_between_faces() {
         let image = SourceImage {
             file_name: "frame.png".to_owned(),
             frame_index: None,
@@ -1061,53 +1193,34 @@ mod tests {
             height: 1024,
         };
         let annotation = SourceAnnotation {
-            id: Some(1),
-            bbox: [2000.0, 200.0, 100.0, 120.0],
-        };
-        let orientation = FaceOrientation {
-            yaw_start: 135.0,
-            yaw_end: -135.0,
+            id: Some(10),
+            bbox: [1300.0, 400.0, 240.0, 120.0],
         };
         let projection = ProjectionConfig {
             horizontal_fov_degrees: 90.0,
             min_projected_box_area: 4.0,
         };
 
-        assert!(annotation_may_intersect_face(
-            &annotation,
-            &image,
-            orientation,
-            &projection
-        ));
-    }
-
-    #[test]
-    fn prefilter_accepts_panorama_spanning_bbox() {
-        let image = SourceImage {
-            file_name: "frame.png".to_owned(),
-            frame_index: None,
-            width: 2048,
-            height: 1024,
-        };
-        let annotation = SourceAnnotation {
-            id: Some(1),
-            bbox: [0.0, 100.0, 4096.0, 300.0],
-        };
-        let orientation = FaceOrientation {
+        let front_orientation = FaceOrientation {
             yaw_start: -45.0,
             yaw_end: 45.0,
+            yaw_center: 0.0,
         };
-        let projection = ProjectionConfig {
-            horizontal_fov_degrees: 90.0,
-            min_projected_box_area: 4.0,
+        let right_orientation = FaceOrientation {
+            yaw_start: 45.0,
+            yaw_end: 135.0,
+            yaw_center: 90.0,
         };
 
-        assert!(annotation_may_intersect_face(
-            &annotation,
-            &image,
-            orientation,
-            &projection
-        ));
+        let front = project_box_to_face(&annotation, &image, front_orientation, 1024, &projection);
+        let right = project_box_to_face(&annotation, &image, right_orientation, 1024, &projection)
+            .expect("bbox should be visible on right face");
+
+        assert!(front.is_none());
+        assert!(right.bbox[0] >= 0.0 && right.bbox[0] <= 1024.0);
+        assert!(right.bbox[1] >= 0.0 && right.bbox[1] <= 1024.0);
+        assert!(right.bbox[2] > 0.0);
+        assert!(right.bbox[3] > 0.0);
     }
     #[test]
     fn reports_missing_extracted_mp4_frame_with_deterministic_name() {
