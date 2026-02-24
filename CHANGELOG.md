@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Preserved wrapped equirectangular bbox yaw coverage in the `annotation_may_intersect_face` prefilter by avoiding edge clamping for yaw-range checks, preventing seam-crossing boxes from being incorrectly rejected before projection.
+
 ## [1.1.0] - 2026-02-24
 
 ### Changed

@@ -537,8 +537,13 @@ fn annotation_may_intersect_face(
     projection: &ProjectionConfig,
 ) -> bool {
     let img_w = image.width as f64;
-    let x0 = annotation.bbox[0].clamp(0.0, img_w);
-    let x1 = (annotation.bbox[0] + annotation.bbox[2]).clamp(0.0, img_w);
+    let x0 = annotation.bbox[0];
+    let x1 = annotation.bbox[0] + annotation.bbox[2];
+
+    if annotation.bbox[2] >= img_w {
+        return true;
+    }
+
     if x1 <= x0 {
         return false;
     }
@@ -749,7 +754,10 @@ mod tests {
         init_empty_manifest, FramesSource, ManifestInputs, ProjectionConfig, RenderConfig,
     };
 
-    use super::{generate_review_dataset, GenerateReviewDatasetOptions};
+    use super::{
+        annotation_may_intersect_face, generate_review_dataset, FaceOrientation,
+        GenerateReviewDatasetOptions, SourceAnnotation, SourceImage,
+    };
 
     fn unique_temp_dir() -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -1044,6 +1052,63 @@ mod tests {
         assert_eq!(manifest.faces.len(), 4);
     }
 
+    #[test]
+    fn prefilter_does_not_reject_wraparound_bbox_crossing_right_edge() {
+        let image = SourceImage {
+            file_name: "frame.png".to_owned(),
+            frame_index: None,
+            width: 2048,
+            height: 1024,
+        };
+        let annotation = SourceAnnotation {
+            id: Some(1),
+            bbox: [2000.0, 200.0, 100.0, 120.0],
+        };
+        let orientation = FaceOrientation {
+            yaw_start: 135.0,
+            yaw_end: -135.0,
+        };
+        let projection = ProjectionConfig {
+            horizontal_fov_degrees: 90.0,
+            min_projected_box_area: 4.0,
+        };
+
+        assert!(annotation_may_intersect_face(
+            &annotation,
+            &image,
+            orientation,
+            &projection
+        ));
+    }
+
+    #[test]
+    fn prefilter_accepts_panorama_spanning_bbox() {
+        let image = SourceImage {
+            file_name: "frame.png".to_owned(),
+            frame_index: None,
+            width: 2048,
+            height: 1024,
+        };
+        let annotation = SourceAnnotation {
+            id: Some(1),
+            bbox: [0.0, 100.0, 4096.0, 300.0],
+        };
+        let orientation = FaceOrientation {
+            yaw_start: -45.0,
+            yaw_end: 45.0,
+        };
+        let projection = ProjectionConfig {
+            horizontal_fov_degrees: 90.0,
+            min_projected_box_area: 4.0,
+        };
+
+        assert!(annotation_may_intersect_face(
+            &annotation,
+            &image,
+            orientation,
+            &projection
+        ));
+    }
     #[test]
     fn reports_missing_extracted_mp4_frame_with_deterministic_name() {
         let options = setup_dataset_mp4_frames();
