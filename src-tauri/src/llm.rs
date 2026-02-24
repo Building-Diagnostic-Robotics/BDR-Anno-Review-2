@@ -14,6 +14,7 @@ const OPENAI_URL: &str = "https://api.openai.com/v1/responses";
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const CODE_INTERPRETER_MEMORY_LIMIT: &str = "4g";
 const TOOL_CHOICE_REQUIRED_ENV: &str = "BDR_OPENAI_TOOL_CHOICE_REQUIRED";
+const CODE_EXECUTION_ENABLED_ENV: &str = "BDR_LLM_CODE_EXECUTION_ENABLED";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,8 +93,33 @@ impl SuggestionQueue {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ParsedSuggestions {
+    Object(ParsedSuggestionObject),
     Boxes(Vec<ParsedSuggestionItem>),
     NoDefects(String),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParsedSuggestionObject {
+    boxes: Vec<ParsedPixelSuggestionItem>,
+    image_size: ParsedImageSize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParsedPixelSuggestionItem {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    confidence: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParsedImageSize {
+    width: f64,
+    height: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,7 +166,7 @@ pub fn prompt_text(app: &AppHandle) -> Result<String, String> {
 pub fn build_face_context(
     dataset_root: &str,
     face: &FaceView,
-) -> Result<(String, [f64; 2]), String> {
+) -> Result<(String, String, [f64; 2]), String> {
     let image_path = PathBuf::from(dataset_root).join(&face.image_path);
     let bytes = fs::read(&image_path).map_err(|source| {
         format!(
@@ -152,13 +178,35 @@ pub fn build_face_context(
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(bytes)
     };
+    let media_type = match image::guess_format(&bytes).map_err(|source| {
+        format!(
+            "failed to detect image format for `{}`: {source}",
+            image_path.display()
+        )
+    })? {
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Gif => "image/gif",
+        image::ImageFormat::WebP => "image/webp",
+        _ => {
+            return Err(format!(
+                "unsupported face image format for `{}`; supported media types: image/jpeg, image/png, image/gif, image/webp",
+                image_path.display()
+            ))
+        }
+    }
+    .to_owned();
     let dimensions = image::image_dimensions(&image_path).map_err(|source| {
         format!(
             "failed to determine image dimensions for `{}`: {source}",
             image_path.display()
         )
     })?;
-    Ok((base64_image, [dimensions.0 as f64, dimensions.1 as f64]))
+    Ok((
+        base64_image,
+        media_type,
+        [dimensions.0 as f64, dimensions.1 as f64],
+    ))
 }
 
 fn parse_json_suggestions(
@@ -175,47 +223,83 @@ fn parse_json_suggestions(
         }
     }
 
-    let entries =
-        match parsed {
-            ParsedSuggestions::Boxes(entries) => entries,
-            ParsedSuggestions::NoDefects(_) => return Err(
-                "provider response string must be exactly `No defects detected` for negative cases"
-                    .to_owned(),
-            ),
-        };
-
     let mut out = Vec::new();
     let mut invalid_count = 0usize;
-    for entry in entries {
-        let ParsedSuggestionItem {
-            xmin,
-            ymin,
-            xmax,
-            ymax,
-            confidence,
-        } = entry;
-        if !(xmin.is_finite() && ymin.is_finite() && xmax.is_finite() && ymax.is_finite()) {
-            invalid_count += 1;
-            continue;
-        }
-        let clamped_xmin = xmin.clamp(0.0, 1.0);
-        let clamped_ymin = ymin.clamp(0.0, 1.0);
-        let clamped_xmax = xmax.clamp(0.0, 1.0);
-        let clamped_ymax = ymax.clamp(0.0, 1.0);
-        if clamped_xmax <= clamped_xmin || clamped_ymax <= clamped_ymin {
-            invalid_count += 1;
-            continue;
-        }
 
-        let clamped_x = clamped_xmin * width.max(0.0);
-        let clamped_y = clamped_ymin * height.max(0.0);
-        let clamped_w = (clamped_xmax - clamped_xmin) * width.max(0.0);
-        let clamped_h = (clamped_ymax - clamped_ymin) * height.max(0.0);
-        out.push(SuggestionBox {
-            bbox: [clamped_x, clamped_y, clamped_w, clamped_h],
-            confidence,
-            source: "llm".to_owned(),
-        });
+    match parsed {
+        ParsedSuggestions::Object(value) => {
+            if !(value.image_size.width.is_finite() && value.image_size.height.is_finite()) {
+                return Err(
+                    "provider response image_size must contain finite width/height".to_owned(),
+                );
+            }
+            for entry in value.boxes {
+                let ParsedPixelSuggestionItem {
+                    x,
+                    y,
+                    w,
+                    h,
+                    confidence,
+                } = entry;
+                if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
+                    invalid_count += 1;
+                    continue;
+                }
+                if w <= 0.0 || h <= 0.0 {
+                    invalid_count += 1;
+                    continue;
+                }
+                out.push(SuggestionBox {
+                    bbox: [
+                        x.clamp(0.0, width.max(0.0)),
+                        y.clamp(0.0, height.max(0.0)),
+                        w.clamp(0.0, width.max(0.0)),
+                        h.clamp(0.0, height.max(0.0)),
+                    ],
+                    confidence,
+                    source: "llm".to_owned(),
+                });
+            }
+        }
+        ParsedSuggestions::Boxes(entries) => {
+            for entry in entries {
+                let ParsedSuggestionItem {
+                    xmin,
+                    ymin,
+                    xmax,
+                    ymax,
+                    confidence,
+                } = entry;
+                if !(xmin.is_finite() && ymin.is_finite() && xmax.is_finite() && ymax.is_finite()) {
+                    invalid_count += 1;
+                    continue;
+                }
+                let clamped_xmin = xmin.clamp(0.0, 1.0);
+                let clamped_ymin = ymin.clamp(0.0, 1.0);
+                let clamped_xmax = xmax.clamp(0.0, 1.0);
+                let clamped_ymax = ymax.clamp(0.0, 1.0);
+                if clamped_xmax <= clamped_xmin || clamped_ymax <= clamped_ymin {
+                    invalid_count += 1;
+                    continue;
+                }
+
+                let clamped_x = clamped_xmin * width.max(0.0);
+                let clamped_y = clamped_ymin * height.max(0.0);
+                let clamped_w = (clamped_xmax - clamped_xmin) * width.max(0.0);
+                let clamped_h = (clamped_ymax - clamped_ymin) * height.max(0.0);
+                out.push(SuggestionBox {
+                    bbox: [clamped_x, clamped_y, clamped_w, clamped_h],
+                    confidence,
+                    source: "llm".to_owned(),
+                });
+            }
+        }
+        ParsedSuggestions::NoDefects(_) => {
+            return Err(
+                "provider response string must be exactly `No defects detected` for negative cases"
+                    .to_owned(),
+            )
+        }
     }
 
     out.sort_by(|a, b| {
@@ -234,6 +318,13 @@ fn parse_json_suggestions(
     }
 
     Ok(out)
+}
+
+fn code_execution_enabled() -> bool {
+    std::env::var(CODE_EXECUTION_ENABLED_ENV)
+        .ok()
+        .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
 }
 
 fn reasoning_budget(preset: &str) -> serde_json::Value {
@@ -270,15 +361,32 @@ fn extract_openai_text(value: &serde_json::Value) -> Option<String> {
 
 fn extract_anthropic_text(value: &serde_json::Value) -> Option<String> {
     let content = value.get("content")?.as_array()?;
+    let mut first_text: Option<String> = None;
     for part in content {
-        if part.get("type").and_then(|v| v.as_str()) != Some("text") {
+        let part_type = part
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        if part_type != "text" {
+            if cfg!(debug_assertions) {
+                eprintln!("anthropic non-text content block: {part}");
+            }
             continue;
         }
         if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-            return Some(text.to_owned());
+            if first_text.is_none() {
+                first_text = Some(text.to_owned());
+            }
+            let trimmed = text.trim();
+            if trimmed.starts_with('{')
+                || trimmed.starts_with('[')
+                || trimmed == "\"No defects detected\""
+            {
+                return Some(text.to_owned());
+            }
         }
     }
-    None
+    first_text
 }
 
 fn run_openai(
@@ -289,6 +397,7 @@ fn run_openai(
     timeout: Duration,
     reasoning_preset: &str,
 ) -> Result<String, String> {
+    let code_exec_enabled = code_execution_enabled();
     let tool_choice_required = std::env::var(TOOL_CHOICE_REQUIRED_ENV)
         .ok()
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -298,6 +407,7 @@ fn run_openai(
         prompt,
         image_b64,
         reasoning_preset,
+        code_exec_enabled,
         tool_choice_required,
     );
 
@@ -311,6 +421,7 @@ fn build_openai_response_body(
     prompt: &str,
     image_b64: &str,
     reasoning_preset: &str,
+    code_exec_enabled: bool,
     tool_choice_required: bool,
 ) -> serde_json::Value {
     // Responses multimodal format (Vision guide): input = [{ role, content: [input_text, input_image] }]
@@ -326,15 +437,17 @@ fn build_openai_response_body(
                 {"type": "input_text", "text": prompt},
                 {"type": "input_image", "image_url": format!("data:image/png;base64,{image_b64}")}
             ]
-        }],
-        "tools": [{
+        }]
+    });
+    if code_exec_enabled {
+        body["tools"] = serde_json::json!([{
             "type": "code_interpreter",
             "container": {
                 "type": "auto",
                 "memory_limit": CODE_INTERPRETER_MEMORY_LIMIT
             }
-        }]
-    });
+        }]);
+    }
     if tool_choice_required {
         body["tool_choice"] = serde_json::Value::String("required".to_owned());
     }
@@ -368,19 +481,15 @@ fn post_openai_response(
     Ok(value)
 }
 
-fn run_anthropic(
-    api_key: &str,
+fn build_anthropic_message_body(
     model: &str,
     prompt: &str,
     image_b64: &str,
-    timeout: Duration,
+    image_media_type: &str,
     reasoning_preset: &str,
-) -> Result<String, String> {
-    let client = Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let body = serde_json::json!({
+    code_exec_enabled: bool,
+) -> serde_json::Value {
+    serde_json::json!({
         "model": model,
         "max_tokens": 1200,
         "thinking": anthropic_thinking(reasoning_preset),
@@ -392,17 +501,47 @@ fn run_anthropic(
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/png",
+                        "media_type": image_media_type,
                         "data": image_b64
                     }
                 }
             ]
-        }]
-    });
+        }],
+        "tools": if code_exec_enabled {
+            serde_json::json!([{"type": "code_execution_20250825", "name": "code_execution"}])
+        } else {
+            serde_json::json!([])
+        }
+    })
+}
+
+fn run_anthropic(
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    image_b64: &str,
+    image_media_type: &str,
+    timeout: Duration,
+    reasoning_preset: &str,
+) -> Result<String, String> {
+    let client = Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let code_exec_enabled = code_execution_enabled();
+    let body = build_anthropic_message_body(
+        model,
+        prompt,
+        image_b64,
+        image_media_type,
+        reasoning_preset,
+        code_exec_enabled,
+    );
     let response = client
         .post(ANTHROPIC_URL)
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
         .json(&body)
         .send()
         .map_err(|source| format!("anthropic request failed: {source}"))?;
@@ -457,7 +596,7 @@ pub fn generate_suggestions_with_retry(
     }
 
     let prompt = prompt_text(app)?;
-    let (image_b64, [width, height]) = build_face_context(dataset_root, face)?;
+    let (image_b64, image_media_type, [width, height]) = build_face_context(dataset_root, face)?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
 
     let mut attempts = 0usize;
@@ -481,6 +620,7 @@ pub fn generate_suggestions_with_retry(
                     model,
                     &prompt,
                     &image_b64,
+                    &image_media_type,
                     timeout,
                     settings.reasoning_preset.as_str(),
                 )
@@ -493,6 +633,7 @@ pub fn generate_suggestions_with_retry(
                     model,
                     &prompt,
                     &image_b64,
+                    &image_media_type,
                     timeout,
                     settings.reasoning_preset.as_str(),
                 )
@@ -602,6 +743,7 @@ mod tests {
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
             "high",
+            true,
             false,
         );
         assert_eq!(payload["input"][0]["role"], "user");
@@ -621,6 +763,7 @@ mod tests {
             TEST_IMAGE_B64_PNG_1X1,
             "high",
             true,
+            true,
         );
         assert_eq!(payload["tool_choice"], "required");
     }
@@ -632,6 +775,7 @@ mod tests {
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
             "low",
+            true,
             false,
         );
         let actual = serde_json::to_string_pretty(&payload).expect("payload should serialize");
@@ -669,6 +813,68 @@ mod tests {
     }
 
     #[test]
+    fn openai_payload_can_disable_code_execution_tool() {
+        let payload = build_openai_response_body(
+            "gpt-5.2",
+            "find boxes",
+            TEST_IMAGE_B64_PNG_1X1,
+            "low",
+            false,
+            false,
+        );
+        assert!(payload.get("tools").is_none());
+    }
+
+    #[test]
+    fn parser_accepts_object_box_schema() {
+        let raw = r#"{"boxes":[{"x":5,"y":6,"w":7,"h":8,"confidence":0.7}],"image_size":{"width":20,"height":10}}"#;
+        let parsed = parse_json_suggestions(raw, 20.0, 10.0).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].bbox, [5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn extract_anthropic_text_prefers_json_block() {
+        let response = serde_json::json!({
+            "content": [
+                {"type": "tool_use", "id": "tool_1"},
+                {"type": "text", "text": "thinking..."},
+                {"type": "text", "text": "{\"boxes\":[],\"image_size\":{\"width\":1,\"height\":1}}"}
+            ]
+        });
+        let text = super::extract_anthropic_text(&response).expect("text expected");
+        assert!(text.contains("\"boxes\""));
+    }
+
+    #[test]
+    fn anthropic_payload_uses_base64_block_and_code_execution_tool() {
+        let payload = super::build_anthropic_message_body(
+            "claude-sonnet-4-6",
+            "find boxes",
+            TEST_IMAGE_B64_PNG_1X1,
+            "image/png",
+            "low",
+            true,
+        );
+        assert_eq!(payload["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(payload["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(
+            payload["messages"][0]["content"][1]["source"]["type"],
+            "base64"
+        );
+        assert_eq!(
+            payload["messages"][0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(
+            payload["messages"][0]["content"][1]["source"]["data"],
+            TEST_IMAGE_B64_PNG_1X1
+        );
+        assert_eq!(payload["tools"][0]["type"], "code_execution_20250825");
+        assert_eq!(payload["tools"][0]["name"], "code_execution");
+    }
+
+    #[test]
     fn detects_code_interpreter_output_items() {
         let response = serde_json::json!({
             "output": [
@@ -689,6 +895,7 @@ mod tests {
             TEST_IMAGE_B64_PNG_1X1,
             "low",
             true,
+            true,
         );
         let response = super::post_openai_response(&api_key, Duration::from_secs(45), &body)
             .expect("responses API request should succeed");
@@ -696,5 +903,34 @@ mod tests {
             response_has_code_interpreter_output(&response),
             "expected code interpreter output item in response: {response}"
         );
+    }
+
+    #[test]
+    #[ignore = "requires ANTHROPIC_API_KEY, ANTHROPIC_SMOKE_IMAGE_PATH and network access"]
+    fn anthropic_vision_code_execution_smoke() {
+        let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
+        let image_path = std::env::var("ANTHROPIC_SMOKE_IMAGE_PATH")
+            .expect("ANTHROPIC_SMOKE_IMAGE_PATH must be set to a local image path");
+        let image_bytes = std::fs::read(&image_path).expect("image path should be readable");
+        use base64::Engine;
+        let image_b64 = base64::engine::general_purpose::STANDARD.encode(image_bytes);
+
+        let prompt = r#"Return strict JSON only in this exact shape:
+{"boxes":[{"x":0,"y":0,"w":0,"h":0}],"image_size":{"width":0,"height":0}}
+Find a single obvious object and provide exactly one bounding box. You may use the code_execution tool to validate that IoU((0,0,10,10),(0,0,5,5)) = 0.25."#;
+        let text = super::run_anthropic(
+            &api_key,
+            "claude-sonnet-4-6",
+            prompt,
+            &image_b64,
+            "image/png",
+            Duration::from_secs(45),
+            "low",
+        )
+        .expect("anthropic request should succeed");
+        println!("raw anthropic response text: {text}");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("response should parse as json");
+        println!("parsed anthropic json: {parsed}");
     }
 }

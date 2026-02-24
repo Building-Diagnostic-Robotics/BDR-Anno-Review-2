@@ -12,29 +12,37 @@ Given an image of a rooftop, your objectives are:
 
 3. Output Requirements:
 - For each defect, provide a bounding box that encloses the defect.
-- All bounding boxes must use normalized coordinates (`xmin, ymin, xmax, ymax`, values between 0 and 1 relative to the image dimensions).
+- Return strict JSON only with this exact top-level shape:
+{
+  "boxes": [
+    {"x": 0, "y": 0, "w": 0, "h": 0}
+  ],
+  "image_size": {"width": 0, "height": 0}
+}
+- `x`, `y`, `w`, `h` are pixel units in the provided image coordinate space.
+- `image_size.width` and `image_size.height` must match the image dimensions in pixels.
 - Bounding boxes must tightly surround the defect and avoid large or vague regions.
 - If no valid defects are visible, return only the JSON string: "No defects detected"
 
 4. Formatting:
-- Return results as a JSON array of bounding boxes, e.g.:
-[
-  {"xmin": 0.10, "ymin": 0.15, "xmax": 0.22, "ymax": 0.30},
-  {"xmin": 0.45, "ymin": 0.40, "xmax": 0.48, "ymax": 0.44}
-]
+- Return results as a JSON object, e.g.:
+{
+  "boxes": [
+    {"x": 100, "y": 150, "w": 120, "h": 90},
+    {"x": 450, "y": 400, "w": 30, "h": 40}
+  ],
+  "image_size": {"width": 1024, "height": 1024}
+}
 - If no defects, return: "No defects detected"
 - Do not include explanations, commentary, confidence values, or any text outside the required output.
 
 Examples:
 
 Image of a bitumin roof with ponding water:
-[{"xmin": 0.15, "ymin": 0.70, "xmax": 0.30, "ymax": 0.85}]
+{"boxes":[{"x":154,"y":717,"w":154,"h":154}],"image_size":{"width":1024,"height":1024}}
 
 Single-ply roof with ridges and patching:
-[
-  {"xmin": 0.60, "ymin": 0.80, "xmax": 0.70, "ymax": 0.90},
-  {"xmin": 0.40, "ymin": 0.65, "xmax": 0.65, "ymax": 0.70}
-]
+{"boxes":[{"x":614,"y":819,"w":102,"h":102},{"x":410,"y":666,"w":256,"h":51}],"image_size":{"width":1024,"height":1024}}
 
 BUR roof with no obvious signs of distress:
 "No defects detected"

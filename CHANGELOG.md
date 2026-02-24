@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-02-24
+
+### Changed
+- Updated Anthropic Messages request building to detect image format and send valid vision image blocks with base64 `source` payloads (`type`, `media_type`, `data`) using supported media types (`image/jpeg`, `image/png`, `image/gif`, `image/webp`) and explicit `content-type: application/json` headers.
+- Added a shared `BDR_LLM_CODE_EXECUTION_ENABLED` toggle so OpenAI and Anthropic code-execution tools can be enabled/disabled with parity across providers without changing default bbox-labeling flow.
+- Added Anthropic `tools` wiring for code execution (`{"type":"code_execution_20250825","name":"code_execution"}`) and made response text extraction resilient to non-text content blocks by safely skipping/logging structured blocks while preferring JSON-bearing text.
+- Updated bbox prompt contract to request stable object output schema (`boxes` + `image_size`) with pixel coordinates while preserving strict negative-case behavior.
+
+### Added
+- Added Anthropic payload-shape tests for text+image Messages vision requests and code execution tool configuration.
+- Added parser coverage for object-shaped bbox JSON (`boxes`/`image_size`) alongside legacy normalized-array format support.
+- Added an ignored Anthropic vision + code-execution smoke test that loads a local image, sends base64 vision input, prints raw response, and parses returned JSON when API key/test image env vars are provided.
+
 ### Changed
 - Updated OpenAI Responses payload construction for bbox suggestions to use the documented multimodal `input` content format (`input_text` + `input_image`) and added built-in Code Interpreter tool configuration with `container: { type: "auto", memory_limit: "4g" }`.
 - Added a debug-only toggle (`BDR_OPENAI_TOOL_CHOICE_REQUIRED=1`) to force `tool_choice: "required"` when validating Code Interpreter execution without changing default bbox-labeling behavior.
