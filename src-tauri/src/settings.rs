@@ -70,6 +70,7 @@ pub struct LlmProviderSettingsResponse {
     pub model: String,
     pub api_key_configured: bool,
     pub masked_key_preview: Option<String>,
+    pub api_key_status_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,9 +143,22 @@ pub fn save_settings(app: &AppHandle, settings: &LlmSettings) -> Result<(), Stri
     })
 }
 
-fn load_key(username: &str) -> Option<String> {
-    let entry = Entry::new(KEYRING_SERVICE, username).ok()?;
-    entry.get_password().ok()
+fn load_key(username: &str, provider: &str) -> Result<Option<String>, String> {
+    let entry = Entry::new(KEYRING_SERVICE, username)
+        .map_err(|source| format!("failed to create secure key entry for {provider}: {source}"))?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(source) => {
+            let text = source.to_string().to_lowercase();
+            if text.contains("no entry") || text.contains("not found") {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "failed to read secure key for {provider}; check keychain availability/unlock state: {source}"
+                ))
+            }
+        }
+    }
 }
 
 fn set_key(username: &str, value: &str) -> Result<(), String> {
@@ -169,18 +183,24 @@ fn clear_key(username: &str) -> Result<(), String> {
     }
 }
 
-pub fn openai_key() -> Option<String> {
-    load_key(OPENAI_USER)
+pub fn openai_key() -> Result<Option<String>, String> {
+    load_key(OPENAI_USER, "OpenAI")
 }
 
-pub fn anthropic_key() -> Option<String> {
-    load_key(ANTHROPIC_USER)
+pub fn anthropic_key() -> Result<Option<String>, String> {
+    load_key(ANTHROPIC_USER, "Anthropic")
 }
 
 pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, String> {
     let settings = load_settings(app)?;
-    let openai_key = openai_key();
-    let anthropic_key = anthropic_key();
+    let (openai_key, openai_key_status_error) = match openai_key() {
+        Ok(value) => (value, None),
+        Err(error) => (None, Some(error)),
+    };
+    let (anthropic_key, anthropic_key_status_error) = match anthropic_key() {
+        Ok(value) => (value, None),
+        Err(error) => (None, Some(error)),
+    };
 
     Ok(LlmSettingsResponse {
         llm_suggestions_enabled: settings.llm_suggestions_enabled,
@@ -191,12 +211,14 @@ pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, Str
             model: settings.openai.model,
             api_key_configured: openai_key.is_some(),
             masked_key_preview: openai_key.and_then(|key| mask_key(&key)),
+            api_key_status_error: openai_key_status_error,
         },
         anthropic: LlmProviderSettingsResponse {
             enabled: settings.anthropic.enabled,
             model: settings.anthropic.model,
             api_key_configured: anthropic_key.is_some(),
             masked_key_preview: anthropic_key.and_then(|key| mask_key(&key)),
+            api_key_status_error: anthropic_key_status_error,
         },
     })
 }
@@ -247,11 +269,21 @@ pub fn save_settings_request(
     if let Some(key) = request.openai_api_key.as_deref() {
         if !key.trim().is_empty() {
             set_key(OPENAI_USER, key.trim())?;
+            if openai_key()?.is_none() {
+                return Err(
+                    "OpenAI key save could not be verified via keychain readback".to_owned(),
+                );
+            }
         }
     }
     if let Some(key) = request.anthropic_api_key.as_deref() {
         if !key.trim().is_empty() {
             set_key(ANTHROPIC_USER, key.trim())?;
+            if anthropic_key()?.is_none() {
+                return Err(
+                    "Anthropic key save could not be verified via keychain readback".to_owned(),
+                );
+            }
         }
     }
 

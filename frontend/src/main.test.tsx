@@ -51,8 +51,8 @@ vi.mock("./api", () => ({
   runImportStage: mocks.runImportStage,
   stageDroppedInputs: mocks.stageDroppedInputs,
   getLlmSettings: mocks.getLlmSettings,
-  saveLlmSettings: vi.fn(),
-  clearProviderKey: vi.fn(),
+  saveLlmSettings: mocks.saveLlmSettings,
+  clearProviderKey: mocks.clearProviderKey,
   getSuggestions: mocks.getSuggestions,
   prefetchSuggestions: mocks.prefetchSuggestions,
   getSuggestionQueueState: mocks.getSuggestionQueueState,
@@ -416,6 +416,46 @@ describe("settings modal", () => {
 
     expect(screen.getByText(/select an llm provider or disable suggestions/i)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+
+  it("shows explicit key saved status text", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true,
+      reasoningPreset: "high",
+      prefetchBufferSize: 12,
+      openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: true, maskedKeyPreview: "sk-a...1234" },
+      anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+    });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+
+    expect(await screen.findByText(/OpenAI key saved/i)).toBeTruthy();
+    expect(screen.getByText(/sk-a\.\.\.1234/)).toBeTruthy();
+    expect(screen.getByText(/No Anthropic key saved/i)).toBeTruthy();
+  });
+
+  it("shows key status warning when provider key verification fails", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true,
+      reasoningPreset: "high",
+      prefetchBufferSize: 12,
+      openai: {
+        enabled: true,
+        model: "gpt-5.2",
+        apiKeyConfigured: false,
+        apiKeyStatusError: "failed to read secure key for OpenAI",
+      },
+      anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+    });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+
+    expect(await screen.findByText(/OpenAI key status unavailable/i)).toBeTruthy();
   });
 
   it("closes settings modal on Escape", async () => {

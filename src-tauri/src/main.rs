@@ -1328,8 +1328,8 @@ fn generate_and_cache_suggestion(
         &settings,
         &face,
         &request.dataset_root,
-        openai_key().as_deref(),
-        anthropic_key().as_deref(),
+        openai_key()?.as_deref(),
+        anthropic_key()?.as_deref(),
         request.timeout_ms,
     );
 
