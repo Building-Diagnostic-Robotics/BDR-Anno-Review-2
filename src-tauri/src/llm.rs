@@ -368,17 +368,6 @@ fn post_openai_response(
     Ok(value)
 }
 
-fn response_has_code_interpreter_output(value: &serde_json::Value) -> bool {
-    let output = match value.get("output").and_then(|v| v.as_array()) {
-        Some(items) => items,
-        None => return false,
-    };
-    output.iter().any(|item| {
-        item.get("type").and_then(|v| v.as_str()) == Some("code_interpreter_call")
-            || item.get("tool_name").and_then(|v| v.as_str()) == Some("code_interpreter")
-    })
-}
-
 fn run_anthropic(
     api_key: &str,
     model: &str,
@@ -546,11 +535,19 @@ pub fn generate_suggestions_with_retry(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_openai_response_body, parse_json_suggestions, response_has_code_interpreter_output,
-        SuggestionQueue,
-    };
+    use super::{build_openai_response_body, parse_json_suggestions, SuggestionQueue};
     use std::time::Duration;
+
+    fn response_has_code_interpreter_output(value: &serde_json::Value) -> bool {
+        let output = match value.get("output").and_then(|v| v.as_array()) {
+            Some(items) => items,
+            None => return false,
+        };
+        output.iter().any(|item| {
+            item.get("type").and_then(|v| v.as_str()) == Some("code_interpreter_call")
+                || item.get("tool_name").and_then(|v| v.as_str()) == Some("code_interpreter")
+        })
+    }
 
     const TEST_IMAGE_B64_PNG_1X1: &str =
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W7xkAAAAASUVORK5CYII=";

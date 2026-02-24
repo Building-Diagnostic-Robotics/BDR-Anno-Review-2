@@ -16,6 +16,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Added OpenAI payload “golden JSON” and schema-shape tests for multimodal + Code Interpreter request bodies, plus response-shape detection tests for Code Interpreter tool outputs.
 - Added an ignored network smoke test that can assert Code Interpreter execution against the live Responses API when `OPENAI_API_KEY` is available.
 
+### Fixed
+- Scoped the Code Interpreter response-shape helper to tests so release builds pass strict `-D warnings`/dead-code checks in CI.
+
 ## [1.1.1] - 2026-02-24
 
 ### Fixed
