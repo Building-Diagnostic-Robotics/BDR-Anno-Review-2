@@ -13,6 +13,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 - Added explicit review-generation OOM guardrails that fail loudly when a single worker’s estimated decode/render memory exceeds the configured budget, avoiding unstable best-effort behavior under constrained RAM conditions.
+- Refactored `extract_frames_via_select` batching progress plumbing to satisfy strict Clippy argument-count limits without changing extraction semantics.
+- Improved review render memory detection in Linux containers by preferring cgroup memory limits/usage (`memory.max` + `memory.current`, with cgroup v1 fallback) before `/proc/meminfo`, preventing worker over-allocation under containerized limits.
 
 ## [1.1.3] - 2026-02-24
 

@@ -551,27 +551,92 @@ fn render_memory_budget_bytes() -> u64 {
 fn detect_available_memory_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
-        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
-        for line in meminfo.lines() {
-            let trimmed = line.trim();
-            if !trimmed.starts_with("MemAvailable:") {
-                continue;
-            }
-
-            let parts = trimmed.split_whitespace().collect::<Vec<&str>>();
-            if parts.len() < 2 {
-                return None;
-            }
-            let value_kb = parts[1].parse::<u64>().ok()?;
-            return value_kb.checked_mul(1024);
-        }
-        None
+        detect_cgroup_available_memory_bytes().or_else(detect_meminfo_available_memory_bytes)
     }
 
     #[cfg(not(target_os = "linux"))]
     {
         None
     }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_cgroup_available_memory_bytes() -> Option<u64> {
+    detect_cgroup_v2_available_memory_bytes().or_else(detect_cgroup_v1_available_memory_bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_cgroup_v2_available_memory_bytes() -> Option<u64> {
+    let limit_raw = fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
+    let used_raw = fs::read_to_string("/sys/fs/cgroup/memory.current").ok()?;
+    let limit = parse_cgroup_limit_bytes(limit_raw.trim())?;
+    let used = used_raw.trim().parse::<u64>().ok()?;
+    Some(limit.saturating_sub(used))
+}
+
+#[cfg(target_os = "linux")]
+fn detect_cgroup_v1_available_memory_bytes() -> Option<u64> {
+    let cgroup = fs::read_to_string("/proc/self/cgroup").ok()?;
+    let memory_path = cgroup.lines().find_map(|line| {
+        let mut parts = line.split(':');
+        let _hierarchy = parts.next()?;
+        let controllers = parts.next()?;
+        let path = parts.next()?;
+        if controllers
+            .split(',')
+            .any(|controller| controller == "memory")
+        {
+            Some(path.trim())
+        } else {
+            None
+        }
+    })?;
+
+    let relative = memory_path.trim_start_matches('/');
+    let base = Path::new("/sys/fs/cgroup/memory");
+    let dir = if relative.is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(relative)
+    };
+
+    let limit_raw = fs::read_to_string(dir.join("memory.limit_in_bytes")).ok()?;
+    let used_raw = fs::read_to_string(dir.join("memory.usage_in_bytes")).ok()?;
+    let limit = parse_cgroup_limit_bytes(limit_raw.trim())?;
+    let used = used_raw.trim().parse::<u64>().ok()?;
+    Some(limit.saturating_sub(used))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_cgroup_limit_bytes(raw: &str) -> Option<u64> {
+    if raw == "max" {
+        return None;
+    }
+
+    let value = raw.parse::<u64>().ok()?;
+    if value == 0 || value >= u64::MAX / 2 {
+        return None;
+    }
+    Some(value)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_meminfo_available_memory_bytes() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("MemAvailable:") {
+            continue;
+        }
+
+        let parts = trimmed.split_whitespace().collect::<Vec<&str>>();
+        if parts.len() < 2 {
+            return None;
+        }
+        let value_kb = parts[1].parse::<u64>().ok()?;
+        return value_kb.checked_mul(1024);
+    }
+    None
 }
 
 fn render_face_projection(

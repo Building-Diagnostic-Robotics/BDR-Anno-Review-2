@@ -429,14 +429,6 @@ where
     pending.sort_by_key(|(frame_index, _)| *frame_index);
     let total_pending = pending.len();
     let selected_hwaccel = choose_hwaccel_mode(ffmpeg_bin, mp4_path, hwaccel_mode)?;
-    let extraction_dir = pending[0]
-        .1
-        .parent()
-        .ok_or_else(|| {
-            EngineError::InvalidConfiguration("invalid extraction output path".to_owned())
-        })?
-        .to_path_buf();
-
     if should_cancel() {
         return Err(EngineError::Cancelled("frame extraction"));
     }
@@ -447,9 +439,10 @@ where
             mp4_path,
             &pending,
             selected_hwaccel.as_deref(),
-            &extraction_dir,
-            total_pending,
-            0,
+            SelectBatchProgress {
+                total_pending,
+                completed_before_batch: 0,
+            },
             on_progress,
             should_cancel,
         )?;
@@ -461,9 +454,10 @@ where
                 mp4_path,
                 batch,
                 selected_hwaccel.as_deref(),
-                &extraction_dir,
-                total_pending,
-                completed_before_batch,
+                SelectBatchProgress {
+                    total_pending,
+                    completed_before_batch,
+                },
                 on_progress,
                 should_cancel,
             )?;
@@ -473,14 +467,17 @@ where
     Ok(skipped_existing_count)
 }
 
+struct SelectBatchProgress {
+    total_pending: usize,
+    completed_before_batch: usize,
+}
+
 fn extract_frames_via_select<F, C>(
     ffmpeg_bin: &str,
     mp4_path: &Path,
     pending: &[(u64, PathBuf)],
     selected_hwaccel: Option<&str>,
-    extraction_dir: &Path,
-    total_pending: usize,
-    completed_before_batch: usize,
+    progress: SelectBatchProgress,
     on_progress: &mut F,
     should_cancel: &C,
 ) -> Result<(), EngineError>
@@ -498,9 +495,17 @@ where
         .collect::<Vec<String>>()
         .join("+");
 
+    let extraction_dir = pending[0]
+        .1
+        .parent()
+        .ok_or_else(|| {
+            EngineError::InvalidConfiguration("invalid extraction output path".to_owned())
+        })?
+        .to_path_buf();
+
     let temp_batch_dir = extraction_dir.join(format!(
         ".ffmpeg_batch_tmp_select_{}_{}",
-        completed_before_batch,
+        progress.completed_before_batch,
         pending.len()
     ));
     if temp_batch_dir.exists() {
@@ -578,8 +583,8 @@ where
             path: output_path.display().to_string(),
             reason: format!("could not materialize extracted frame file: {source}"),
         })?;
-        let done = completed_before_batch + idx + 1;
-        on_progress(done, total_pending.max(1), "extracting");
+        let done = progress.completed_before_batch + idx + 1;
+        on_progress(done, progress.total_pending.max(1), "extracting");
     }
 
     fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
