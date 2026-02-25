@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-02-25
+
+### Fixed
+- Hardened secure-key missing-entry detection by preferring structured keyring errors and narrowing string fallbacks to known "missing credential" variants, avoiding false "key missing" classification for backend availability/lock errors.
+- Improved LLM settings key-save verification to compare immediate keychain readback against the written value and fail with explicit diagnostics for missing, mismatched, or backend readback failures.
+- Expanded secure-key classifier tests to cover additional platform failure variants and prevent regressions in keychain error interpretation.
+
 ## [1.2.0] - 2026-02-25
 
 ### Changed
