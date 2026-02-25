@@ -41,6 +41,9 @@ import { Button, Card, Field, SectionHeading, inputClassName, modalOverlayClassN
 const nowIso = () => new Date().toISOString();
 const AUTOSAVE_DEBOUNCE_MS = 1000;
 const TUTORIAL_STORAGE_KEY = "bdr.editor.tutorialCollapsed";
+const EDITOR_WARMUP_THRESHOLD_RATIO = 0.4;
+const EDITOR_WARMUP_TIMEOUT_MS = 6000;
+const EDITOR_WARMUP_POLL_MS = 300;
 
 type ImageViewport = {
   naturalWidth: number;
@@ -75,6 +78,11 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [llmSettings, setLlmSettings] = useState<LlmSettingsResponse | null>(null);
   const [suggestionsByFace, setSuggestionsByFace] = useState<Record<string, SuggestionBox[]>>({});
+  const [isEnteringEditor, setIsEnteringEditor] = useState(false);
+  const [editorWarmupFaceIds, setEditorWarmupFaceIds] = useState<string[]>([]);
+  const [editorWarmupReadyCount, setEditorWarmupReadyCount] = useState(0);
+  const [editorWarmupMessage, setEditorWarmupMessage] = useState("");
+  const [skipWarmupRequested, setSkipWarmupRequested] = useState(false);
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
   const [selectedFaceId, setSelectedFaceId] = useState<string>("");
@@ -119,6 +127,7 @@ export function App() {
   const selectedFaceIdRef = useRef("");
   const inferredCocoPathRef = useRef("");
   const inferredMp4PathRef = useRef("");
+  const skipWarmupRequestedRef = useRef(false);
 
   useEffect(() => {
     editsRef.current = edits;
@@ -127,6 +136,10 @@ export function App() {
   useEffect(() => {
     selectedFaceIdRef.current = selectedFaceId;
   }, [selectedFaceId]);
+
+  useEffect(() => {
+    skipWarmupRequestedRef.current = skipWarmupRequested;
+  }, [skipWarmupRequested]);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -402,6 +415,62 @@ export function App() {
     return { openReport, faceReport };
   };
 
+  const enterEditorWithWarmup = useCallback(async (nextFaces: FaceListItem[]) => {
+    if (!llmSettings?.llmSuggestionsEnabled || nextFaces.length === 0 || !datasetRoot) {
+      setPage("editor");
+      return;
+    }
+
+    const maxFaces = Math.max(1, llmSettings.prefetchBufferSize);
+    const targetFaceIds = nextFaces.slice(0, maxFaces).map((face) => face.faceId);
+    const uncachedFaceIds = targetFaceIds.filter((faceId) => !suggestionsByFace[faceId]);
+    if (uncachedFaceIds.length === 0) {
+      setPage("editor");
+      return;
+    }
+
+    const requiredReady = Math.max(1, Math.ceil(uncachedFaceIds.length * EDITOR_WARMUP_THRESHOLD_RATIO));
+    setIsEnteringEditor(true);
+    setEditorWarmupFaceIds(uncachedFaceIds);
+    setEditorWarmupReadyCount(0);
+    setSkipWarmupRequested(false);
+    setEditorWarmupMessage(`Preparing suggestions: 0/${requiredReady} ready before entering editor.`);
+
+    const startedAt = Date.now();
+    try {
+      await prefetchSuggestions(datasetRoot, uncachedFaceIds);
+      while (Date.now() - startedAt < EDITOR_WARMUP_TIMEOUT_MS) {
+        const queue = await getSuggestionQueueState(datasetRoot, uncachedFaceIds);
+        const readyCount = queue.items.filter((item) => item.status === "ready").length;
+        setEditorWarmupReadyCount(readyCount);
+        setEditorWarmupMessage(`Preparing suggestions: ${readyCount}/${requiredReady} ready before entering editor.`);
+        if (readyCount >= requiredReady) {
+          break;
+        }
+        if (skipWarmupRequestedRef.current) {
+          updateDiagnostics(`Editor warmup skipped\nEntered editor early with ${readyCount}/${requiredReady} suggestions ready.`);
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, EDITOR_WARMUP_POLL_MS));
+      }
+      const elapsed = Date.now() - startedAt;
+      if (!skipWarmupRequestedRef.current && elapsed >= EDITOR_WARMUP_TIMEOUT_MS) {
+        const queue = await getSuggestionQueueState(datasetRoot, uncachedFaceIds);
+        const readyCount = queue.items.filter((item) => item.status === "ready").length;
+        updateDiagnostics("Editor warmup timed out", `Entered editor after timeout with ${readyCount}/${requiredReady} suggestions ready.`);
+      }
+    } catch (cause) {
+      updateDiagnostics("Editor warmup failed", String(cause));
+    } finally {
+      setIsEnteringEditor(false);
+      setEditorWarmupFaceIds([]);
+      setEditorWarmupReadyCount(0);
+      setEditorWarmupMessage("");
+      setSkipWarmupRequested(false);
+      setPage("editor");
+    }
+  }, [datasetRoot, llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, suggestionsByFace]);
+
   const handleOpen = async () => {
     if (datasetRootError) {
       updateDiagnostics("Open dataset blocked", datasetRootError);
@@ -410,9 +479,9 @@ export function App() {
 
     setIsImporting(true);
     try {
-      const { openReport } = await refreshFaces();
-      setPage("editor");
+      const { openReport, faceReport } = await refreshFaces();
       updateDiagnostics(`Dataset opened\nmanifest: ${openReport.manifestPath}\nfaces: ${openReport.faceCount}`);
+      await enterEditorWithWarmup(faceReport.faces);
     } catch (cause) {
       updateDiagnostics("Open dataset failed", String(cause));
     } finally {
@@ -468,8 +537,8 @@ export function App() {
         setGenerationDetail(status.message || "Running...");
       }
 
-      await refreshFaces();
-      setPage("editor");
+      const { faceReport } = await refreshFaces();
+      await enterEditorWithWarmup(faceReport.faces);
       setGenerationStep("done");
       setGenerationPercent(100);
       setGenerationDetail("Done: review dataset is ready.");
@@ -1288,6 +1357,19 @@ export function App() {
             await refreshLlmSettings();
           }}
         />
+      ) : null}
+      {isEnteringEditor ? (
+        <div className={modalOverlayClassName} role="alertdialog" aria-modal="true" aria-label="Preparing suggestions">
+          <div className="w-full max-w-xl rounded-2xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
+            <h3 className="text-lg font-semibold">Preparing suggestions</h3>
+            <p className="mt-1 text-sm text-anno-text-muted">Building an initial LLM suggestion buffer before entering editor.</p>
+            <p className="mt-3 text-xs text-anno-text-muted">{editorWarmupMessage || "Preparing suggestions..."}</p>
+            <p className="mt-1 text-xs text-anno-text-muted">Target faces: {editorWarmupFaceIds.length} • Ready now: {editorWarmupReadyCount}</p>
+            <div className="mt-3 flex gap-2">
+              <Button variant="outlined" onClick={() => setSkipWarmupRequested(true)}>Enter now</Button>
+            </div>
+          </div>
+        </div>
       ) : null}
       {dropModalOpen ? (
         <div className={modalOverlayClassName} role="dialog" aria-modal="true" aria-label="Drop input files">
