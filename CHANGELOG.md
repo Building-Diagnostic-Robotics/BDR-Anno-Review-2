@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- Reworked MP4 extraction batching to use bounded select-filter chunks for large frame sets instead of full-video temporary decode dumps, reducing temporary disk spikes while preserving deterministic frame-to-index mapping guards and fail-loud diagnostics.
+- Added a bounded review-render worker pool that automatically caps concurrency by available CPU and a configurable memory budget (`BDR_REVIEW_MEMORY_BUDGET_MB`, `BDR_REVIEW_MAX_RENDER_WORKERS`) to prevent runaway RAM growth on large equirectangular source frames.
+
+### Fixed
+- Added explicit review-generation OOM guardrails that fail loudly when a single worker’s estimated decode/render memory exceeds the configured budget, avoiding unstable best-effort behavior under constrained RAM conditions.
+
 ## [1.1.3] - 2026-02-24
 
 ### Changed
