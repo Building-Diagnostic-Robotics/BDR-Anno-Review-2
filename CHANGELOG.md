@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Pinned frontend npm scope/registry resolution for `@tauri-apps/*` to the public npm registry and disabled forced auth so Windows CI installs no longer fail with `ERR_PNPM_FETCH_403` when runner-level npm auth config is absent.
+
 ## [1.2.1] - 2026-02-25
 
 ### Fixed
