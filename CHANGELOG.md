@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Forced CI/release frontend dependency installation to use the public npm registry for default and `@tauri-apps` scopes, switched `pnpm/action-setup` to standalone install mode, and pinned frontend-local npm registry settings in `frontend/.npmrc` so install-time package fetches cannot inherit auth-gated runner registry defaults, preventing CI `ERR_PNPM_FETCH_403` failures.
+
 ## [1.2.1] - 2026-02-25
 
 ### Fixed
