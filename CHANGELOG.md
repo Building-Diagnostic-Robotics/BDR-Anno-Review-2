@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Forced CI/release frontend dependency installation to use the public npm registry for default and `@tauri-apps` scopes, preventing Windows runner 403 failures caused by inherited private-registry auth requirements.
+
 ## [1.2.1] - 2026-02-25
 
 ### Fixed

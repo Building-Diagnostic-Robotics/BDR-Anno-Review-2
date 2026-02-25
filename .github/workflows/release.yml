@@ -33,6 +33,11 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Force public npm registry resolution
+        run: |
+          pnpm config set registry https://registry.npmjs.org/
+          pnpm config set @tauri-apps:registry https://registry.npmjs.org/
+          pnpm config set always-auth false
       - name: Install frontend dependencies
         run: pnpm --dir frontend install --frozen-lockfile=false
       - name: Build frontend assets
@@ -88,6 +93,11 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev
+      - name: Force public npm registry resolution
+        run: |
+          pnpm config set registry https://registry.npmjs.org/
+          pnpm config set @tauri-apps:registry https://registry.npmjs.org/
+          pnpm config set always-auth false
       - name: Install frontend dependencies
         run: pnpm --dir frontend install --frozen-lockfile=false
       - name: Build frontend assets
