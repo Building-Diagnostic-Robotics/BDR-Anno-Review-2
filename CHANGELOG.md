@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-02-25
+
+### Changed
+- Added a pre-editor warmup flow that prefetches an initial portion of LLM suggestions before entering the editing dashboard, with visible progress messaging and an explicit "Enter now" bypass to preserve workflow control.
+- Added a bounded warmup timeout policy so editor entry remains non-blocking when suggestion generation is slow, while logging explicit diagnostics when the warmup threshold is not met in time.
+
+### Fixed
+- Improved secure-key missing-entry detection for keyring backends by treating broader "credential missing" variants (including "No matching entry found in secure storage") as "not configured" rather than surfacing keychain status errors.
+- Improved settings-save UX by surfacing save failures directly in the LLM settings modal and disabling the Save action while requests are in-flight to prevent silent no-op behavior.
+
+### Added
+- Added Rust unit-test coverage for secure-key missing-entry classification variants.
+- Added frontend tests for settings-save failure/in-flight UX and editor warmup skip/failure/timeout behavior.
+
 ### Changed
 - Reworked MP4 extraction batching to use bounded select-filter chunks for large frame sets instead of full-video temporary decode dumps, reducing temporary disk spikes while preserving deterministic frame-to-index mapping guards and fail-loud diagnostics.
 - Added a bounded review-render worker pool that automatically caps concurrency by available CPU and a configurable memory budget (`BDR_REVIEW_MEMORY_BUDGET_MB`, `BDR_REVIEW_MAX_RENDER_WORKERS`) to prevent runaway RAM growth on large equirectangular source frames.

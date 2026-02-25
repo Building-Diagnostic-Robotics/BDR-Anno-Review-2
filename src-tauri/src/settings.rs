@@ -149,8 +149,8 @@ fn load_key(username: &str, provider: &str) -> Result<Option<String>, String> {
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(source) => {
-            let text = source.to_string().to_lowercase();
-            if text.contains("no entry") || text.contains("not found") {
+            let text = source.to_string();
+            if is_missing_key_error(&text) {
                 Ok(None)
             } else {
                 Err(format!(
@@ -159,6 +159,15 @@ fn load_key(username: &str, provider: &str) -> Result<Option<String>, String> {
             }
         }
     }
+}
+
+fn is_missing_key_error(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    normalized.contains("no entry")
+        || normalized.contains("not found")
+        || normalized.contains("no matching entry")
+        || normalized.contains("no such item")
+        || normalized.contains("cannot find")
 }
 
 fn set_key(username: &str, value: &str) -> Result<(), String> {
@@ -309,7 +318,10 @@ pub fn clear_provider_key(request: ClearProviderKeyRequest) -> Result<(), String
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_provider_selection, LlmProviderSettings, SaveLlmSettingsRequest};
+    use super::{
+        is_missing_key_error, validate_provider_selection, LlmProviderSettings,
+        SaveLlmSettingsRequest,
+    };
 
     fn base_request() -> SaveLlmSettingsRequest {
         SaveLlmSettingsRequest {
@@ -360,5 +372,18 @@ mod tests {
 
         let result = validate_provider_selection(&request);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn missing_key_classifier_handles_secure_storage_variants() {
+        assert!(is_missing_key_error("No entry found"));
+        assert!(is_missing_key_error("credential not found"));
+        assert!(is_missing_key_error(
+            "No matching entry found in secure storage"
+        ));
+        assert!(is_missing_key_error("No such item in keychain"));
+        assert!(is_missing_key_error("Cannot find the credential"));
+        assert!(!is_missing_key_error("keychain is locked"));
+        assert!(!is_missing_key_error("permission denied"));
     }
 }

@@ -137,8 +137,8 @@ beforeEach(() => {
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
   mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.2", suggestions: [], attempts: 1 });
-  mocks.prefetchSuggestions.mockResolvedValue({ items: [] });
-  mocks.getSuggestionQueueState.mockResolvedValue({ items: [] });
+  mocks.prefetchSuggestions.mockResolvedValue({ items: [{ faceId: "face-1", status: "queued" }, { faceId: "face-2", status: "queued" }] });
+  mocks.getSuggestionQueueState.mockResolvedValue({ items: [{ faceId: "face-1", status: "ready" }, { faceId: "face-2", status: "ready" }] });
   mocks.saveLlmSettings.mockResolvedValue({
     llmSuggestionsEnabled: true,
     reasoningPreset: "high",
@@ -406,6 +406,55 @@ describe("face switching and save concurrency", () => {
 });
 
 
+
+describe("editor warmup", () => {
+  it("requests warmup prefetch before entering editor", async () => {
+    mocks.getSuggestionQueueState.mockResolvedValue({ items: [{ faceId: "face-1", status: "ready" }, { faceId: "face-2", status: "queued" }] });
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(mocks.prefetchSuggestions).toHaveBeenCalled();
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    });
+  });
+
+  it("continues to editor when warmup prefetch fails", async () => {
+    mocks.prefetchSuggestions.mockRejectedValueOnce(new Error("prefetch down"));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    });
+  });
+
+  it("enters editor when warmup times out", async () => {
+    mocks.getSuggestionQueueState.mockResolvedValue({ items: [{ faceId: "face-1", status: "queued" }, { faceId: "face-2", status: "queued" }] });
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    }, { timeout: 9000 });
+  });
+});
+
 describe("settings modal", () => {
   it("disables save when suggestions are enabled and provider is disabled", async () => {
     render(<App />);
@@ -458,6 +507,46 @@ describe("settings modal", () => {
     expect(await screen.findByText(/OpenAI key status unavailable/i)).toBeTruthy();
   });
 
+
+  it("shows save errors when settings save is rejected", async () => {
+    mocks.saveLlmSettings.mockRejectedValueOnce(new Error("keychain unavailable"));
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText(/Failed to save settings: Error: keychain unavailable/i)).toBeTruthy();
+  });
+
+  it("disables save while settings save is in flight", async () => {
+    let resolveSave: () => void = () => undefined;
+    mocks.saveLlmSettings.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveSave = () => resolve({
+          llmSuggestionsEnabled: true,
+          reasoningPreset: "high",
+          prefetchBufferSize: 12,
+          openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: false },
+          anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+        });
+      })
+    );
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+    const saveButton = await screen.findByRole("button", { name: "Save" });
+    fireEvent.click(saveButton);
+
+    expect(await screen.findByRole("button", { name: "Saving…" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement).disabled).toBe(true);
+
+    resolveSave();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    });
+  });
   it("closes settings modal on Escape", async () => {
     render(<App />);
 

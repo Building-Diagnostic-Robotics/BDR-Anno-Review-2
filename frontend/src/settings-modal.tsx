@@ -33,6 +33,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
   const [showAnthropicKey, setShowAnthropicKey] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<"openai" | "anthropic" | "none">(
     seed.openai.enabled ? "openai" : seed.anthropic.enabled ? "anthropic" : "none"
   );
@@ -79,6 +81,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
     setShowAnthropicKey(false);
     setShowAdvanced(false);
     setSaveFeedback("");
+    setSaveError("");
+    setIsSaving(false);
     setSelectedProvider(seed.openai.enabled ? "openai" : seed.anthropic.enabled ? "anthropic" : "none");
   }, [seed]);
 
@@ -251,7 +255,9 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            onClick={() =>
+            onClick={() => {
+              setIsSaving(true);
+              setSaveError("");
               void onSave({
                 llmSuggestionsEnabled,
                 reasoningPreset,
@@ -260,25 +266,35 @@ export function LlmSettingsModal({ initial, onClose, onSave, onClearProviderKey 
                 anthropic: { enabled: selectedProvider === "anthropic", model: anthropicModel },
                 openaiApiKey: openaiApiKey || undefined,
                 anthropicApiKey: anthropicApiKey || undefined,
-              }).then(() => {
-                const updatedProviders = [
-                  openaiApiKey.trim() ? "OpenAI" : "",
-                  anthropicApiKey.trim() ? "Anthropic" : "",
-                ].filter(Boolean);
-                setSaveFeedback(
-                  updatedProviders.length > 0
-                    ? `${updatedProviders.join(" and ")} key${updatedProviders.length > 1 ? "s" : ""} updated.`
-                    : "Settings saved."
-                );
               })
-            }
-            disabled={Boolean(providerValidation)}
+                .then(() => {
+                  const updatedProviders = [
+                    openaiApiKey.trim() ? "OpenAI" : "",
+                    anthropicApiKey.trim() ? "Anthropic" : "",
+                  ].filter(Boolean);
+                  setSaveFeedback(
+                    updatedProviders.length > 0
+                      ? `${updatedProviders.join(" and ")} key${updatedProviders.length > 1 ? "s" : ""} updated.`
+                      : "Settings saved."
+                  );
+                  setSaveError("");
+                })
+                .catch((cause) => {
+                  setSaveFeedback("");
+                  setSaveError(String(cause));
+                })
+                .finally(() => {
+                  setIsSaving(false);
+                });
+            }}
+            disabled={Boolean(providerValidation) || isSaving}
           >
-            Save
+            {isSaving ? "Saving…" : "Save"}
           </Button>
           <Button variant="outlined" onClick={onClose}>Close</Button>
         </div>
         {saveFeedback ? <p className="mt-3 text-xs text-emerald-300">{saveFeedback}</p> : null}
+        {saveError ? <p className="mt-3 text-xs text-rose-300">Failed to save settings: {saveError}</p> : null}
         <p className="mt-3 text-xs text-anno-text-muted">Effective config: {llmSuggestionsEnabled ? "Suggestions enabled" : "Suggestions disabled"}, {preset} profile.</p>
       </div>
     </div>
