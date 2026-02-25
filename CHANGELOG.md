@@ -7,8 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-02-25
+
 ### Fixed
-- Forced CI/release frontend dependency installation to use the public npm registry for default and `@tauri-apps` scopes, switched `pnpm/action-setup` to standalone install mode, and pinned frontend-local npm registry settings in `frontend/.npmrc` so install-time package fetches cannot inherit auth-gated runner registry defaults, preventing CI `ERR_PNPM_FETCH_403` failures.
+- Fixed GitHub Actions pnpm bootstrap reliability by ensuring repository-root `.npmrc` registry settings are present before `pnpm/action-setup@v4` self-installer runs, preventing Windows `@pnpm/exe` `ERR_PNPM_FETCH_403` failures caused by auth-gated inherited runner defaults.
+- Corrected release notes wording to reflect that `standalone: true` still fetches `@pnpm/exe` from npm registry and therefore still depends on registry reachability/auth policy.
+
+### Changed
+- Deduplicated frontend toolchain setup across CI and release workflows by introducing a shared composite action (`.github/actions/setup-frontend-toolchain`) used by CI checks, release checks, and release build matrix jobs so pnpm setup hardening remains consistent across Linux and Windows paths.
 
 ## [1.2.1] - 2026-02-25
 

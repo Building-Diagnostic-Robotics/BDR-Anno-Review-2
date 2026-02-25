@@ -1,0 +1,40 @@
+name: Setup frontend toolchain
+description: Configure npm registry defaults, install pnpm, and install Node.js for frontend tasks.
+
+inputs:
+  node-version:
+    description: Node.js version to install.
+    required: false
+    default: "20"
+  pnpm-version:
+    description: pnpm version to install.
+    required: false
+    default: "9"
+  cache-dependency-path:
+    description: Lockfile path used for setup-node cache key.
+    required: false
+    default: frontend/pnpm-lock.yaml
+
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+        standalone: true
+
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+    - name: Force public npm registry resolution
+      shell: bash
+      run: |
+        set -euo pipefail
+        pnpm config set registry https://registry.npmjs.org/
+        pnpm config set @tauri-apps:registry https://registry.npmjs.org/
+        pnpm config set always-auth false
