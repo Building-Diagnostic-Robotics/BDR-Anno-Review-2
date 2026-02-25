@@ -1,7 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::thread;
-use std::time::Duration;
 
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
@@ -11,8 +9,6 @@ const SETTINGS_FILE: &str = "llm-settings.json";
 const KEYRING_SERVICE: &str = "bdr-anno-review";
 const OPENAI_USER: &str = "openai_api_key";
 const ANTHROPIC_USER: &str = "anthropic_api_key";
-const VERIFY_READBACK_ATTEMPTS: usize = 4;
-const VERIFY_READBACK_DELAY_MS: u64 = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,14 +53,19 @@ pub struct SaveLlmSettingsRequest {
     pub prefetch_buffer_size: usize,
     pub openai: LlmProviderSettings,
     pub anthropic: LlmProviderSettings,
-    pub openai_api_key: Option<String>,
-    pub anthropic_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClearProviderKeyRequest {
+pub struct ProviderKeyRequest {
     pub provider: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetProviderKeyRequest {
+    pub provider: String,
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,9 +73,7 @@ pub struct ClearProviderKeyRequest {
 pub struct LlmProviderSettingsResponse {
     pub enabled: bool,
     pub model: String,
-    pub api_key_configured: bool,
-    pub masked_key_preview: Option<String>,
-    pub api_key_status_error: Option<String>,
+    pub has_key: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,21 +84,6 @@ pub struct LlmSettingsResponse {
     pub prefetch_buffer_size: usize,
     pub openai: LlmProviderSettingsResponse,
     pub anthropic: LlmProviderSettingsResponse,
-}
-
-fn mask_key(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.len() <= 8 {
-        return Some("••••••••".to_owned());
-    }
-    Some(format!(
-        "{}...{}",
-        &trimmed[0..4],
-        &trimmed[trimmed.len() - 4..]
-    ))
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -185,62 +169,6 @@ fn set_key(username: &str, value: &str) -> Result<(), String> {
         .map_err(|source| format!("failed to persist secure key: {source}"))
 }
 
-fn verify_saved_key_readback<F>(
-    provider: &str,
-    expected: &str,
-    attempts: usize,
-    mut read: F,
-) -> Result<(), String>
-where
-    F: FnMut() -> Result<String, keyring::Error>,
-{
-    let max_attempts = attempts.max(1);
-    let mut saw_no_entry = false;
-
-    for attempt in 1..=max_attempts {
-        match read() {
-            Ok(readback) if readback == expected => return Ok(()),
-            Ok(_) => {
-                return Err(format!(
-                    "{provider} key save verification failed: readback value does not match written key"
-                ))
-            }
-            Err(error) if is_missing_key_error(&error) => {
-                saw_no_entry = true;
-                if attempt < max_attempts {
-                    thread::sleep(Duration::from_millis(VERIFY_READBACK_DELAY_MS));
-                    continue;
-                }
-            }
-            Err(error) => {
-                return Err(format!(
-                    "{provider} key save verification failed during keychain readback: {error}"
-                ))
-            }
-        }
-    }
-
-    if saw_no_entry {
-        return Err(format!(
-            "{provider} key save verification failed: key missing after immediate keychain readback retries"
-        ));
-    }
-
-    Err(format!(
-        "{provider} key save verification failed: exhausted readback retries"
-    ))
-}
-
-fn verify_saved_key_with_retry(
-    entry: &Entry,
-    provider: &str,
-    expected: &str,
-) -> Result<(), String> {
-    verify_saved_key_readback(provider, expected, VERIFY_READBACK_ATTEMPTS, || {
-        entry.get_password()
-    })
-}
-
 fn clear_key(username: &str) -> Result<(), String> {
     let entry = Entry::new(KEYRING_SERVICE, username).map_err(|source| source.to_string())?;
     match entry.delete_credential() {
@@ -266,14 +194,8 @@ pub fn anthropic_key() -> Result<Option<String>, String> {
 
 pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, String> {
     let settings = load_settings(app)?;
-    let (openai_key, openai_key_status_error) = match openai_key() {
-        Ok(value) => (value, None),
-        Err(error) => (None, Some(error)),
-    };
-    let (anthropic_key, anthropic_key_status_error) = match anthropic_key() {
-        Ok(value) => (value, None),
-        Err(error) => (None, Some(error)),
-    };
+    let openai_has_key = openai_key()?.is_some();
+    let anthropic_has_key = anthropic_key()?.is_some();
 
     Ok(LlmSettingsResponse {
         llm_suggestions_enabled: settings.llm_suggestions_enabled,
@@ -282,27 +204,26 @@ pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, Str
         openai: LlmProviderSettingsResponse {
             enabled: settings.openai.enabled,
             model: settings.openai.model,
-            api_key_configured: openai_key.is_some(),
-            masked_key_preview: openai_key.and_then(|key| mask_key(&key)),
-            api_key_status_error: openai_key_status_error,
+            has_key: openai_has_key,
         },
         anthropic: LlmProviderSettingsResponse {
             enabled: settings.anthropic.enabled,
             model: settings.anthropic.model,
-            api_key_configured: anthropic_key.is_some(),
-            masked_key_preview: anthropic_key.and_then(|key| mask_key(&key)),
-            api_key_status_error: anthropic_key_status_error,
+            has_key: anthropic_has_key,
         },
     })
 }
 
-fn validate_provider_selection(request: &SaveLlmSettingsRequest) -> Result<(), String> {
-    if !request.llm_suggestions_enabled {
+fn validate_provider_selection(
+    llm_suggestions_enabled: bool,
+    openai_enabled: bool,
+    anthropic_enabled: bool,
+) -> Result<(), String> {
+    if !llm_suggestions_enabled {
         return Ok(());
     }
 
-    let provider_count =
-        usize::from(request.openai.enabled) + usize::from(request.anthropic.enabled);
+    let provider_count = usize::from(openai_enabled) + usize::from(anthropic_enabled);
     if provider_count == 0 {
         return Err(
             "LLM suggestions are enabled but no provider is enabled. Enable OpenAI or Anthropic, or disable suggestions."
@@ -319,10 +240,7 @@ fn validate_provider_selection(request: &SaveLlmSettingsRequest) -> Result<(), S
     Ok(())
 }
 
-pub fn save_settings_request(
-    app: &AppHandle,
-    request: SaveLlmSettingsRequest,
-) -> Result<LlmSettingsResponse, String> {
+fn validate_llm_settings_request(request: &SaveLlmSettingsRequest) -> Result<(), String> {
     if request.reasoning_preset != "high"
         && request.reasoning_preset != "balanced"
         && request.reasoning_preset != "low"
@@ -337,28 +255,18 @@ pub fn save_settings_request(
         return Err("Anthropic model is required".to_owned());
     }
 
-    validate_provider_selection(&request)?;
+    validate_provider_selection(
+        request.llm_suggestions_enabled,
+        request.openai.enabled,
+        request.anthropic.enabled,
+    )
+}
 
-    if let Some(key) = request.openai_api_key.as_deref() {
-        if !key.trim().is_empty() {
-            let trimmed_key = key.trim();
-            set_key(OPENAI_USER, trimmed_key)?;
-            let entry = Entry::new(KEYRING_SERVICE, OPENAI_USER).map_err(|source| {
-                format!("failed to create secure key entry for OpenAI: {source}")
-            })?;
-            verify_saved_key_with_retry(&entry, "OpenAI", trimmed_key)?;
-        }
-    }
-    if let Some(key) = request.anthropic_api_key.as_deref() {
-        if !key.trim().is_empty() {
-            let trimmed_key = key.trim();
-            set_key(ANTHROPIC_USER, trimmed_key)?;
-            let entry = Entry::new(KEYRING_SERVICE, ANTHROPIC_USER).map_err(|source| {
-                format!("failed to create secure key entry for Anthropic: {source}")
-            })?;
-            verify_saved_key_with_retry(&entry, "Anthropic", trimmed_key)?;
-        }
-    }
+pub fn save_settings_request(
+    app: &AppHandle,
+    request: SaveLlmSettingsRequest,
+) -> Result<LlmSettingsResponse, String> {
+    validate_llm_settings_request(&request)?;
 
     let settings = LlmSettings {
         llm_suggestions_enabled: request.llm_suggestions_enabled,
@@ -372,7 +280,7 @@ pub fn save_settings_request(
     get_settings_response(app)
 }
 
-pub fn clear_provider_key(request: ClearProviderKeyRequest) -> Result<(), String> {
+pub fn clear_provider_key(request: ProviderKeyRequest) -> Result<(), String> {
     match request.provider.as_str() {
         "openai" => clear_key(OPENAI_USER),
         "anthropic" => clear_key(ANTHROPIC_USER),
@@ -380,75 +288,41 @@ pub fn clear_provider_key(request: ClearProviderKeyRequest) -> Result<(), String
     }
 }
 
+pub fn set_provider_key(request: SetProviderKeyRequest) -> Result<(), String> {
+    let api_key = request.api_key.trim();
+    if api_key.is_empty() {
+        return Err("apiKey is required".to_owned());
+    }
+
+    match request.provider.as_str() {
+        "openai" => set_key(OPENAI_USER, api_key),
+        "anthropic" => set_key(ANTHROPIC_USER, api_key),
+        _ => Err("provider must be `openai` or `anthropic`".to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_missing_key_error, validate_provider_selection, verify_saved_key_readback,
-        LlmProviderSettings, SaveLlmSettingsRequest,
-    };
+    use super::{is_missing_key_error, validate_provider_selection};
     use keyring::Error;
-
-    fn run_readback_sequence(
-        provider: &str,
-        expected: &str,
-        reads: Vec<Result<String, Error>>,
-    ) -> Result<(), String> {
-        let mut reads = reads.into_iter();
-        verify_saved_key_readback(provider, expected, 4, || {
-            reads
-                .next()
-                .unwrap_or_else(|| Err(Error::PlatformFailure("read sequence exhausted".into())))
-        })
-    }
-
-    fn base_request() -> SaveLlmSettingsRequest {
-        SaveLlmSettingsRequest {
-            llm_suggestions_enabled: true,
-            reasoning_preset: "balanced".to_owned(),
-            prefetch_buffer_size: 8,
-            openai: LlmProviderSettings {
-                enabled: true,
-                model: "gpt-5.2".to_owned(),
-            },
-            anthropic: LlmProviderSettings {
-                enabled: false,
-                model: "claude-sonnet-4-6".to_owned(),
-            },
-            openai_api_key: None,
-            anthropic_api_key: None,
-        }
-    }
 
     #[test]
     fn provider_selection_rejects_none_enabled_with_suggestions() {
-        let mut request = base_request();
-        request.openai.enabled = false;
-        request.anthropic.enabled = false;
-
-        let error = validate_provider_selection(&request)
+        let error = validate_provider_selection(true, false, false)
             .expect_err("expected provider validation to fail");
         assert!(error.contains("no provider is enabled"));
     }
 
     #[test]
     fn provider_selection_rejects_multiple_enabled_with_suggestions() {
-        let mut request = base_request();
-        request.openai.enabled = true;
-        request.anthropic.enabled = true;
-
-        let error = validate_provider_selection(&request)
+        let error = validate_provider_selection(true, true, true)
             .expect_err("expected provider validation to fail");
         assert!(error.contains("exactly one enabled provider"));
     }
 
     #[test]
     fn provider_selection_allows_none_enabled_when_suggestions_disabled() {
-        let mut request = base_request();
-        request.llm_suggestions_enabled = false;
-        request.openai.enabled = false;
-        request.anthropic.enabled = false;
-
-        let result = validate_provider_selection(&request);
+        let result = validate_provider_selection(false, false, false);
         assert!(result.is_ok());
     }
 
@@ -482,73 +356,5 @@ mod tests {
         assert!(!is_missing_key_error(&Error::PlatformFailure(
             "No such object path '/org/freedesktop/secrets/collection/login'".into()
         )));
-    }
-
-    #[test]
-    fn readback_verification_succeeds_on_immediate_match() {
-        let result = run_readback_sequence("OpenAI", "sk-test", vec![Ok("sk-test".to_owned())]);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn readback_verification_fails_on_mismatch() {
-        let result = run_readback_sequence("OpenAI", "sk-test", vec![Ok("sk-other".to_owned())])
-            .expect_err("expected mismatch failure");
-        assert!(result.contains("readback value does not match written key"));
-    }
-
-    #[test]
-    fn readback_verification_retries_no_entry_then_succeeds() {
-        let result = run_readback_sequence(
-            "OpenAI",
-            "sk-test",
-            vec![
-                Err(Error::NoEntry),
-                Err(Error::NoEntry),
-                Ok("sk-test".to_owned()),
-            ],
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn readback_verification_retries_platform_missing_key_then_succeeds() {
-        let result = run_readback_sequence(
-            "OpenAI",
-            "sk-test",
-            vec![
-                Err(Error::PlatformFailure("No entry found".into())),
-                Ok("sk-test".to_owned()),
-            ],
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn readback_verification_fails_after_exhausted_no_entry_retries() {
-        let result = run_readback_sequence(
-            "OpenAI",
-            "sk-test",
-            vec![
-                Err(Error::NoEntry),
-                Err(Error::NoEntry),
-                Err(Error::NoEntry),
-                Err(Error::NoEntry),
-            ],
-        )
-        .expect_err("expected exhausted no-entry failure");
-        assert!(result.contains("key missing after immediate keychain readback retries"));
-    }
-
-    #[test]
-    fn readback_verification_propagates_non_no_entry_backend_errors() {
-        let result = run_readback_sequence(
-            "OpenAI",
-            "sk-test",
-            vec![Err(Error::PlatformFailure("keychain is locked".into()))],
-        )
-        .expect_err("expected backend readback failure");
-        assert!(result.contains("during keychain readback"));
-        assert!(result.contains("keychain is locked"));
     }
 }

@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-02-25
+
+### Changed
+- Simplified LLM settings persistence by removing API key fields from save requests and writing only non-secret provider/model/preset settings to `llm-settings.json`.
+- Simplified LLM settings response shape to report only non-secret provider config plus per-provider key presence (`hasKey`) without masked previews or keychain status metadata.
+- Added dedicated backend key-management commands for setting and clearing provider API keys so credentials stay in OS keyring operations separate from settings JSON writes.
+- Updated the settings modal to show key presence (`Present`/`Not set`) and explicit `Set key`/`Clear key` actions, while keeping Save focused on non-secret settings only.
+- Updated runtime suggestion generation to fail fast with friendly missing-key guidance when the enabled provider has no configured API key.
+
+### Removed
+- Removed immediate keychain readback verification/retry logic after key writes, including the corresponding settings-save failure path tied to immediate post-write keychain visibility.
+
 ## [1.2.3] - 2026-02-25
 
 ### Fixed

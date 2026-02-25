@@ -20,7 +20,8 @@ use llm::{
 };
 use settings::{
     anthropic_key, clear_provider_key, get_settings_response, load_settings, openai_key,
-    save_settings_request, ClearProviderKeyRequest, LlmSettingsResponse, SaveLlmSettingsRequest,
+    save_settings_request, set_provider_key, LlmSettingsResponse, ProviderKeyRequest,
+    SaveLlmSettingsRequest, SetProviderKeyRequest,
 };
 
 use engine::{
@@ -1272,8 +1273,13 @@ fn save_llm_settings_command(
 }
 
 #[tauri::command]
-fn clear_provider_key_command(request: ClearProviderKeyRequest) -> Result<(), String> {
+fn clear_llm_api_key_command(request: ProviderKeyRequest) -> Result<(), String> {
     clear_provider_key(request)
+}
+
+#[tauri::command]
+fn set_llm_api_key_command(request: SetProviderKeyRequest) -> Result<(), String> {
+    set_provider_key(request)
 }
 
 fn load_manifest(dataset_root: &str) -> Result<ViewManifest, String> {
@@ -1346,9 +1352,17 @@ fn generate_and_cache_suggestion(
         let face = get_face_by_id(&request.dataset_root, &request.face_id)?;
 
         let (openai_api_key, anthropic_api_key) = if settings.openai.enabled {
-            (openai_key()?, None)
+            let key = openai_key()?;
+            if key.is_none() {
+                return Err("No API key configured for OpenAI. Add it in Settings.".to_owned());
+            }
+            (key, None)
         } else if settings.anthropic.enabled {
-            (None, anthropic_key()?)
+            let key = anthropic_key()?;
+            if key.is_none() {
+                return Err("No API key configured for Anthropic. Add it in Settings.".to_owned());
+            }
+            (None, key)
         } else {
             (None, None)
         };
@@ -1684,7 +1698,8 @@ fn main() {
             check_runtime_dependencies_command,
             get_llm_settings_command,
             save_llm_settings_command,
-            clear_provider_key_command,
+            clear_llm_api_key_command,
+            set_llm_api_key_command,
             get_suggestions_command,
             prefetch_suggestions_command,
             get_suggestion_queue_state_command,
