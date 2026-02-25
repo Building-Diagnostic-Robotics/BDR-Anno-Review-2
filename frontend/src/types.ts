@@ -142,9 +142,7 @@ export type ReasoningPreset = "high" | "balanced" | "low";
 export type ProviderSettings = {
   enabled: boolean;
   model: string;
-  apiKeyConfigured: boolean;
-  maskedKeyPreview?: string;
-  apiKeyStatusError?: string;
+  hasKey: boolean;
 };
 
 export type LlmSettingsResponse = {
@@ -161,8 +159,11 @@ export type SaveLlmSettingsRequest = {
   prefetchBufferSize: number;
   openai: { enabled: boolean; model: string };
   anthropic: { enabled: boolean; model: string };
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
+};
+
+export type SetLlmApiKeyRequest = {
+  provider: LlmProviderId;
+  apiKey: string;
 };
 
 export type SuggestionBox = {

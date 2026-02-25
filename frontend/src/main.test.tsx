@@ -37,7 +37,8 @@ const mocks = vi.hoisted(() => ({
   getSuggestionQueueState: vi.fn(),
   prefetchSuggestions: vi.fn(),
   saveLlmSettings: vi.fn(),
-  clearProviderKey: vi.fn(),
+  setLlmApiKey: vi.fn(),
+  clearLlmApiKey: vi.fn(),
   setAnnotations: vi.fn(async (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) => edits),
   exportCoco: vi.fn(),
 }));
@@ -52,7 +53,8 @@ vi.mock("./api", () => ({
   stageDroppedInputs: mocks.stageDroppedInputs,
   getLlmSettings: mocks.getLlmSettings,
   saveLlmSettings: mocks.saveLlmSettings,
-  clearProviderKey: mocks.clearProviderKey,
+  setLlmApiKey: mocks.setLlmApiKey,
+  clearLlmApiKey: mocks.clearLlmApiKey,
   getSuggestions: mocks.getSuggestions,
   prefetchSuggestions: mocks.prefetchSuggestions,
   getSuggestionQueueState: mocks.getSuggestionQueueState,
@@ -131,8 +133,8 @@ beforeEach(() => {
     llmSuggestionsEnabled: true,
     reasoningPreset: "high",
     prefetchBufferSize: 12,
-    openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: false },
-    anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+    openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+    anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
@@ -143,8 +145,8 @@ beforeEach(() => {
     llmSuggestionsEnabled: true,
     reasoningPreset: "high",
     prefetchBufferSize: 12,
-    openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: false },
-    anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+    openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+    anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
 
   mocks.startGenerateReviewDataset.mockClear();
@@ -157,7 +159,7 @@ beforeEach(() => {
   mocks.prefetchSuggestions.mockClear();
   mocks.getSuggestionQueueState.mockClear();
   mocks.saveLlmSettings.mockClear();
-  mocks.clearProviderKey.mockClear();
+  mocks.clearLlmApiKey.mockClear();
 });
 
 describe("workflow pages", () => {
@@ -468,45 +470,22 @@ describe("settings modal", () => {
   });
 
 
-  it("shows explicit key saved status text", async () => {
+  it("shows key presence status text", async () => {
     mocks.getLlmSettings.mockResolvedValueOnce({
       llmSuggestionsEnabled: true,
       reasoningPreset: "high",
       prefetchBufferSize: 12,
-      openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: true, maskedKeyPreview: "sk-a...1234" },
-      anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+      openai: { enabled: true, model: "gpt-5.2", hasKey: true },
+      anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
     });
 
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
 
-    expect(await screen.findByText(/OpenAI key saved/i)).toBeTruthy();
-    expect(screen.getByText(/sk-a\.\.\.1234/)).toBeTruthy();
-    expect(screen.getByText(/No Anthropic key saved/i)).toBeTruthy();
+    expect(await screen.findByText(/OpenAI key: Present/i)).toBeTruthy();
+    expect(screen.getByText(/Anthropic key: Not set/i)).toBeTruthy();
   });
-
-  it("shows key status warning when provider key verification fails", async () => {
-    mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true,
-      reasoningPreset: "high",
-      prefetchBufferSize: 12,
-      openai: {
-        enabled: true,
-        model: "gpt-5.2",
-        apiKeyConfigured: false,
-        apiKeyStatusError: "failed to read secure key for OpenAI",
-      },
-      anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
-    });
-
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-
-    expect(await screen.findByText(/OpenAI key status unavailable/i)).toBeTruthy();
-  });
-
 
   it("shows save errors when settings save is rejected", async () => {
     mocks.saveLlmSettings.mockRejectedValueOnce(new Error("keychain unavailable"));
@@ -516,7 +495,7 @@ describe("settings modal", () => {
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Save" }));
 
-    expect(await screen.findByText(/Failed to save settings: Error: keychain unavailable/i)).toBeTruthy();
+    expect(await screen.findByText(/Failed to update settings: Error: keychain unavailable/i)).toBeTruthy();
   });
 
   it("disables save while settings save is in flight", async () => {
@@ -527,8 +506,8 @@ describe("settings modal", () => {
           llmSuggestionsEnabled: true,
           reasoningPreset: "high",
           prefetchBufferSize: 12,
-          openai: { enabled: true, model: "gpt-5.2", apiKeyConfigured: false },
-          anthropic: { enabled: false, model: "claude-sonnet-4-6", apiKeyConfigured: false },
+          openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+          anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
         });
       })
     );

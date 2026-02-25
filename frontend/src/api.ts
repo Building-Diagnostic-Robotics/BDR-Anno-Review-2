@@ -21,6 +21,7 @@ import type {
   LlmProviderId,
   StartGenerationResponse,
   AbortGenerationResponse,
+  SetLlmApiKeyRequest,
 } from "./types";
 
 const normalizeInboundEdit = (edit: AnnotationEdit | Record<string, unknown>): AnnotationEdit => {
@@ -120,8 +121,11 @@ export const getLlmSettings = async () => invoke<LlmSettingsResponse>("get_llm_s
 export const saveLlmSettings = async (request: SaveLlmSettingsRequest) =>
   invoke<LlmSettingsResponse>("save_llm_settings_command", { request });
 
-export const clearProviderKey = async (provider: LlmProviderId) =>
-  invoke<void>("clear_provider_key_command", { request: { provider } });
+export const setLlmApiKey = async (request: SetLlmApiKeyRequest) =>
+  invoke<void>("set_llm_api_key_command", { request });
+
+export const clearLlmApiKey = async (provider: LlmProviderId) =>
+  invoke<void>("clear_llm_api_key_command", { request: { provider } });
 
 export const getSuggestions = async (datasetRoot: string, faceId: string, timeoutMs?: number) =>
   invoke<SuggestionResponse>("get_suggestions_command", {

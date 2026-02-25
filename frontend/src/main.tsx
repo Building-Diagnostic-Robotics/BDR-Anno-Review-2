@@ -18,7 +18,8 @@ import {
   stageDroppedInputs,
   getLlmSettings,
   saveLlmSettings,
-  clearProviderKey,
+  setLlmApiKey,
+  clearLlmApiKey,
   getSuggestions,
   prefetchSuggestions,
   getSuggestionQueueState,
@@ -1352,9 +1353,15 @@ export function App() {
             setLlmSettings(response);
             updateDiagnostics("Settings saved", "");
           }}
-          onClearProviderKey={async (provider) => {
-            await clearProviderKey(provider);
+          onSetProviderKey={async (provider, apiKey) => {
+            await setLlmApiKey({ provider, apiKey });
             await refreshLlmSettings();
+            updateDiagnostics("API key updated", provider);
+          }}
+          onClearProviderKey={async (provider) => {
+            await clearLlmApiKey(provider);
+            await refreshLlmSettings();
+            updateDiagnostics("API key cleared", provider);
           }}
         />
       ) : null}
