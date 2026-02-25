@@ -192,10 +192,23 @@ pub fn anthropic_key() -> Result<Option<String>, String> {
     load_key(ANTHROPIC_USER, "Anthropic")
 }
 
+fn has_key_from_lookup(lookup: Result<Option<String>, String>, provider: &str) -> bool {
+    match lookup {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(error) => {
+            eprintln!(
+                "warning: failed to read {provider} API key from secure storage; reporting hasKey=false: {error}"
+            );
+            false
+        }
+    }
+}
+
 pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, String> {
     let settings = load_settings(app)?;
-    let openai_has_key = openai_key()?.is_some();
-    let anthropic_has_key = anthropic_key()?.is_some();
+    let openai_has_key = has_key_from_lookup(openai_key(), "OpenAI");
+    let anthropic_has_key = has_key_from_lookup(anthropic_key(), "Anthropic");
 
     Ok(LlmSettingsResponse {
         llm_suggestions_enabled: settings.llm_suggestions_enabled,
@@ -303,7 +316,7 @@ pub fn set_provider_key(request: SetProviderKeyRequest) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_missing_key_error, validate_provider_selection};
+    use super::{has_key_from_lookup, is_missing_key_error, validate_provider_selection};
     use keyring::Error;
 
     #[test]
@@ -356,5 +369,15 @@ mod tests {
         assert!(!is_missing_key_error(&Error::PlatformFailure(
             "No such object path '/org/freedesktop/secrets/collection/login'".into()
         )));
+    }
+
+    #[test]
+    fn has_key_from_lookup_treats_failures_as_not_set() {
+        assert!(has_key_from_lookup(Ok(Some("token".to_owned())), "OpenAI"));
+        assert!(!has_key_from_lookup(Ok(None), "OpenAI"));
+        assert!(!has_key_from_lookup(
+            Err("keychain temporarily unavailable".to_owned()),
+            "OpenAI"
+        ));
     }
 }

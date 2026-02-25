@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Prevented keyring backend read failures from aborting LLM settings reads by treating secure-key lookup errors as `hasKey=false` (with warning diagnostics), so non-secret settings remain loadable when keychain services are temporarily unavailable.
+
 ## [1.2.4] - 2026-02-25
 
 ### Changed
