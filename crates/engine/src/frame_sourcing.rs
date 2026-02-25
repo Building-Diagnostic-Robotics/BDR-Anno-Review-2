@@ -345,6 +345,7 @@ fn command_for_tool(tool: &str) -> Command {
 }
 
 const SELECT_EXPRESSION_MAX_FRAMES: usize = 1000;
+const SELECT_EXPRESSION_CHUNK_SIZE: usize = 500;
 
 struct CommandRunOutput {
     status: ExitStatus,
@@ -428,6 +429,72 @@ where
     pending.sort_by_key(|(frame_index, _)| *frame_index);
     let total_pending = pending.len();
     let selected_hwaccel = choose_hwaccel_mode(ffmpeg_bin, mp4_path, hwaccel_mode)?;
+    if should_cancel() {
+        return Err(EngineError::Cancelled("frame extraction"));
+    }
+
+    if pending.len() <= SELECT_EXPRESSION_MAX_FRAMES {
+        extract_frames_via_select(
+            ffmpeg_bin,
+            mp4_path,
+            &pending,
+            selected_hwaccel.as_deref(),
+            SelectBatchProgress {
+                total_pending,
+                completed_before_batch: 0,
+            },
+            on_progress,
+            should_cancel,
+        )?;
+    } else {
+        for (batch_index, batch) in pending.chunks(SELECT_EXPRESSION_CHUNK_SIZE).enumerate() {
+            let completed_before_batch = batch_index * SELECT_EXPRESSION_CHUNK_SIZE;
+            extract_frames_via_select(
+                ffmpeg_bin,
+                mp4_path,
+                batch,
+                selected_hwaccel.as_deref(),
+                SelectBatchProgress {
+                    total_pending,
+                    completed_before_batch,
+                },
+                on_progress,
+                should_cancel,
+            )?;
+        }
+    }
+
+    Ok(skipped_existing_count)
+}
+
+struct SelectBatchProgress {
+    total_pending: usize,
+    completed_before_batch: usize,
+}
+
+fn extract_frames_via_select<F, C>(
+    ffmpeg_bin: &str,
+    mp4_path: &Path,
+    pending: &[(u64, PathBuf)],
+    selected_hwaccel: Option<&str>,
+    progress: SelectBatchProgress,
+    on_progress: &mut F,
+    should_cancel: &C,
+) -> Result<(), EngineError>
+where
+    F: FnMut(usize, usize, &str),
+    C: Fn() -> bool,
+{
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let select_filter = pending
+        .iter()
+        .map(|(frame_index, _)| format!(r"eq(n\,{frame_index})"))
+        .collect::<Vec<String>>()
+        .join("+");
+
     let extraction_dir = pending[0]
         .1
         .parent()
@@ -436,174 +503,96 @@ where
         })?
         .to_path_buf();
 
-    if should_cancel() {
-        return Err(EngineError::Cancelled("frame extraction"));
+    let temp_batch_dir = extraction_dir.join(format!(
+        ".ffmpeg_batch_tmp_select_{}_{}",
+        progress.completed_before_batch,
+        pending.len()
+    ));
+    if temp_batch_dir.exists() {
+        fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+            path: temp_batch_dir.display().to_string(),
+            reason: format!("could not reset temporary frame extraction directory: {source}"),
+        })?;
+    }
+    fs::create_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+        path: temp_batch_dir.display().to_string(),
+        reason: format!("could not create temporary frame extraction directory: {source}"),
+    })?;
+
+    let mut ffmpeg_command = command_for_tool(ffmpeg_bin);
+    if let Some(hwaccel) = selected_hwaccel {
+        ffmpeg_command.arg("-hwaccel").arg(hwaccel);
+    }
+    ffmpeg_command
+        .arg("-v")
+        .arg("error")
+        .arg("-nostdin")
+        .arg("-i")
+        .arg(mp4_path)
+        .arg("-vf")
+        .arg(format!("select={select_filter}"))
+        .arg("-vsync")
+        .arg("0")
+        .arg("-start_number")
+        .arg("0")
+        .arg("-y")
+        .arg(temp_batch_dir.join("frame_%06d.png"));
+    let ffmpeg_output = run_command_with_cancel(ffmpeg_command, should_cancel, "frame extraction")?;
+
+    if !ffmpeg_output.status.success() {
+        return Err(EngineError::UnreadableFile {
+            path: mp4_path.display().to_string(),
+            reason: format!(
+                "ffmpeg failed to extract frames: {}",
+                String::from_utf8_lossy(&ffmpeg_output.stderr)
+            ),
+        });
     }
 
-    if pending.len() <= SELECT_EXPRESSION_MAX_FRAMES {
-        let select_filter = pending
-            .iter()
-            .map(|(frame_index, _)| format!(r"eq(n\,{frame_index})"))
-            .collect::<Vec<String>>()
-            .join("+");
-
-        let temp_batch_dir = extraction_dir.join(".ffmpeg_batch_tmp_select");
-        if temp_batch_dir.exists() {
-            fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
-                path: temp_batch_dir.display().to_string(),
-                reason: format!("could not reset temporary frame extraction directory: {source}"),
-            })?;
-        }
-        fs::create_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+    let mut extracted = fs::read_dir(&temp_batch_dir)
+        .map_err(|source| EngineError::UnreadableFile {
             path: temp_batch_dir.display().to_string(),
-            reason: format!("could not create temporary frame extraction directory: {source}"),
-        })?;
+            reason: format!("could not enumerate extracted frames: {source}"),
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
+        .collect::<Vec<PathBuf>>();
+    extracted.sort();
 
-        let mut ffmpeg_command = command_for_tool(ffmpeg_bin);
-        if let Some(hwaccel) = selected_hwaccel.as_deref() {
-            ffmpeg_command.arg("-hwaccel").arg(hwaccel);
-        }
-        ffmpeg_command
-            .arg("-v")
-            .arg("error")
-            .arg("-nostdin")
-            .arg("-i")
-            .arg(mp4_path)
-            .arg("-vf")
-            .arg(format!("select={select_filter}"))
-            .arg("-vsync")
-            .arg("0")
-            .arg("-start_number")
-            .arg("0")
-            .arg("-y")
-            .arg(temp_batch_dir.join("frame_%06d.png"));
-        let ffmpeg_output =
-            run_command_with_cancel(ffmpeg_command, should_cancel, "frame extraction")?;
+    if extracted.len() != pending.len() {
+        let _ = fs::remove_dir_all(&temp_batch_dir);
+        return Err(EngineError::UnreadableFile {
+            path: mp4_path.display().to_string(),
+            reason: format!(
+                "ffmpeg produced {} frame file(s) for {} requested frame index(es); extraction was aborted to avoid misaligned frame-to-index mapping",
+                extracted.len(),
+                pending.len()
+            ),
+        });
+    }
 
-        if !ffmpeg_output.status.success() {
-            return Err(EngineError::UnreadableFile {
-                path: mp4_path.display().to_string(),
-                reason: format!(
-                    "ffmpeg failed to extract frames: {}",
-                    String::from_utf8_lossy(&ffmpeg_output.stderr)
-                ),
-            });
-        }
-
-        let mut extracted = fs::read_dir(&temp_batch_dir)
-            .map_err(|source| EngineError::UnreadableFile {
-                path: temp_batch_dir.display().to_string(),
-                reason: format!("could not enumerate extracted frames: {source}"),
-            })?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("png"))
-            .collect::<Vec<PathBuf>>();
-        extracted.sort();
-
-        if extracted.len() != pending.len() {
+    for (idx, (extracted_path, (_, output_path))) in
+        extracted.iter().zip(pending.iter()).enumerate()
+    {
+        if should_cancel() {
             let _ = fs::remove_dir_all(&temp_batch_dir);
-            return Err(EngineError::UnreadableFile {
-                path: mp4_path.display().to_string(),
-                reason: format!(
-                    "ffmpeg produced {} frame file(s) for {} requested frame index(es); extraction was aborted to avoid misaligned frame-to-index mapping",
-                    extracted.len(),
-                    pending.len()
-                ),
-            });
+            return Err(EngineError::Cancelled("frame extraction"));
         }
-
-        for (idx, (extracted_path, (_, output_path))) in
-            extracted.iter().zip(pending.iter()).enumerate()
-        {
-            if should_cancel() {
-                let _ = fs::remove_dir_all(&temp_batch_dir);
-                return Err(EngineError::Cancelled("frame extraction"));
-            }
-            fs::rename(extracted_path, output_path).map_err(|source| {
-                EngineError::UnreadableFile {
-                    path: output_path.display().to_string(),
-                    reason: format!("could not materialize extracted frame file: {source}"),
-                }
-            })?;
-            on_progress(idx + 1, total_pending.max(1), "extracting");
-        }
-        fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
-            path: temp_batch_dir.display().to_string(),
-            reason: format!("could not clean temporary frame extraction directory: {source}"),
+        fs::rename(extracted_path, output_path).map_err(|source| EngineError::UnreadableFile {
+            path: output_path.display().to_string(),
+            reason: format!("could not materialize extracted frame file: {source}"),
         })?;
-    } else {
-        let temp_batch_dir = extraction_dir.join(".ffmpeg_batch_tmp_full_decode");
-        if temp_batch_dir.exists() {
-            fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
-                path: temp_batch_dir.display().to_string(),
-                reason: format!("could not reset temporary frame extraction directory: {source}"),
-            })?;
-        }
-        fs::create_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
-            path: temp_batch_dir.display().to_string(),
-            reason: format!("could not create temporary frame extraction directory: {source}"),
-        })?;
-
-        let mut ffmpeg_command = command_for_tool(ffmpeg_bin);
-        if let Some(hwaccel) = selected_hwaccel.as_deref() {
-            ffmpeg_command.arg("-hwaccel").arg(hwaccel);
-        }
-        ffmpeg_command
-            .arg("-v")
-            .arg("error")
-            .arg("-nostdin")
-            .arg("-i")
-            .arg(mp4_path)
-            .arg("-vsync")
-            .arg("0")
-            .arg("-start_number")
-            .arg("0")
-            .arg("-y")
-            .arg(temp_batch_dir.join("frame_%06d.png"));
-        let ffmpeg_output =
-            run_command_with_cancel(ffmpeg_command, should_cancel, "frame extraction")?;
-
-        if !ffmpeg_output.status.success() {
-            return Err(EngineError::UnreadableFile {
-                path: mp4_path.display().to_string(),
-                reason: format!(
-                    "ffmpeg failed to extract frames: {}",
-                    String::from_utf8_lossy(&ffmpeg_output.stderr)
-                ),
-            });
-        }
-
-        for (idx, (frame_index, output_path)) in pending.iter().enumerate() {
-            if should_cancel() {
-                let _ = fs::remove_dir_all(&temp_batch_dir);
-                return Err(EngineError::Cancelled("frame extraction"));
-            }
-            let extracted_path = temp_batch_dir.join(format!("frame_{:06}.png", frame_index));
-            if !extracted_path.is_file() {
-                return Err(EngineError::UnreadableFile {
-                    path: mp4_path.display().to_string(),
-                    reason: format!(
-                        "ffmpeg did not produce output for frame index {frame_index}; frame may be outside MP4 bounds"
-                    ),
-                });
-            }
-            fs::rename(&extracted_path, output_path).map_err(|source| {
-                EngineError::UnreadableFile {
-                    path: output_path.display().to_string(),
-                    reason: format!("could not materialize extracted frame file: {source}"),
-                }
-            })?;
-            on_progress(idx + 1, total_pending.max(1), "extracting");
-        }
-
-        fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
-            path: temp_batch_dir.display().to_string(),
-            reason: format!("could not clean temporary frame extraction directory: {source}"),
-        })?;
+        let done = progress.completed_before_batch + idx + 1;
+        on_progress(done, progress.total_pending.max(1), "extracting");
     }
 
-    Ok(skipped_existing_count)
+    fs::remove_dir_all(&temp_batch_dir).map_err(|source| EngineError::UnreadableFile {
+        path: temp_batch_dir.display().to_string(),
+        reason: format!("could not clean temporary frame extraction directory: {source}"),
+    })?;
+
+    Ok(())
 }
 
 fn choose_hwaccel_mode(

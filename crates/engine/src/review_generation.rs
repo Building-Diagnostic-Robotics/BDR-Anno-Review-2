@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ImageBuffer, ImageEncoder, Rgba};
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use serde::Deserialize;
 
 use crate::{
@@ -16,6 +17,9 @@ use crate::{
 };
 
 const RAW_FRAMES_DIR: &str = "raw_frames";
+const MIN_RENDER_MEMORY_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_RENDER_MEMORY_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const DEFAULT_RENDER_MEMORY_BUDGET_FRACTION: f64 = 0.35;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenerateReviewDatasetOptions {
@@ -290,118 +294,133 @@ where
         progress_cb(0, total_work.max(1), "rendering");
     }
 
+    let render_worker_count =
+        determine_render_worker_count(&referenced_image_ids, &images_by_id, render_size)?;
     let cancelled = AtomicBool::new(false);
-    let results: Vec<ParallelImageResult> = referenced_image_ids
-        .par_iter()
-        .map(|image_id| -> Result<ParallelImageResult, EngineError> {
-            if cancelled.load(Ordering::Relaxed) || should_cancel() {
-                cancelled.store(true, Ordering::Relaxed);
-                return Err(EngineError::Cancelled("review rendering"));
-            }
+    let render_pool = ThreadPoolBuilder::new()
+        .num_threads(render_worker_count)
+        .build()
+        .map_err(|source| {
+            EngineError::InvalidConfiguration(format!(
+                "could not create review rendering worker pool: {source}"
+            ))
+        })?;
 
-            let source_image = images_by_id
-                .get(image_id)
-                .expect("referenced image should have been validated");
-            let source_frame_path = resolve_source_frame_path(
-                &manifest.inputs.frames_source,
-                &source_frames_dir,
-                source_image,
-                *image_id,
-            )?;
-            ensure_file(&source_frame_path, "source frame")?;
-
-            let source_annotations = annotations_by_image_id
-                .get(image_id)
-                .expect("referenced image annotations should exist");
-
-            let decoded_source_image = image::open(&source_frame_path)
-                .map_err(|source| EngineError::UnreadableFile {
-                    path: source_frame_path.display().to_string(),
-                    reason: format!("could not read source frame image: {source}"),
-                })?
-                .to_rgba8();
-
-            let mut image_faces = Vec::new();
-            let mut filtered_box_count = 0usize;
-            let face_orientations: Vec<FaceOrientation> = render_faces
-                .iter()
-                .map(|face| face_orientation(face))
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let annotation_owner_faces: Vec<Option<usize>> = source_annotations
-                .iter()
-                .map(|annotation| owner_face_index(annotation, source_image, &face_orientations))
-                .collect();
-
-            for (face_index, face) in render_faces.iter().enumerate() {
+    let results: Vec<ParallelImageResult> = render_pool.install(|| {
+        referenced_image_ids
+            .par_iter()
+            .map(|image_id| -> Result<ParallelImageResult, EngineError> {
                 if cancelled.load(Ordering::Relaxed) || should_cancel() {
                     cancelled.store(true, Ordering::Relaxed);
                     return Err(EngineError::Cancelled("review rendering"));
                 }
 
-                let orientation = face_orientations[face_index];
-                let mut initial_boxes = Vec::new();
-                for (annotation_index, annotation) in source_annotations.iter().enumerate() {
-                    if annotation_owner_faces[annotation_index] != Some(face_index) {
-                        filtered_box_count += 1;
-                        continue;
+                let source_image = images_by_id
+                    .get(image_id)
+                    .expect("referenced image should have been validated");
+                let source_frame_path = resolve_source_frame_path(
+                    &manifest.inputs.frames_source,
+                    &source_frames_dir,
+                    source_image,
+                    *image_id,
+                )?;
+                ensure_file(&source_frame_path, "source frame")?;
+
+                let source_annotations = annotations_by_image_id
+                    .get(image_id)
+                    .expect("referenced image annotations should exist");
+
+                let decoded_source_image = image::open(&source_frame_path)
+                    .map_err(|source| EngineError::UnreadableFile {
+                        path: source_frame_path.display().to_string(),
+                        reason: format!("could not read source frame image: {source}"),
+                    })?
+                    .to_rgba8();
+
+                let mut image_faces = Vec::new();
+                let mut filtered_box_count = 0usize;
+                let face_orientations: Vec<FaceOrientation> = render_faces
+                    .iter()
+                    .map(|face| face_orientation(face))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let annotation_owner_faces: Vec<Option<usize>> = source_annotations
+                    .iter()
+                    .map(|annotation| {
+                        owner_face_index(annotation, source_image, &face_orientations)
+                    })
+                    .collect();
+
+                for (face_index, face) in render_faces.iter().enumerate() {
+                    if cancelled.load(Ordering::Relaxed) || should_cancel() {
+                        cancelled.store(true, Ordering::Relaxed);
+                        return Err(EngineError::Cancelled("review rendering"));
                     }
-                    if let Some(projected) = project_box_to_face(
-                        annotation,
-                        source_image,
-                        orientation,
-                        render_size,
-                        &projection,
-                    ) {
-                        initial_boxes.push(projected);
-                    } else {
-                        filtered_box_count += 1;
+
+                    let orientation = face_orientations[face_index];
+                    let mut initial_boxes = Vec::new();
+                    for (annotation_index, annotation) in source_annotations.iter().enumerate() {
+                        if annotation_owner_faces[annotation_index] != Some(face_index) {
+                            filtered_box_count += 1;
+                            continue;
+                        }
+                        if let Some(projected) = project_box_to_face(
+                            annotation,
+                            source_image,
+                            orientation,
+                            render_size,
+                            &projection,
+                        ) {
+                            initial_boxes.push(projected);
+                        } else {
+                            filtered_box_count += 1;
+                        }
                     }
-                }
 
-                initial_boxes.sort_by(|left, right| {
-                    left.source_annotation_id.cmp(&right.source_annotation_id)
-                });
-
-                if !initial_boxes.is_empty() {
-                    let face_id = build_face_id(
-                        *image_id,
-                        &source_image.file_name,
-                        face,
-                        render_size,
-                        &projection,
-                    );
-                    let image_file_name = format!("{face_id}.png");
-                    let face_image_path = raw_frames_dir.join(&image_file_name);
-                    render_face_projection(
-                        &decoded_source_image,
-                        &face_image_path,
-                        face,
-                        render_size,
-                        projection.horizontal_fov_degrees,
-                    )?;
-
-                    image_faces.push(FaceView {
-                        face_id,
-                        source_image_id: *image_id,
-                        face: face.clone(),
-                        image_path: format!("{RAW_FRAMES_DIR}/{image_file_name}"),
-                        initial_boxes,
+                    initial_boxes.sort_by(|left, right| {
+                        left.source_annotation_id.cmp(&right.source_annotation_id)
                     });
+
+                    if !initial_boxes.is_empty() {
+                        let face_id = build_face_id(
+                            *image_id,
+                            &source_image.file_name,
+                            face,
+                            render_size,
+                            &projection,
+                        );
+                        let image_file_name = format!("{face_id}.png");
+                        let face_image_path = raw_frames_dir.join(&image_file_name);
+                        render_face_projection(
+                            &decoded_source_image,
+                            &face_image_path,
+                            face,
+                            render_size,
+                            projection.horizontal_fov_degrees,
+                        )?;
+
+                        image_faces.push(FaceView {
+                            face_id,
+                            source_image_id: *image_id,
+                            face: face.clone(),
+                            image_path: format!("{RAW_FRAMES_DIR}/{image_file_name}"),
+                            initial_boxes,
+                        });
+                    }
+
+                    let done = completed_work.fetch_add(1, Ordering::Relaxed) + 1;
+                    let mut progress_cb = progress.lock().expect("progress callback lock poisoned");
+                    progress_cb(done, total_work.max(1), "rendering");
                 }
 
-                let done = completed_work.fetch_add(1, Ordering::Relaxed) + 1;
-                let mut progress_cb = progress.lock().expect("progress callback lock poisoned");
-                progress_cb(done, total_work.max(1), "rendering");
-            }
-
-            Ok(ParallelImageResult {
-                image_id: *image_id,
-                faces: image_faces,
-                filtered_box_count,
+                Ok(ParallelImageResult {
+                    image_id: *image_id,
+                    faces: image_faces,
+                    filtered_box_count,
+                })
             })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+    })?;
 
     let mut filtered_box_count = 0usize;
     let mut ordered_faces = Vec::new();
@@ -452,6 +471,172 @@ where
         filtered_box_count,
         written_manifest_path: manifest_path.display().to_string(),
     })
+}
+
+fn determine_render_worker_count(
+    referenced_image_ids: &[u64],
+    images_by_id: &BTreeMap<u64, SourceImage>,
+    render_size: u64,
+) -> Result<usize, EngineError> {
+    if referenced_image_ids.is_empty() {
+        return Ok(1);
+    }
+
+    let fallback_source = images_by_id.values().next().ok_or_else(|| {
+        EngineError::InvalidConfiguration("missing source images for render planning".to_owned())
+    })?;
+
+    let estimated_source_bytes = referenced_image_ids
+        .iter()
+        .filter_map(|image_id| images_by_id.get(image_id))
+        .map(estimated_source_frame_bytes)
+        .max()
+        .unwrap_or_else(|| estimated_source_frame_bytes(fallback_source));
+    let estimated_face_bytes = render_size
+        .checked_mul(render_size)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .unwrap_or(u64::MAX);
+    let per_worker_bytes = estimated_source_bytes.saturating_add(estimated_face_bytes);
+
+    let memory_budget_bytes = render_memory_budget_bytes();
+    if per_worker_bytes > memory_budget_bytes {
+        return Err(EngineError::InvalidConfiguration(format!(
+            "review rendering memory guard rejected configuration: estimated per-worker memory {} MiB exceeds configured budget {} MiB; reduce source frame dimensions or raise BDR_REVIEW_MEMORY_BUDGET_MB",
+            per_worker_bytes / (1024 * 1024),
+            memory_budget_bytes / (1024 * 1024)
+        )));
+    }
+
+    let workers_from_memory = (memory_budget_bytes / per_worker_bytes).max(1) as usize;
+    let cpu_workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let requested_cap = std::env::var("BDR_REVIEW_MAX_RENDER_WORKERS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(cpu_workers);
+
+    Ok(cpu_workers
+        .min(requested_cap)
+        .min(workers_from_memory)
+        .max(1))
+}
+
+fn estimated_source_frame_bytes(source_image: &SourceImage) -> u64 {
+    source_image
+        .width
+        .saturating_mul(source_image.height)
+        .saturating_mul(4)
+}
+
+fn render_memory_budget_bytes() -> u64 {
+    let from_env = std::env::var("BDR_REVIEW_MEMORY_BUDGET_MB")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(|mb| mb.saturating_mul(1024 * 1024));
+
+    let detected = detect_available_memory_bytes().map(|bytes| {
+        (bytes as f64 * DEFAULT_RENDER_MEMORY_BUDGET_FRACTION)
+            .round()
+            .max(MIN_RENDER_MEMORY_BUDGET_BYTES as f64) as u64
+    });
+
+    from_env.or(detected).unwrap_or(1024 * 1024 * 1024).clamp(
+        MIN_RENDER_MEMORY_BUDGET_BYTES,
+        MAX_RENDER_MEMORY_BUDGET_BYTES,
+    )
+}
+
+fn detect_available_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        detect_cgroup_available_memory_bytes().or_else(detect_meminfo_available_memory_bytes)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_cgroup_available_memory_bytes() -> Option<u64> {
+    detect_cgroup_v2_available_memory_bytes().or_else(detect_cgroup_v1_available_memory_bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_cgroup_v2_available_memory_bytes() -> Option<u64> {
+    let limit_raw = fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
+    let used_raw = fs::read_to_string("/sys/fs/cgroup/memory.current").ok()?;
+    let limit = parse_cgroup_limit_bytes(limit_raw.trim())?;
+    let used = used_raw.trim().parse::<u64>().ok()?;
+    Some(limit.saturating_sub(used))
+}
+
+#[cfg(target_os = "linux")]
+fn detect_cgroup_v1_available_memory_bytes() -> Option<u64> {
+    let cgroup = fs::read_to_string("/proc/self/cgroup").ok()?;
+    let memory_path = cgroup.lines().find_map(|line| {
+        let mut parts = line.split(':');
+        let _hierarchy = parts.next()?;
+        let controllers = parts.next()?;
+        let path = parts.next()?;
+        if controllers
+            .split(',')
+            .any(|controller| controller == "memory")
+        {
+            Some(path.trim())
+        } else {
+            None
+        }
+    })?;
+
+    let relative = memory_path.trim_start_matches('/');
+    let base = Path::new("/sys/fs/cgroup/memory");
+    let dir = if relative.is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(relative)
+    };
+
+    let limit_raw = fs::read_to_string(dir.join("memory.limit_in_bytes")).ok()?;
+    let used_raw = fs::read_to_string(dir.join("memory.usage_in_bytes")).ok()?;
+    let limit = parse_cgroup_limit_bytes(limit_raw.trim())?;
+    let used = used_raw.trim().parse::<u64>().ok()?;
+    Some(limit.saturating_sub(used))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_cgroup_limit_bytes(raw: &str) -> Option<u64> {
+    if raw == "max" {
+        return None;
+    }
+
+    let value = raw.parse::<u64>().ok()?;
+    if value == 0 || value >= u64::MAX / 2 {
+        return None;
+    }
+    Some(value)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_meminfo_available_memory_bytes() -> Option<u64> {
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    for line in meminfo.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("MemAvailable:") {
+            continue;
+        }
+
+        let parts = trimmed.split_whitespace().collect::<Vec<&str>>();
+        if parts.len() < 2 {
+            return None;
+        }
+        let value_kb = parts[1].parse::<u64>().ok()?;
+        return value_kb.checked_mul(1024);
+    }
+    None
 }
 
 fn render_face_projection(
