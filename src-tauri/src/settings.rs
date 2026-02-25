@@ -205,7 +205,7 @@ where
                     "{provider} key save verification failed: readback value does not match written key"
                 ))
             }
-            Err(error) if matches!(error, keyring::Error::NoEntry) => {
+            Err(error) if is_missing_key_error(&error) => {
                 saw_no_entry = true;
                 if attempt < max_attempts {
                     thread::sleep(Duration::from_millis(VERIFY_READBACK_DELAY_MS));
@@ -505,6 +505,19 @@ mod tests {
             vec![
                 Err(Error::NoEntry),
                 Err(Error::NoEntry),
+                Ok("sk-test".to_owned()),
+            ],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn readback_verification_retries_platform_missing_key_then_succeeds() {
+        let result = run_readback_sequence(
+            "OpenAI",
+            "sk-test",
+            vec![
+                Err(Error::PlatformFailure("No entry found".into())),
                 Ok("sk-test".to_owned()),
             ],
         );
