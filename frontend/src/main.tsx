@@ -448,7 +448,7 @@ export function App() {
           break;
         }
         if (skipWarmupRequestedRef.current) {
-          updateDiagnostics("Editor warmup skipped", `Entered editor early with ${readyCount}/${requiredReady} suggestions ready.`);
+          updateDiagnostics(`Editor warmup skipped\nEntered editor early with ${readyCount}/${requiredReady} suggestions ready.`);
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, EDITOR_WARMUP_POLL_MS));
