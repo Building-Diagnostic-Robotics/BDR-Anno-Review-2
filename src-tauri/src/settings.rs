@@ -1,5 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
 
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
@@ -9,6 +11,8 @@ const SETTINGS_FILE: &str = "llm-settings.json";
 const KEYRING_SERVICE: &str = "bdr-anno-review";
 const OPENAI_USER: &str = "openai_api_key";
 const ANTHROPIC_USER: &str = "anthropic_api_key";
+const VERIFY_READBACK_ATTEMPTS: usize = 4;
+const VERIFY_READBACK_DELAY_MS: u64 = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,6 +185,62 @@ fn set_key(username: &str, value: &str) -> Result<(), String> {
         .map_err(|source| format!("failed to persist secure key: {source}"))
 }
 
+fn verify_saved_key_readback<F>(
+    provider: &str,
+    expected: &str,
+    attempts: usize,
+    mut read: F,
+) -> Result<(), String>
+where
+    F: FnMut() -> Result<String, keyring::Error>,
+{
+    let max_attempts = attempts.max(1);
+    let mut saw_no_entry = false;
+
+    for attempt in 1..=max_attempts {
+        match read() {
+            Ok(readback) if readback == expected => return Ok(()),
+            Ok(_) => {
+                return Err(format!(
+                    "{provider} key save verification failed: readback value does not match written key"
+                ))
+            }
+            Err(error) if is_missing_key_error(&error) => {
+                saw_no_entry = true;
+                if attempt < max_attempts {
+                    thread::sleep(Duration::from_millis(VERIFY_READBACK_DELAY_MS));
+                    continue;
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "{provider} key save verification failed during keychain readback: {error}"
+                ))
+            }
+        }
+    }
+
+    if saw_no_entry {
+        return Err(format!(
+            "{provider} key save verification failed: key missing after immediate keychain readback retries"
+        ));
+    }
+
+    Err(format!(
+        "{provider} key save verification failed: exhausted readback retries"
+    ))
+}
+
+fn verify_saved_key_with_retry(
+    entry: &Entry,
+    provider: &str,
+    expected: &str,
+) -> Result<(), String> {
+    verify_saved_key_readback(provider, expected, VERIFY_READBACK_ATTEMPTS, || {
+        entry.get_password()
+    })
+}
+
 fn clear_key(username: &str) -> Result<(), String> {
     let entry = Entry::new(KEYRING_SERVICE, username).map_err(|source| source.to_string())?;
     match entry.delete_credential() {
@@ -283,52 +343,20 @@ pub fn save_settings_request(
         if !key.trim().is_empty() {
             let trimmed_key = key.trim();
             set_key(OPENAI_USER, trimmed_key)?;
-            match openai_key() {
-                Ok(Some(readback)) if readback == trimmed_key => {}
-                Ok(Some(_)) => {
-                    return Err(
-                        "OpenAI key save verification failed: readback value does not match written key"
-                            .to_owned(),
-                    )
-                }
-                Ok(None) => {
-                    return Err(
-                        "OpenAI key save verification failed: key missing on immediate keychain readback"
-                            .to_owned(),
-                    )
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "OpenAI key save verification failed during keychain readback: {error}"
-                    ))
-                }
-            }
+            let entry = Entry::new(KEYRING_SERVICE, OPENAI_USER).map_err(|source| {
+                format!("failed to create secure key entry for OpenAI: {source}")
+            })?;
+            verify_saved_key_with_retry(&entry, "OpenAI", trimmed_key)?;
         }
     }
     if let Some(key) = request.anthropic_api_key.as_deref() {
         if !key.trim().is_empty() {
             let trimmed_key = key.trim();
             set_key(ANTHROPIC_USER, trimmed_key)?;
-            match anthropic_key() {
-                Ok(Some(readback)) if readback == trimmed_key => {}
-                Ok(Some(_)) => {
-                    return Err(
-                        "Anthropic key save verification failed: readback value does not match written key"
-                            .to_owned(),
-                    )
-                }
-                Ok(None) => {
-                    return Err(
-                        "Anthropic key save verification failed: key missing on immediate keychain readback"
-                            .to_owned(),
-                    )
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "Anthropic key save verification failed during keychain readback: {error}"
-                    ))
-                }
-            }
+            let entry = Entry::new(KEYRING_SERVICE, ANTHROPIC_USER).map_err(|source| {
+                format!("failed to create secure key entry for Anthropic: {source}")
+            })?;
+            verify_saved_key_with_retry(&entry, "Anthropic", trimmed_key)?;
         }
     }
 
@@ -355,10 +383,23 @@ pub fn clear_provider_key(request: ClearProviderKeyRequest) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::{
-        is_missing_key_error, validate_provider_selection, LlmProviderSettings,
-        SaveLlmSettingsRequest,
+        is_missing_key_error, validate_provider_selection, verify_saved_key_readback,
+        LlmProviderSettings, SaveLlmSettingsRequest,
     };
     use keyring::Error;
+
+    fn run_readback_sequence(
+        provider: &str,
+        expected: &str,
+        reads: Vec<Result<String, Error>>,
+    ) -> Result<(), String> {
+        let mut reads = reads.into_iter();
+        verify_saved_key_readback(provider, expected, 4, || {
+            reads
+                .next()
+                .unwrap_or_else(|| Err(Error::PlatformFailure("read sequence exhausted".into())))
+        })
+    }
 
     fn base_request() -> SaveLlmSettingsRequest {
         SaveLlmSettingsRequest {
@@ -441,5 +482,73 @@ mod tests {
         assert!(!is_missing_key_error(&Error::PlatformFailure(
             "No such object path '/org/freedesktop/secrets/collection/login'".into()
         )));
+    }
+
+    #[test]
+    fn readback_verification_succeeds_on_immediate_match() {
+        let result = run_readback_sequence("OpenAI", "sk-test", vec![Ok("sk-test".to_owned())]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn readback_verification_fails_on_mismatch() {
+        let result = run_readback_sequence("OpenAI", "sk-test", vec![Ok("sk-other".to_owned())])
+            .expect_err("expected mismatch failure");
+        assert!(result.contains("readback value does not match written key"));
+    }
+
+    #[test]
+    fn readback_verification_retries_no_entry_then_succeeds() {
+        let result = run_readback_sequence(
+            "OpenAI",
+            "sk-test",
+            vec![
+                Err(Error::NoEntry),
+                Err(Error::NoEntry),
+                Ok("sk-test".to_owned()),
+            ],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn readback_verification_retries_platform_missing_key_then_succeeds() {
+        let result = run_readback_sequence(
+            "OpenAI",
+            "sk-test",
+            vec![
+                Err(Error::PlatformFailure("No entry found".into())),
+                Ok("sk-test".to_owned()),
+            ],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn readback_verification_fails_after_exhausted_no_entry_retries() {
+        let result = run_readback_sequence(
+            "OpenAI",
+            "sk-test",
+            vec![
+                Err(Error::NoEntry),
+                Err(Error::NoEntry),
+                Err(Error::NoEntry),
+                Err(Error::NoEntry),
+            ],
+        )
+        .expect_err("expected exhausted no-entry failure");
+        assert!(result.contains("key missing after immediate keychain readback retries"));
+    }
+
+    #[test]
+    fn readback_verification_propagates_non_no_entry_backend_errors() {
+        let result = run_readback_sequence(
+            "OpenAI",
+            "sk-test",
+            vec![Err(Error::PlatformFailure("keychain is locked".into()))],
+        )
+        .expect_err("expected backend readback failure");
+        assert!(result.contains("during keychain readback"));
+        assert!(result.contains("keychain is locked"));
     }
 }

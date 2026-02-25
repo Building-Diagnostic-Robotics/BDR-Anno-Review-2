@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-02-25
+
+### Fixed
+- Hardened LLM key-save verification by adding bounded immediate-readback retries to handle transient keychain visibility delays after write, while preserving explicit failure diagnostics when verification does not converge.
+- Split post-write credential verification from general "key configured" lookup semantics so save verification now distinguishes structured missing-entry (`NoEntry`) from backend read failures instead of collapsing platform errors into generic missing-key outcomes.
+- Added Rust unit-test coverage for key-save readback verification branches (match, mismatch, transient missing-entry recovery, exhausted retries, and backend read errors) to prevent regressions in settings save behavior.
+
 ## [1.2.2] - 2026-02-25
 
 ### Fixed
