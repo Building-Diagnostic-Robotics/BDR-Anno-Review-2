@@ -149,8 +149,7 @@ fn load_key(username: &str, provider: &str) -> Result<Option<String>, String> {
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(source) => {
-            let text = source.to_string();
-            if is_missing_key_error(&text) {
+            if is_missing_key_error(&source) {
                 Ok(None)
             } else {
                 Err(format!(
@@ -161,13 +160,18 @@ fn load_key(username: &str, provider: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn is_missing_key_error(text: &str) -> bool {
+fn is_missing_key_error(error: &keyring::Error) -> bool {
+    if matches!(error, keyring::Error::NoEntry) {
+        return true;
+    }
+
+    let text = error.to_string();
     let normalized = text.to_lowercase();
     normalized.contains("no entry")
-        || normalized.contains("not found")
-        || normalized.contains("no matching entry")
-        || normalized.contains("no such item")
-        || normalized.contains("cannot find")
+        || normalized.contains("credential not found")
+        || normalized.contains("no matching entry found")
+        || normalized.contains("no such item in keychain")
+        || normalized.contains("cannot find the credential")
 }
 
 fn set_key(username: &str, value: &str) -> Result<(), String> {
@@ -277,21 +281,53 @@ pub fn save_settings_request(
 
     if let Some(key) = request.openai_api_key.as_deref() {
         if !key.trim().is_empty() {
-            set_key(OPENAI_USER, key.trim())?;
-            if openai_key()?.is_none() {
-                return Err(
-                    "OpenAI key save could not be verified via keychain readback".to_owned(),
-                );
+            let trimmed_key = key.trim();
+            set_key(OPENAI_USER, trimmed_key)?;
+            match openai_key() {
+                Ok(Some(readback)) if readback == trimmed_key => {}
+                Ok(Some(_)) => {
+                    return Err(
+                        "OpenAI key save verification failed: readback value does not match written key"
+                            .to_owned(),
+                    )
+                }
+                Ok(None) => {
+                    return Err(
+                        "OpenAI key save verification failed: key missing on immediate keychain readback"
+                            .to_owned(),
+                    )
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "OpenAI key save verification failed during keychain readback: {error}"
+                    ))
+                }
             }
         }
     }
     if let Some(key) = request.anthropic_api_key.as_deref() {
         if !key.trim().is_empty() {
-            set_key(ANTHROPIC_USER, key.trim())?;
-            if anthropic_key()?.is_none() {
-                return Err(
-                    "Anthropic key save could not be verified via keychain readback".to_owned(),
-                );
+            let trimmed_key = key.trim();
+            set_key(ANTHROPIC_USER, trimmed_key)?;
+            match anthropic_key() {
+                Ok(Some(readback)) if readback == trimmed_key => {}
+                Ok(Some(_)) => {
+                    return Err(
+                        "Anthropic key save verification failed: readback value does not match written key"
+                            .to_owned(),
+                    )
+                }
+                Ok(None) => {
+                    return Err(
+                        "Anthropic key save verification failed: key missing on immediate keychain readback"
+                            .to_owned(),
+                    )
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Anthropic key save verification failed during keychain readback: {error}"
+                    ))
+                }
             }
         }
     }
@@ -322,6 +358,7 @@ mod tests {
         is_missing_key_error, validate_provider_selection, LlmProviderSettings,
         SaveLlmSettingsRequest,
     };
+    use keyring::Error;
 
     fn base_request() -> SaveLlmSettingsRequest {
         SaveLlmSettingsRequest {
@@ -376,14 +413,33 @@ mod tests {
 
     #[test]
     fn missing_key_classifier_handles_secure_storage_variants() {
-        assert!(is_missing_key_error("No entry found"));
-        assert!(is_missing_key_error("credential not found"));
-        assert!(is_missing_key_error(
-            "No matching entry found in secure storage"
-        ));
-        assert!(is_missing_key_error("No such item in keychain"));
-        assert!(is_missing_key_error("Cannot find the credential"));
-        assert!(!is_missing_key_error("keychain is locked"));
-        assert!(!is_missing_key_error("permission denied"));
+        assert!(is_missing_key_error(&Error::NoEntry));
+        assert!(is_missing_key_error(&Error::PlatformFailure(
+            "No entry found".into()
+        )));
+        assert!(is_missing_key_error(&Error::PlatformFailure(
+            "credential not found".into()
+        )));
+        assert!(is_missing_key_error(&Error::PlatformFailure(
+            "No matching entry found in secure storage".into()
+        )));
+        assert!(is_missing_key_error(&Error::PlatformFailure(
+            "No such item in keychain".into()
+        )));
+        assert!(is_missing_key_error(&Error::PlatformFailure(
+            "Cannot find the credential".into()
+        )));
+        assert!(!is_missing_key_error(&Error::PlatformFailure(
+            "keychain is locked".into()
+        )));
+        assert!(!is_missing_key_error(&Error::PlatformFailure(
+            "permission denied".into()
+        )));
+        assert!(!is_missing_key_error(&Error::PlatformFailure(
+            "secret service not found".into()
+        )));
+        assert!(!is_missing_key_error(&Error::PlatformFailure(
+            "No such object path '/org/freedesktop/secrets/collection/login'".into()
+        )));
     }
 }
