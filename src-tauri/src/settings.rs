@@ -10,6 +10,17 @@ const KEYRING_SERVICE: &str = "bdr-anno-review";
 const OPENAI_USER: &str = "openai_api_key";
 const ANTHROPIC_USER: &str = "anthropic_api_key";
 
+const DEFAULT_EDITOR_WARMUP_THRESHOLD_RATIO: f64 = 0.4;
+const DEFAULT_EDITOR_WARMUP_TIMEOUT_MS: u64 = 15_000;
+
+fn default_editor_warmup_threshold_ratio() -> f64 {
+    DEFAULT_EDITOR_WARMUP_THRESHOLD_RATIO
+}
+
+fn default_editor_warmup_timeout_ms() -> u64 {
+    DEFAULT_EDITOR_WARMUP_TIMEOUT_MS
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmProviderSettings {
@@ -23,6 +34,10 @@ pub struct LlmSettings {
     pub llm_suggestions_enabled: bool,
     pub reasoning_preset: String,
     pub prefetch_buffer_size: usize,
+    #[serde(default = "default_editor_warmup_threshold_ratio")]
+    pub editor_warmup_threshold_ratio: f64,
+    #[serde(default = "default_editor_warmup_timeout_ms")]
+    pub editor_warmup_timeout_ms: u64,
     pub openai: LlmProviderSettings,
     pub anthropic: LlmProviderSettings,
 }
@@ -33,6 +48,8 @@ impl Default for LlmSettings {
             llm_suggestions_enabled: true,
             reasoning_preset: "high".to_owned(),
             prefetch_buffer_size: 12,
+            editor_warmup_threshold_ratio: DEFAULT_EDITOR_WARMUP_THRESHOLD_RATIO,
+            editor_warmup_timeout_ms: DEFAULT_EDITOR_WARMUP_TIMEOUT_MS,
             openai: LlmProviderSettings {
                 enabled: true,
                 model: "gpt-5.2".to_owned(),
@@ -51,6 +68,10 @@ pub struct SaveLlmSettingsRequest {
     pub llm_suggestions_enabled: bool,
     pub reasoning_preset: String,
     pub prefetch_buffer_size: usize,
+    #[serde(default = "default_editor_warmup_threshold_ratio")]
+    pub editor_warmup_threshold_ratio: f64,
+    #[serde(default = "default_editor_warmup_timeout_ms")]
+    pub editor_warmup_timeout_ms: u64,
     pub openai: LlmProviderSettings,
     pub anthropic: LlmProviderSettings,
 }
@@ -82,6 +103,10 @@ pub struct LlmSettingsResponse {
     pub llm_suggestions_enabled: bool,
     pub reasoning_preset: String,
     pub prefetch_buffer_size: usize,
+    #[serde(default = "default_editor_warmup_threshold_ratio")]
+    pub editor_warmup_threshold_ratio: f64,
+    #[serde(default = "default_editor_warmup_timeout_ms")]
+    pub editor_warmup_timeout_ms: u64,
     pub openai: LlmProviderSettingsResponse,
     pub anthropic: LlmProviderSettingsResponse,
 }
@@ -216,6 +241,8 @@ pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, Str
         llm_suggestions_enabled: settings.llm_suggestions_enabled,
         reasoning_preset: settings.reasoning_preset,
         prefetch_buffer_size: settings.prefetch_buffer_size,
+        editor_warmup_threshold_ratio: settings.editor_warmup_threshold_ratio,
+        editor_warmup_timeout_ms: settings.editor_warmup_timeout_ms,
         openai: LlmProviderSettingsResponse {
             enabled: settings.openai.enabled,
             model: settings.openai.model,
@@ -263,6 +290,14 @@ fn validate_llm_settings_request(request: &SaveLlmSettingsRequest) -> Result<(),
         return Err("reasoningPreset must be one of high, balanced, low".to_owned());
     }
 
+    if !(0.1..=1.0).contains(&request.editor_warmup_threshold_ratio) {
+        return Err("editorWarmupThresholdRatio must be between 0.1 and 1.0".to_owned());
+    }
+
+    if request.editor_warmup_timeout_ms < 2_000 || request.editor_warmup_timeout_ms > 60_000 {
+        return Err("editorWarmupTimeoutMs must be between 2000 and 60000".to_owned());
+    }
+
     if request.openai.model.trim().is_empty() {
         return Err("OpenAI model is required".to_owned());
     }
@@ -287,6 +322,8 @@ pub fn save_settings_request(
         llm_suggestions_enabled: request.llm_suggestions_enabled,
         reasoning_preset: request.reasoning_preset,
         prefetch_buffer_size: request.prefetch_buffer_size.clamp(1, 32),
+        editor_warmup_threshold_ratio: request.editor_warmup_threshold_ratio.clamp(0.1, 1.0),
+        editor_warmup_timeout_ms: request.editor_warmup_timeout_ms.clamp(2_000, 60_000),
         openai: request.openai,
         anthropic: request.anthropic,
     };

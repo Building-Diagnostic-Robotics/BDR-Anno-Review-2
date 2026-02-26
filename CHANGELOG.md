@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-02-26
+
+### Added
+- Separated LLM suggestion controls from editable annotation controls in the editor UI, including suggestion list actions to add individual boxes, apply all suggestions, or replace current editable boxes with confirmation.
+- Added visual suggestion overlays on canvas with distinct dashed styling and hover-highlight state independent from editable box active state.
+- Added append-only diagnostics logging with timestamped structured entries, scope/level tagging, queue-state metadata, and terminal actions to copy/clear logs.
+- Added advanced LLM settings controls for editor warmup threshold ratio and warmup timeout (ms).
+
+### Changed
+- Increased frontend warmup timeout baseline and introduced timeout-extension refresh on incremental warmup progress.
+- Expanded warmup messaging with target counts, required threshold, and queue-state breakdown (ready/queued/in-flight/failed/unseen), plus retry/continue controls.
+- Converted background suggestion buffering into live polling prefetch behavior so face suggestions continue queuing/processing while reviewers work.
+
+### Fixed
+- Added an editor informational banner after warmup timeout to clearly indicate background suggestion processing is still active.
+- Added explicit diagnostics for suggestion fetch success/failure including provider, model, attempts, and suggestion counts.
+
 ## [1.2.8] - 2026-02-26
 
 ### Fixed

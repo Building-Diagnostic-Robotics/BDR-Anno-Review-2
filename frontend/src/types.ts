@@ -149,6 +149,8 @@ export type LlmSettingsResponse = {
   llmSuggestionsEnabled: boolean;
   reasoningPreset: ReasoningPreset;
   prefetchBufferSize: number;
+  editorWarmupThresholdRatio: number;
+  editorWarmupTimeoutMs: number;
   openai: ProviderSettings;
   anthropic: ProviderSettings;
 };
@@ -157,6 +159,8 @@ export type SaveLlmSettingsRequest = {
   llmSuggestionsEnabled: boolean;
   reasoningPreset: ReasoningPreset;
   prefetchBufferSize: number;
+  editorWarmupThresholdRatio: number;
+  editorWarmupTimeoutMs: number;
   openai: { enabled: boolean; model: string };
   anthropic: { enabled: boolean; model: string };
 };

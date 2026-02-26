@@ -17,6 +17,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
         llmSuggestionsEnabled: true,
         reasoningPreset: "high" as ReasoningPreset,
         prefetchBufferSize: 12,
+        editorWarmupThresholdRatio: 0.4,
+        editorWarmupTimeoutMs: 15000,
         openai: { enabled: true, model: "gpt-5.2", hasKey: false },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       },
@@ -26,6 +28,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
   const [llmSuggestionsEnabled, setLlmSuggestionsEnabled] = useState(seed.llmSuggestionsEnabled);
   const [reasoningPreset, setReasoningPreset] = useState<ReasoningPreset>(seed.reasoningPreset);
   const [prefetchBufferSize, setPrefetchBufferSize] = useState(seed.prefetchBufferSize);
+  const [editorWarmupThresholdRatio, setEditorWarmupThresholdRatio] = useState(seed.editorWarmupThresholdRatio);
+  const [editorWarmupTimeoutMs, setEditorWarmupTimeoutMs] = useState(seed.editorWarmupTimeoutMs);
   const [openaiModel, setOpenaiModel] = useState(seed.openai.model);
   const [anthropicModel, setAnthropicModel] = useState(seed.anthropic.model);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -71,6 +75,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
     setLlmSuggestionsEnabled(seed.llmSuggestionsEnabled);
     setReasoningPreset(seed.reasoningPreset);
     setPrefetchBufferSize(seed.prefetchBufferSize);
+    setEditorWarmupThresholdRatio(seed.editorWarmupThresholdRatio);
+    setEditorWarmupTimeoutMs(seed.editorWarmupTimeoutMs);
     setOpenaiModel(seed.openai.model);
     setAnthropicModel(seed.anthropic.model);
     setShowAdvanced(false);
@@ -242,6 +248,14 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
               <Field label="Prefetch buffer size">
                 <input className={inputClassName} type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
               </Field>
+
+              <Field label="Editor warmup threshold ratio" hint="Fraction of prefetched faces that must be ready before auto-entering editor.">
+                <input className={inputClassName} type="number" min={0.1} max={1} step={0.1} value={editorWarmupThresholdRatio} onChange={(e) => setEditorWarmupThresholdRatio(Number(e.target.value))} />
+              </Field>
+
+              <Field label="Editor warmup timeout (ms)" hint="Base timeout; extended briefly when ready-count increases.">
+                <input className={inputClassName} type="number" min={2000} max={60000} step={500} value={editorWarmupTimeoutMs} onChange={(e) => setEditorWarmupTimeoutMs(Number(e.target.value))} />
+              </Field>
             </>
           ) : null}
         </section>
@@ -257,6 +271,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
                 llmSuggestionsEnabled,
                 reasoningPreset,
                 prefetchBufferSize,
+                editorWarmupThresholdRatio,
+                editorWarmupTimeoutMs,
                 openai: { enabled: selectedProvider === "openai", model: openaiModel },
                 anthropic: { enabled: selectedProvider === "anthropic", model: anthropicModel },
               })

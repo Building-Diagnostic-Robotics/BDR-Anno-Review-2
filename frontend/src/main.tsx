@@ -43,8 +43,10 @@ const nowIso = () => new Date().toISOString();
 const AUTOSAVE_DEBOUNCE_MS = 1000;
 const TUTORIAL_STORAGE_KEY = "bdr.editor.tutorialCollapsed";
 const EDITOR_WARMUP_THRESHOLD_RATIO = 0.4;
-const EDITOR_WARMUP_TIMEOUT_MS = 6000;
+const EDITOR_WARMUP_TIMEOUT_MS = 15000;
 const EDITOR_WARMUP_POLL_MS = 300;
+const EDITOR_WARMUP_TIMEOUT_REFRESH_MS = 2500;
+const BACKGROUND_PREFETCH_POLL_MS = 1400;
 
 type ImageViewport = {
   naturalWidth: number;
@@ -57,6 +59,24 @@ type PointerMode = "idle" | "draw" | "move" | "resize";
 type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "aborting" | "done";
 type AppPage = "home" | "editor" | "export";
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
+type DiagnosticLevel = "info" | "warn" | "error";
+type DiagnosticScope = "general" | "warmup" | "prefetch" | "suggestion-fetch" | "save" | "generation";
+
+type DiagnosticLogEntry = {
+  timestamp: string;
+  level: DiagnosticLevel;
+  scope: DiagnosticScope;
+  message: string;
+  metadata?: string;
+};
+
+type QueueStatusSummary = {
+  unseen: number;
+  queued: number;
+  inFlight: number;
+  ready: number;
+  failed: number;
+};
 
 const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   const normalizedRoot = datasetRoot.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -66,6 +86,22 @@ const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
   }
   return `${normalizedRoot}/${normalizedPath}`;
 };
+
+const emptyQueueSummary = (): QueueStatusSummary => ({ unseen: 0, queued: 0, inFlight: 0, ready: 0, failed: 0 });
+
+const summarizeQueueState = (items: { status: string }[]): QueueStatusSummary => {
+  const summary = emptyQueueSummary();
+  for (const item of items) {
+    if (item.status === "queued") summary.queued += 1;
+    else if (item.status === "in_flight") summary.inFlight += 1;
+    else if (item.status === "ready") summary.ready += 1;
+    else if (item.status === "failed") summary.failed += 1;
+    else summary.unseen += 1;
+  }
+  return summary;
+};
+
+const queueSummaryText = (summary: QueueStatusSummary) => `ready=${summary.ready}, queued=${summary.queued}, in_flight=${summary.inFlight}, failed=${summary.failed}, unseen=${summary.unseen}`;
 
 export function App() {
   const [page, setPage] = useState<AppPage>("home");
@@ -84,6 +120,9 @@ export function App() {
   const [editorWarmupReadyCount, setEditorWarmupReadyCount] = useState(0);
   const [editorWarmupMessage, setEditorWarmupMessage] = useState("");
   const [skipWarmupRequested, setSkipWarmupRequested] = useState(false);
+  const [warmupTimedOut, setWarmupTimedOut] = useState(false);
+  const [warmupQueueSummary, setWarmupQueueSummary] = useState<QueueStatusSummary>({ unseen: 0, queued: 0, inFlight: 0, ready: 0, failed: 0 });
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState<number | null>(null);
 
   const [faces, setFaces] = useState<FaceListItem[]>([]);
   const [selectedFaceId, setSelectedFaceId] = useState<string>("");
@@ -100,6 +139,14 @@ export function App() {
   const [showGenerationSpinner, setShowGenerationSpinner] = useState(false);
   const [noticeMessage, setNoticeMessage] = useState("");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnosticsLog, setDiagnosticsLog] = useState<DiagnosticLogEntry[]>([
+    {
+      timestamp: nowIso(),
+      level: "info",
+      scope: "general",
+      message: "Application started.",
+    },
+  ]);
 
   const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
     if (typeof window === "undefined") {
@@ -146,8 +193,6 @@ export function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [canvasCursor, setCanvasCursor] = useState("crosshair");
-  const [status, setStatus] = useState("Ready.");
-  const [error, setError] = useState("");
   const [generationStep, setGenerationStep] = useState<GenerationStep>("idle");
   const [generationPercent, setGenerationPercent] = useState(0);
   const [generationDetail, setGenerationDetail] = useState("Idle.");
@@ -187,21 +232,41 @@ export function App() {
     if (!llmSettings?.llmSuggestionsEnabled || !datasetRoot || faces.length === 0 || selectedIndex < 0) {
       return;
     }
-    const bufferStart = selectedIndex + 1;
+    const bufferStart = selectedIndex;
     const bufferEnd = Math.min(faces.length, bufferStart + llmSettings.prefetchBufferSize);
     const faceIds = faces.slice(bufferStart, bufferEnd).map((face) => face.faceId);
     if (faceIds.length === 0) return;
     try {
       const queued = await prefetchSuggestions(datasetRoot, faceIds);
-      updateDiagnostics(`Suggestion prefetch queued ${queued.items.length} face(s).`);
+      const summary = summarizeQueueState(queued.items);
+      updateDiagnostics("Suggestion prefetch queued", "", { scope: "prefetch", metadata: `faces=${queued.items.length}, ${queueSummaryText(summary)}` });
+      const readyIds = queued.items.filter((item) => item.status === "ready").map((item) => item.faceId);
+      for (const readyFaceId of readyIds) {
+        if (suggestionsByFace[readyFaceId]) {
+          continue;
+        }
+        try {
+          const response = await getSuggestions(datasetRoot, readyFaceId, llmSettings.editorWarmupTimeoutMs);
+          setSuggestionsByFace((prev) => (prev[readyFaceId] ? prev : { ...prev, [readyFaceId]: response.suggestions }));
+        } catch {
+          // queue will retry/fail; diagnostics logged in focused fetch path
+        }
+      }
     } catch (cause) {
-      updateDiagnostics("Suggestion prefetch failed", String(cause));
+      updateDiagnostics("Suggestion prefetch failed", String(cause), { scope: "prefetch" });
     }
-  }, [llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, datasetRoot, faces, selectedIndex]);
+  }, [llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, llmSettings?.editorWarmupTimeoutMs, datasetRoot, faces, selectedIndex, suggestionsByFace]);
 
   useEffect(() => {
     void prefetchLinearSuggestions();
-  }, [prefetchLinearSuggestions]);
+    if (!llmSettings?.llmSuggestionsEnabled) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void prefetchLinearSuggestions();
+    }, BACKGROUND_PREFETCH_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [prefetchLinearSuggestions, llmSettings?.llmSuggestionsEnabled]);
 
 
   useEffect(() => {
@@ -232,15 +297,20 @@ export function App() {
   const importInputError = datasetRootError || cocoPathError || mp4PathError;
   const exportInputError = datasetRootError || outputPathError;
 
-  const updateDiagnostics = (nextStatus: string, nextError = "") => {
-    setStatus(nextStatus);
-    setError(nextError);
-  };
+  const pushDiagnostic = useCallback((entry: Omit<DiagnosticLogEntry, "timestamp">) => {
+    const timestamp = nowIso();
+    setDiagnosticsLog((prev) => [...prev, { ...entry, timestamp }]);
+  }, []);
 
-  const clearDiagnostics = (nextStatus = "Ready.") => {
-    setStatus(nextStatus);
-    setError("");
-  };
+  const updateDiagnostics = useCallback((nextStatus: string, nextError = "", options?: { scope?: DiagnosticScope; level?: DiagnosticLevel; metadata?: string }) => {
+    const level = options?.level ?? (nextError ? "error" : "info");
+    const scope = options?.scope ?? "general";
+    pushDiagnostic({ level, scope, message: nextStatus, metadata: nextError || options?.metadata });
+  }, [pushDiagnostic]);
+
+  const clearDiagnostics = useCallback((nextStatus = "Ready.") => {
+    pushDiagnostic({ level: "info", scope: "general", message: nextStatus });
+  }, [pushDiagnostic]);
 
   const formatDialogError = (scope: "folder" | "file" | "save", cause: unknown): string => {
     const message = String(cause);
@@ -430,47 +500,70 @@ export function App() {
       return;
     }
 
-    const requiredReady = Math.max(1, Math.ceil(uncachedFaceIds.length * EDITOR_WARMUP_THRESHOLD_RATIO));
+    const thresholdRatio = llmSettings.editorWarmupThresholdRatio ?? EDITOR_WARMUP_THRESHOLD_RATIO;
+    const timeoutMs = llmSettings.editorWarmupTimeoutMs ?? EDITOR_WARMUP_TIMEOUT_MS;
+    const requiredReady = Math.max(1, Math.ceil(uncachedFaceIds.length * thresholdRatio));
     setIsEnteringEditor(true);
+    setWarmupTimedOut(false);
     setEditorWarmupFaceIds(uncachedFaceIds);
     setEditorWarmupReadyCount(0);
     setSkipWarmupRequested(false);
-    setEditorWarmupMessage(`Preparing suggestions: 0/${requiredReady} ready before entering editor.`);
+    setWarmupQueueSummary(emptyQueueSummary());
+    setEditorWarmupMessage(`Preparing suggestions for ${uncachedFaceIds.length} face(s). Need ${requiredReady} ready before entering editor.`);
 
     const startedAt = Date.now();
+    let dynamicDeadline = startedAt + timeoutMs;
+    let lastReadyCount = 0;
     try {
-      await prefetchSuggestions(datasetRoot, uncachedFaceIds);
-      while (Date.now() - startedAt < EDITOR_WARMUP_TIMEOUT_MS) {
+      const prefetched = await prefetchSuggestions(datasetRoot, uncachedFaceIds);
+      updateDiagnostics("Editor warmup started", "", { scope: "warmup", metadata: `targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summarizeQueueState(prefetched.items))}` });
+      while (Date.now() < dynamicDeadline) {
         const queue = await getSuggestionQueueState(datasetRoot, uncachedFaceIds);
-        const readyCount = queue.items.filter((item) => item.status === "ready").length;
+        const summary = summarizeQueueState(queue.items);
+        setWarmupQueueSummary(summary);
+        const readyCount = summary.ready;
         setEditorWarmupReadyCount(readyCount);
-        setEditorWarmupMessage(`Preparing suggestions: ${readyCount}/${requiredReady} ready before entering editor.`);
+        setEditorWarmupMessage(`Preparing suggestions: targets=${uncachedFaceIds.length}, required=${requiredReady}; ${queueSummaryText(summary)}`);
+        updateDiagnostics("Editor warmup poll", "", { scope: "warmup", metadata: `targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summary)}` });
+        if (readyCount > lastReadyCount) {
+          dynamicDeadline = Math.max(dynamicDeadline, Date.now() + EDITOR_WARMUP_TIMEOUT_REFRESH_MS);
+          lastReadyCount = readyCount;
+        }
         if (readyCount >= requiredReady) {
           break;
         }
         if (skipWarmupRequestedRef.current) {
-          updateDiagnostics(`Editor warmup skipped\nEntered editor early with ${readyCount}/${requiredReady} suggestions ready.`);
+          updateDiagnostics("Editor warmup skipped", "", { scope: "warmup", level: "warn", metadata: `Entered editor early. targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summary)}` });
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, EDITOR_WARMUP_POLL_MS));
       }
-      const elapsed = Date.now() - startedAt;
-      if (!skipWarmupRequestedRef.current && elapsed >= EDITOR_WARMUP_TIMEOUT_MS) {
+      if (!skipWarmupRequestedRef.current && Date.now() >= dynamicDeadline) {
         const queue = await getSuggestionQueueState(datasetRoot, uncachedFaceIds);
-        const readyCount = queue.items.filter((item) => item.status === "ready").length;
-        updateDiagnostics("Editor warmup timed out", `Entered editor after timeout with ${readyCount}/${requiredReady} suggestions ready.`);
+        const summary = summarizeQueueState(queue.items);
+        setWarmupQueueSummary(summary);
+        setWarmupTimedOut(true);
+        updateDiagnostics("Editor warmup timed out", "", { scope: "warmup", level: "warn", metadata: `Entered editor after timeout. targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summary)}` });
       }
     } catch (cause) {
-      updateDiagnostics("Editor warmup failed", String(cause));
+      updateDiagnostics("Editor warmup failed", String(cause), { scope: "warmup" });
     } finally {
       setIsEnteringEditor(false);
-      setEditorWarmupFaceIds([]);
       setEditorWarmupReadyCount(0);
       setEditorWarmupMessage("");
       setSkipWarmupRequested(false);
       setPage("editor");
     }
-  }, [datasetRoot, llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, suggestionsByFace]);
+  }, [datasetRoot, llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, llmSettings?.editorWarmupThresholdRatio, llmSettings?.editorWarmupTimeoutMs, suggestionsByFace]);
+
+  const retryWarmupForCurrentBuffer = async () => {
+    if (!datasetRoot || !llmSettings?.llmSuggestionsEnabled || faces.length === 0) {
+      return;
+    }
+    const bufferStart = Math.max(0, selectedIndex);
+    const bufferEnd = Math.min(faces.length, bufferStart + Math.max(1, llmSettings.prefetchBufferSize));
+    await enterEditorWithWarmup(faces.slice(bufferStart, bufferEnd));
+  };
 
   const handleOpen = async () => {
     if (datasetRootError) {
@@ -553,7 +646,7 @@ export function App() {
       setGenerationDetail("Idle.");
       setGenerationHeartbeat("Idle");
       const message = String(cause);
-      updateDiagnostics("Review dataset generation failed", message);
+      updateDiagnostics("Review dataset generation failed", message, { scope: "generation" });
       setNoticeMessage(message);
     } finally {
       setIsGenerating(false);
@@ -572,9 +665,9 @@ export function App() {
       setGenerationDetail("Abort requested. Waiting for cleanup...");
       setGenerationHeartbeat(`Job ${generationJobId} aborting`);
       await abortGenerationJob(generationJobId);
-      updateDiagnostics("Generation abort requested", "Waiting for background cleanup to finish.");
+      updateDiagnostics("Generation abort requested", "Waiting for background cleanup to finish.", { scope: "generation", level: "warn" });
     } catch (cause) {
-      updateDiagnostics("Generation abort failed", String(cause));
+      updateDiagnostics("Generation abort failed", String(cause), { scope: "generation" });
     }
   };
 
@@ -622,7 +715,7 @@ export function App() {
       setSaveState("error");
       setSaveStateMessage(`Save blocked: ${validationError}`);
       if (origin === "manual") {
-        updateDiagnostics("Save blocked due to invalid edits", validationError);
+        updateDiagnostics("Save blocked due to invalid edits", validationError, { scope: "save" });
       }
       return;
     }
@@ -652,7 +745,7 @@ export function App() {
           setSaveStateMessage(origin === "manual" ? "Saved." : "Autosaved.");
           setLastSavedAt(new Date().toLocaleTimeString());
           if (origin === "manual") {
-            updateDiagnostics(`Saved ${saved.length} annotation(s) for ${saveFaceId}`);
+            updateDiagnostics(`Saved ${saved.length} annotation(s) for ${saveFaceId}`, "", { scope: "save" });
           }
           return;
         }
@@ -665,7 +758,7 @@ export function App() {
         setSaveState("error");
         setSaveStateMessage("Autosave failed. Please retry.");
         if (origin === "manual") {
-          updateDiagnostics("Save edits failed", String(cause));
+          updateDiagnostics("Save edits failed", String(cause), { scope: "save" });
         }
       }
     })().finally(() => {
@@ -694,6 +787,10 @@ export function App() {
   }, [selectedFaceId, loadAnnotations]);
 
   useEffect(() => {
+    setSelectedSuggestionIndex(null);
+  }, [selectedFaceId]);
+
+  useEffect(() => {
     const faceId = selectedFaceId;
     if (!faceId || !datasetRoot || !llmSettings?.llmSuggestionsEnabled) {
       return;
@@ -705,12 +802,16 @@ export function App() {
     let cancelled = false;
     const run = async () => {
       try {
-        const response = await getSuggestions(datasetRoot, faceId);
+        const response = await getSuggestions(datasetRoot, faceId, llmSettings.editorWarmupTimeoutMs);
         if (cancelled) return;
         setSuggestionsByFace((prev) => ({ ...prev, [faceId]: response.suggestions }));
+        updateDiagnostics("Suggestion fetch complete", "", {
+          scope: "suggestion-fetch",
+          metadata: `faceId=${faceId}, provider=${response.provider}, model=${response.model}, attempts=${response.attempts}, suggestions=${response.suggestions.length}`,
+        });
       } catch (cause) {
         if (cancelled) return;
-        updateDiagnostics("Suggestion fetch failed", String(cause));
+        updateDiagnostics("Suggestion fetch failed", String(cause), { scope: "suggestion-fetch", metadata: `faceId=${faceId}` });
       }
 
       void getSuggestionQueueState(datasetRoot, faces.map((f) => f.faceId)).catch(() => undefined);
@@ -720,7 +821,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedFaceId, datasetRoot, llmSettings?.llmSuggestionsEnabled, suggestionsByFace, faces]);
+  }, [selectedFaceId, datasetRoot, llmSettings?.llmSuggestionsEnabled, llmSettings?.editorWarmupTimeoutMs, suggestionsByFace, faces, updateDiagnostics]);
 
   useEffect(() => {
     const onResize = () => {
@@ -776,7 +877,22 @@ export function App() {
         });
       }
     });
-  }, [edits, imageViewport, activeBoxIndex]);
+
+    const selectedSuggestions = selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : [];
+    selectedSuggestions.forEach((entry, index) => {
+      const [x, y, w, h] = entry.bbox;
+      const isSelectedSuggestion = selectedSuggestionIndex === index;
+      context.strokeStyle = isSelectedSuggestion ? "#a855f7" : "#14b8a6";
+      context.setLineDash([4, 4]);
+      context.lineWidth = isSelectedSuggestion ? 2.5 : 1.5;
+      context.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+      context.setLineDash([]);
+      context.fillStyle = isSelectedSuggestion ? "rgba(168,85,247,0.16)" : "rgba(20,184,166,0.08)";
+      context.fillRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+      context.fillStyle = "#a7f3d0";
+      context.fillText(`S${index + 1}`, x * scaleX + 4, y * scaleY + 28);
+    });
+  }, [edits, imageViewport, activeBoxIndex, selectedFaceId, suggestionsByFace, selectedSuggestionIndex]);
 
   useEffect(() => {
     if (!selectedFaceId || isFaceLoading) {
@@ -916,6 +1032,40 @@ export function App() {
       return next.edits;
     });
   }, [activeBoxIndex]);
+
+
+  const suggestionToEdit = useCallback((suggestion: SuggestionBox): AnnotationEdit => ({
+    bbox: suggestion.bbox,
+    provenance: { source: suggestion.source || "llm_suggestion", updatedAt: nowIso() },
+  }), []);
+
+  const addSuggestionToEdits = useCallback((suggestion: SuggestionBox) => {
+    setEdits((previous) => [...previous, suggestionToEdit(suggestion)]);
+    setEditValidationError("");
+  }, [suggestionToEdit]);
+
+  const applyAllSuggestionsToEdits = useCallback(() => {
+    const suggestions = selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : [];
+    if (suggestions.length === 0) {
+      return;
+    }
+    setEdits((previous) => [...previous, ...suggestions.map((suggestion) => suggestionToEdit(suggestion))]);
+    setEditValidationError("");
+  }, [selectedFaceId, suggestionsByFace, suggestionToEdit]);
+
+  const replaceEditsWithSuggestions = useCallback(() => {
+    const suggestions = selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : [];
+    if (suggestions.length === 0) {
+      return;
+    }
+    const confirmed = window.confirm("Replace current editable annotations with LLM suggestions?");
+    if (!confirmed) {
+      return;
+    }
+    setEdits(suggestions.map((suggestion) => suggestionToEdit(suggestion)));
+    setActiveBoxIndex(null);
+    setEditValidationError("");
+  }, [selectedFaceId, suggestionsByFace, suggestionToEdit]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1105,7 +1255,14 @@ export function App() {
     setPage("home");
   };
 
-  const diagnosticsText = "$ bdr-anno-review\n" + status + (error ? `\n\n[error] ${error}` : "\n\n[ok] No active errors.");
+  const latestError = [...diagnosticsLog].reverse().find((entry) => entry.level === "error");
+  const hasDiagnosticError = Boolean(latestError);
+  const diagnosticsText = ["$ bdr-anno-review", ...diagnosticsLog.map((entry) => {
+    const scope = `[${entry.scope}]`;
+    const level = `[${entry.level}]`;
+    const metadata = entry.metadata ? `\n  ${entry.metadata}` : "";
+    return `${entry.timestamp} ${level} ${scope} ${entry.message}${metadata}`;
+  })].join("\n");
   const saveStateClassName: Record<SaveState, string> = {
     idle: "bg-anno-surface-high text-anno-text-muted",
     dirty: "bg-amber-500/20 text-amber-200",
@@ -1218,6 +1375,19 @@ export function App() {
               </div>
             </Card>
 
+            {warmupTimedOut ? (
+              <Card className="bg-anno-surface-med">
+                <div className="rounded-2xl border border-amber-300/30 bg-amber-400/10 p-3 text-sm text-amber-100">
+                  <p className="font-medium">Suggestions still loading in background.</p>
+                  <p className="mt-1 text-xs text-amber-200">{queueSummaryText(warmupQueueSummary)}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()}>Retry warmup for current buffer</Button>
+                    <Button variant="text" onClick={() => setWarmupTimedOut(false)}>Continue immediately</Button>
+                  </div>
+                </div>
+              </Card>
+            ) : null}
+
             <Card className="bg-anno-surface-med">
               <div className="relative rounded-2xl bg-anno-surface-low p-3 ring-1 ring-white/5">
                 {selectedFace ? (
@@ -1276,8 +1446,31 @@ export function App() {
             </div>
 
             <h3 className="text-lg font-semibold">Bounding boxes</h3>
-            <p className="mb-3 text-xs text-anno-text-muted">Suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
-            <div className="max-h-[52vh] space-y-2 overflow-auto pr-1">
+            <p className="mb-1 text-xs text-anno-text-muted">Editable boxes: {edits.length}</p>
+            <p className="mb-3 text-xs text-anno-text-muted">LLM suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
+
+            <div className="mb-3 rounded-2xl bg-anno-surface-med p-3 ring-1 ring-white/5">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h4 className="text-sm font-semibold">LLM suggestions</h4>
+                <div className="flex gap-2">
+                  <Button variant="tonal" onClick={applyAllSuggestionsToEdits} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[selectedFaceId]?.length ?? 0) === 0}>Apply all suggestions to edits</Button>
+                  <Button variant="outlined" onClick={replaceEditsWithSuggestions} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[selectedFaceId]?.length ?? 0) === 0}>Replace edits with suggestions</Button>
+                </div>
+              </div>
+              <div className="max-h-40 space-y-2 overflow-auto pr-1">
+                {(selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : []).map((suggestion, index) => (
+                  <div key={`suggestion-${selectedFaceId}-${index}`} className={`rounded-xl p-2 ring-1 ${selectedSuggestionIndex === index ? "bg-anno-surface-high ring-purple-400/60" : "bg-anno-surface-low ring-teal-300/30"}`} onMouseEnter={() => setSelectedSuggestionIndex(index)}>
+                    <div className="text-xs text-anno-text-muted">Suggestion {index + 1}: {suggestion.bbox.map(coord).join(", ")}</div>
+                    <div className="mt-1 flex items-center justify-between">
+                      <span className="text-[11px] text-anno-text-muted">source: {suggestion.source}{typeof suggestion.confidence === "number" ? ` • conf=${coord(suggestion.confidence)}` : ""}</span>
+                      <Button variant="text" onClick={() => addSuggestionToEdits(suggestion)} disabled={isFaceBusy || isEditorBusy}>Add suggestion as new box</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="max-h-[38vh] space-y-2 overflow-auto pr-1">
               {edits.map((edit, index) => (
                 <div className={`bbox-editor rounded-2xl p-3 ring-1 transition ${activeBoxIndex === index ? "bg-anno-surface-high ring-anno-primary/40" : "bg-anno-surface-med ring-white/5"}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
                   <div className="mb-2 text-xs text-anno-text-muted">Box {index + 1}: {edit.bbox.map(coord).join(", ")}</div>
@@ -1322,13 +1515,17 @@ export function App() {
       ) : null}
 
       <section className="fixed bottom-0 left-0 right-0 z-30 border-t border-anno-surface-high bg-[#09090b]/90" aria-live="polite" aria-label="Application diagnostics terminal">
-        <div className="mx-auto flex w-full max-w-[1480px] items-center justify-between px-4 py-2 text-xs md:px-8">
+        <div className="mx-auto flex w-full max-w-[1480px] items-center justify-between gap-3 px-4 py-2 text-xs md:px-8">
           <button className="font-medium text-anno-text-main transition hover:text-anno-primary" onClick={() => setDiagnosticsOpen((value) => !value)}>
             Diagnostics terminal <span className={`inline-block transition-transform duration-200 ${diagnosticsOpen ? "rotate-180" : "rotate-0"}`}>⌄</span>
           </button>
-          <span className={`rounded-full px-2 py-0.5 font-semibold ${error ? "bg-rose-500/20 text-rose-200" : "bg-emerald-500/20 text-emerald-200"}`}>{error ? "ERROR" : "READY"}</span>
+          <div className="flex items-center gap-2">
+            <Button variant="text" onClick={() => void navigator.clipboard.writeText(diagnosticsText)}>Copy diagnostics</Button>
+            <Button variant="text" onClick={() => setDiagnosticsLog((prev) => prev.slice(-1))}>Clear log</Button>
+            <span className={`rounded-full px-2 py-0.5 font-semibold ${hasDiagnosticError ? "bg-rose-500/20 text-rose-200" : "bg-emerald-500/20 text-emerald-200"}`}>{hasDiagnosticError ? "ERROR" : "READY"}</span>
+          </div>
         </div>
-        {diagnosticsOpen ? <pre className={`terminal-scrollbar max-h-48 overflow-auto bg-[#09090b] px-4 pb-3 text-xs text-anno-text-muted md:px-8 ${error ? "text-rose-200" : ""}`}>{diagnosticsText}</pre> : null}
+        {diagnosticsOpen ? <pre className={`terminal-scrollbar max-h-56 overflow-auto bg-[#09090b] px-4 pb-3 text-xs text-anno-text-muted md:px-8 ${hasDiagnosticError ? "text-rose-200" : ""}`}>{diagnosticsText}</pre> : null}
       </section>
 
       {noticeMessage ? (
@@ -1338,7 +1535,7 @@ export function App() {
             <p className="mt-1 text-sm text-anno-text-muted">Generation could not continue. See diagnostics for details.</p>
             <pre className="mt-3 max-h-44 overflow-auto rounded-2xl bg-anno-surface-low p-3 text-xs text-anno-text-muted">{noticeMessage}</pre>
             <div className="mt-3 flex gap-2">
-              <Button variant="outlined" onClick={() => { setNoticeMessage(""); if (error) { clearDiagnostics("Ready."); } }}>Dismiss</Button>
+              <Button variant="outlined" onClick={() => { setNoticeMessage(""); if (hasDiagnosticError) { clearDiagnostics("Ready."); } }}>Dismiss</Button>
             </div>
           </div>
         </div>
@@ -1371,9 +1568,11 @@ export function App() {
             <h3 className="text-lg font-semibold">Preparing suggestions</h3>
             <p className="mt-1 text-sm text-anno-text-muted">Building an initial LLM suggestion buffer before entering editor.</p>
             <p className="mt-3 text-xs text-anno-text-muted">{editorWarmupMessage || "Preparing suggestions..."}</p>
-            <p className="mt-1 text-xs text-anno-text-muted">Target faces: {editorWarmupFaceIds.length} • Ready now: {editorWarmupReadyCount}</p>
+            <p className="mt-1 text-xs text-anno-text-muted">Targets: {editorWarmupFaceIds.length} • Required threshold ready: {Math.max(1, Math.ceil(editorWarmupFaceIds.length * (llmSettings?.editorWarmupThresholdRatio ?? EDITOR_WARMUP_THRESHOLD_RATIO)))} • Ready now: {editorWarmupReadyCount}</p>
+            <p className="mt-1 text-xs text-anno-text-muted">Queue status: {queueSummaryText(warmupQueueSummary)}</p>
             <div className="mt-3 flex gap-2">
-              <Button variant="outlined" onClick={() => setSkipWarmupRequested(true)}>Enter now</Button>
+              <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()}>Retry warmup for current buffer</Button>
+              <Button variant="tonal" onClick={() => setSkipWarmupRequested(true)}>Continue immediately</Button>
             </div>
           </div>
         </div>
