@@ -15,6 +15,8 @@ const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const CODE_INTERPRETER_MEMORY_LIMIT: &str = "4g";
 const TOOL_CHOICE_REQUIRED_ENV: &str = "BDR_OPENAI_TOOL_CHOICE_REQUIRED";
 const CODE_EXECUTION_ENABLED_ENV: &str = "BDR_LLM_CODE_EXECUTION_ENABLED";
+const DEFAULT_SUGGESTION_TIMEOUT_MS: u64 = 120_000;
+const OPENAI_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -479,16 +481,40 @@ fn reqwest_error_tags(error: &reqwest::Error) -> Vec<&'static str> {
     tags
 }
 
+fn proxy_mode_hint() -> String {
+    let has_https = std::env::var("HTTPS_PROXY").is_ok() || std::env::var("https_proxy").is_ok();
+    let has_http = std::env::var("HTTP_PROXY").is_ok() || std::env::var("http_proxy").is_ok();
+    let has_all = std::env::var("ALL_PROXY").is_ok() || std::env::var("all_proxy").is_ok();
+    let has_no_proxy = std::env::var("NO_PROXY").is_ok() || std::env::var("no_proxy").is_ok();
+
+    let mut sources = Vec::new();
+    if has_https {
+        sources.push("https");
+    }
+    if has_http {
+        sources.push("http");
+    }
+    if has_all {
+        sources.push("all");
+    }
+    if sources.is_empty() {
+        if has_no_proxy {
+            "direct_or_platform_default(no_proxy_set)".to_owned()
+        } else {
+            "direct_or_platform_default".to_owned()
+        }
+    } else if has_no_proxy {
+        format!("env_proxy({})+no_proxy_set", sources.join("|"))
+    } else {
+        format!("env_proxy({})", sources.join("|"))
+    }
+}
+
 fn openai_http_client(timeout: Duration) -> Result<Client, OpenAiRequestError> {
-    let proxy_mode = std::env::var("HTTPS_PROXY")
-        .ok()
-        .or_else(|| std::env::var("https_proxy").ok())
-        .or_else(|| std::env::var("HTTP_PROXY").ok())
-        .or_else(|| std::env::var("http_proxy").ok())
-        .map(|_| "env_proxy")
-        .unwrap_or("direct_or_platform_default");
+    let proxy_mode = proxy_mode_hint();
 
     Client::builder()
+        .connect_timeout(Duration::from_secs(OPENAI_CONNECT_TIMEOUT_SECS))
         .timeout(timeout)
         .build()
         .map_err(|source| OpenAiRequestError {
@@ -545,13 +571,7 @@ fn post_openai_response(
 ) -> Result<serde_json::Value, OpenAiRequestError> {
     let client = openai_http_client(timeout)?;
 
-    let proxy_mode = std::env::var("HTTPS_PROXY")
-        .ok()
-        .or_else(|| std::env::var("https_proxy").ok())
-        .or_else(|| std::env::var("HTTP_PROXY").ok())
-        .or_else(|| std::env::var("http_proxy").ok())
-        .map(|_| "env_proxy")
-        .unwrap_or("direct_or_platform_default");
+    let proxy_mode = proxy_mode_hint();
 
     let response = client
         .post(OPENAI_URL)
@@ -704,7 +724,7 @@ pub fn generate_suggestions_with_retry(
 
     let prompt = prompt_text(app)?;
     let (image_b64, image_media_type, [width, height]) = build_face_context(dataset_root, face)?;
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_SUGGESTION_TIMEOUT_MS));
 
     let mut attempts = 0usize;
     let mut last_error = String::new();
