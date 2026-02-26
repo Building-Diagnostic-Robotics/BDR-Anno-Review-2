@@ -429,9 +429,74 @@ fn run_openai(
         tool_choice_required,
     );
 
-    let value = post_openai_response(api_key, timeout, &body)?;
+    let value = post_openai_response(api_key, timeout, &body).map_err(|error| error.message)?;
     extract_openai_text(&value)
         .ok_or_else(|| "openai response did not contain message text".to_owned())
+}
+
+#[derive(Debug)]
+struct OpenAiRequestError {
+    message: String,
+}
+
+fn format_error_chain(error: &dyn std::error::Error) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        out.push_str("\ncaused by: ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
+fn reqwest_error_tags(error: &reqwest::Error) -> Vec<&'static str> {
+    let mut tags = Vec::new();
+    if error.is_builder() {
+        tags.push("builder");
+    }
+    if error.is_request() {
+        tags.push("request");
+    }
+    if error.is_timeout() {
+        tags.push("timeout");
+    }
+    if error.is_connect() {
+        tags.push("connect");
+    }
+    if error.is_redirect() {
+        tags.push("redirect");
+    }
+    if error.is_status() {
+        tags.push("status");
+    }
+    if error.is_body() {
+        tags.push("body");
+    }
+    if error.is_decode() {
+        tags.push("decode");
+    }
+    tags
+}
+
+fn openai_http_client(timeout: Duration) -> Result<Client, OpenAiRequestError> {
+    let proxy_mode = std::env::var("HTTPS_PROXY")
+        .ok()
+        .or_else(|| std::env::var("https_proxy").ok())
+        .or_else(|| std::env::var("HTTP_PROXY").ok())
+        .or_else(|| std::env::var("http_proxy").ok())
+        .map(|_| "env_proxy")
+        .unwrap_or("direct_or_platform_default");
+
+    Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|source| OpenAiRequestError {
+            message: format!(
+                "openai client init failed (proxy_mode={proxy_mode}): {}",
+                format_error_chain(&source)
+            ),
+        })
 }
 
 fn build_openai_response_body(
@@ -477,25 +542,48 @@ fn post_openai_response(
     api_key: &str,
     timeout: Duration,
     body: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let client = Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| e.to_string())?;
+) -> Result<serde_json::Value, OpenAiRequestError> {
+    let client = openai_http_client(timeout)?;
+
+    let proxy_mode = std::env::var("HTTPS_PROXY")
+        .ok()
+        .or_else(|| std::env::var("https_proxy").ok())
+        .or_else(|| std::env::var("HTTP_PROXY").ok())
+        .or_else(|| std::env::var("http_proxy").ok())
+        .map(|_| "env_proxy")
+        .unwrap_or("direct_or_platform_default");
 
     let response = client
         .post(OPENAI_URL)
         .bearer_auth(api_key)
         .json(&body)
         .send()
-        .map_err(|source| format!("openai request failed: {source}"))?;
+        .map_err(|source| {
+            let tags = reqwest_error_tags(&source);
+            let tags_text = if tags.is_empty() {
+                "none".to_owned()
+            } else {
+                tags.join(",")
+            };
+            let detail = format_error_chain(&source);
+            OpenAiRequestError {
+                message: format!(
+                    "openai request failed (class={tags_text}, proxy_mode={proxy_mode}): {detail}"
+                ),
+            }
+        })?;
 
     let status = response.status();
-    let value: serde_json::Value = response
-        .json()
-        .map_err(|source| format!("openai response parse failed: {source}"))?;
+    let value: serde_json::Value = response.json().map_err(|source| OpenAiRequestError {
+        message: format!(
+            "openai response parse failed: {}",
+            format_error_chain(&source)
+        ),
+    })?;
     if !status.is_success() {
-        return Err(format!("openai returned HTTP {status}: {value}"));
+        return Err(OpenAiRequestError {
+            message: format!("openai returned HTTP {status}: {value}"),
+        });
     }
     Ok(value)
 }
@@ -673,6 +761,9 @@ pub fn generate_suggestions_with_retry(
             }
             Err(error) => {
                 last_error = sanitize_error(&error, &keys);
+                let transport_retryable = last_error.contains("class=timeout")
+                    || last_error.contains("class=connect")
+                    || last_error.contains("class=request");
                 let lower = last_error.to_lowercase();
                 let retryable = lower.contains("timeout")
                     || lower.contains("429")
@@ -680,7 +771,8 @@ pub fn generate_suggestions_with_retry(
                     || lower.contains("500")
                     || lower.contains("502")
                     || lower.contains("503")
-                    || lower.contains("504");
+                    || lower.contains("504")
+                    || transport_retryable;
                 if !retryable {
                     break;
                 }
