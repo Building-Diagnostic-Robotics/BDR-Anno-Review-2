@@ -299,67 +299,7 @@ Backend converts provider response into:
   * `generated_at`
   * optional `rationale` (kept out of export; UI-only)
 
-### Failure modes
-
-* If LLM fails, UI remains fully functional.
-* Suggestions are treated as non-authoritative until accepted.
-
 ---
-
-## Performance strategy
-
-### Rendering
-
-* Render faces in parallel (thread pool).
-* Use streaming IO (avoid holding full dataset in memory).
-* Cache derived values (projection matrices, camera model parameters).
-
-### UI responsiveness
-
-* UI loads images via file URLs or backend streaming endpoints.
-* Annotation operations are client-side (no roundtrip for drag/resize).
-* Persist edits with debounced writes to avoid excessive disk churn.
-
-### Large datasets
-
-* Manifest enables paging; UI should not load everything at once.
-* Progressive rendering: generate and index faces incrementally and update manifest safely.
-
----
-
-## Error handling philosophy
-
-* Fail early on invalid dataset structure:
-
-  * missing COCO `images[]`
-  * invalid `image_id` references
-  * missing source frames for selected images
-* Provide actionable error messages (“missing frame file: …”).
-* Never partially overwrite canonical artifacts without a safe temp + atomic rename.
-
----
-
-## Repository layout (proposed)
-
-```
-/
-├── frontend/                 # React/TS app (Vite)
-│   ├── src/
-│   └── package.json
-├── src-tauri/                # Tauri + Rust backend
-│   ├── src/
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── crates/
-│   ├── engine/               # pure Rust library: COCO, rendering, projection, export
-│   └── providers/            # LLM provider clients (OpenAI first)
-├── schemas/                  # JSON schema for manifest + edits
-├── fixtures/                 # tiny datasets for tests
-├── docs/
-│   └── ARCHITECTURE.md
-└── .github/workflows/
-    └── release.yml
-```
 
 Guideline:
 
@@ -396,55 +336,12 @@ Optional extras:
 
 ---
 
-## Testing strategy
-
-### Unit tests (Rust)
-
-* COCO parsing/validation
-* projection math (known cases)
-* determinism tests:
-
-  * same input → same face_id values
-  * same manifest → same export IDs/order
-
-### Integration tests
-
-* Fixture dataset end-to-end:
-
-  * generate manifest
-  * render faces
-  * apply edits
-  * export COCO
-  * verify schema + counts
-
-### UI tests (minimal initially)
-
-* Smoke tests for:
-
-  * dataset open
-  * image load
-  * bbox edit persists
-
----
-
 ## Security and privacy
 
 * All data stays local by default.
 * LLM calls are opt-in; only the needed inputs are sent.
 * API keys stored securely (OS keychain) when supported.
 * Never log secrets; redact in error paths.
-
----
-
-## Extensibility roadmap (architecture-friendly)
-
-Planned future upgrades that this architecture supports cleanly:
-
-* additional cube faces (top/bottom) via manifest schema version bump
-* provider abstraction for LLM (OpenAI / others)
-* non-LLM suggestion sources (classic CV model, heuristic proposals)
-* dataset sharding for huge datasets
-* multi-category support (if desired) while still exporting single category for compatibility
 
 ---
 
