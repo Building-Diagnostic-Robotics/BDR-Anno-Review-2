@@ -346,7 +346,10 @@ pub fn set_provider_key(request: SetProviderKeyRequest) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_key_from_lookup, is_missing_key_error, set_provider_key_with, validate_provider_selection};
+    use super::{
+        has_key_from_lookup, is_missing_key_error, set_provider_key_with,
+        validate_provider_selection,
+    };
     use keyring::Error;
 
     #[test]
@@ -400,7 +403,6 @@ mod tests {
             "No such object path '/org/freedesktop/secrets/collection/login'".into()
         )));
     }
-
 
     #[test]
     fn set_provider_key_with_verifies_persisted_key() {
