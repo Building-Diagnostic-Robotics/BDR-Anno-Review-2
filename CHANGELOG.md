@@ -7,9 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-02-26
+
 ### Fixed
 - Ensured `get_settings_response` never propagates secure-storage lookup failures: missing credentials and keyring read errors are both treated as `hasKey=false` (with warning diagnostics) so the settings UI remains usable during transient keychain issues.
-- Pinned Rust crate resolution to an available `cc` release in `Cargo.lock` so CI dependency resolution succeeds consistently when building transitive `ring`/`rustls` dependencies.
+- Switched the Tauri OpenAI HTTP client to `reqwest` `native-tls` so TLS trust aligns with the host OS certificate store for better compatibility on managed systems.
+- Added explicit OpenAI transport diagnostics including reqwest error-class tags, proxy mode hints, and full nested cause chains to make suggestion failures actionable.
+- Added proxy-mode diagnostics for OpenAI requests by surfacing whether proxy environment variables are present during client init/request failures (without exposing secrets).
+- Hardened suggestion retry classification to treat transient transport send/connect/timeout failures as retryable while preserving fail-loud behavior for permanent errors.
+
+### Changed
+- Updated `Cargo.lock` to reflect the TLS backend transition from `rustls-tls` to `native-tls` in the Tauri backend transport stack.
 
 ## [1.2.6] - 2026-02-26
 
