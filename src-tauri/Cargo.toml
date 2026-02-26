@@ -15,7 +15,7 @@ serde_json.workspace = true
 engine = { path = "../crates/engine" }
 providers = { path = "../crates/providers" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
-keyring = "3"
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native-sync-persistent"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tokio-util = "0.7"
