@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 - Ensured `get_settings_response` never propagates secure-storage lookup failures: missing credentials and keyring read errors are both treated as `hasKey=false` (with warning diagnostics) so the settings UI remains usable during transient keychain issues.
+- Pinned Rust crate resolution to an available `cc` release in `Cargo.lock` so CI dependency resolution succeeds consistently when building transitive `ring`/`rustls` dependencies.
 
 ## [1.2.6] - 2026-02-26
 
