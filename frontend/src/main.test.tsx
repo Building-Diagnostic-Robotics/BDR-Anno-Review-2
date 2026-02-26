@@ -487,6 +487,40 @@ describe("settings modal", () => {
     expect(screen.getByText(/Anthropic key: Not set/i)).toBeTruthy();
   });
 
+
+  it("does not mark diagnostics as error after successful API key update", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("sk-test-123");
+    mocks.setLlmApiKey.mockResolvedValueOnce(undefined);
+    mocks.getLlmSettings
+      .mockResolvedValueOnce({
+        llmSuggestionsEnabled: true,
+        reasoningPreset: "high",
+        prefetchBufferSize: 12,
+        openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+        anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+      })
+      .mockResolvedValueOnce({
+        llmSuggestionsEnabled: true,
+        reasoningPreset: "high",
+        prefetchBufferSize: 12,
+        openai: { enabled: true, model: "gpt-5.2", hasKey: true },
+        anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+      });
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Set key" }))[0]);
+
+    await waitFor(() => {
+      expect(mocks.setLlmApiKey).toHaveBeenCalledWith({ provider: "openai", apiKey: "sk-test-123" });
+      expect(screen.getByText("READY")).toBeTruthy();
+      expect(screen.queryByText(/\[error\] openai/i)).toBeNull();
+    });
+
+    promptSpy.mockRestore();
+  });
+
   it("shows save errors when settings save is rejected", async () => {
     mocks.saveLlmSettings.mockRejectedValueOnce(new Error("keychain unavailable"));
 

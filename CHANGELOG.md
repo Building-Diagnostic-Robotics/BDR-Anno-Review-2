@@ -7,8 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-02-26
+
 ### Fixed
-- Prevented keyring backend read failures from aborting LLM settings reads by treating secure-key lookup errors as `hasKey=false` (with warning diagnostics), so non-secret settings remain loadable when keychain services are temporarily unavailable.
+- Corrected frontend diagnostics updates for API key set/clear success paths so successful operations no longer emit false `[error] openai`/`[error] anthropic` terminal states.
+- Restored fail-loud key-save semantics by verifying provider key readback immediately after secure write and returning explicit errors when post-write verification fails.
+- Added regression coverage for settings key-update UX and backend key-save verification branches to prevent reintroduction of false-success key flows.
 
 ## [1.2.4] - 2026-02-25
 
