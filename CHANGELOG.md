@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Ensured `get_settings_response` never propagates secure-storage lookup failures: missing credentials and keyring read errors are both treated as `hasKey=false` (with warning diagnostics) so the settings UI remains usable during transient keychain issues.
+
+## [1.2.6] - 2026-02-26
+
+### Fixed
+- Stopped failing API key saves on immediate post-write secure-storage readback so successful keyring writes are treated as success instead of false-negative verification failures on Windows.
+- Preserved explicit fail-loud behavior for real key persistence errors by continuing to surface write failures from secure storage back to the settings UI.
+- Updated backend unit tests to cover write-success and write-failure key-save flows under the simplified no-readback verification strategy.
+
 ## [1.2.5] - 2026-02-26
 
 ### Fixed

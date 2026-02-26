@@ -198,7 +198,7 @@ fn has_key_from_lookup(lookup: Result<Option<String>, String>, provider: &str) -
         Ok(None) => false,
         Err(error) => {
             eprintln!(
-                "warning: failed to read {provider} API key from secure storage; reporting hasKey=false: {error}"
+                "warning: failed to read {provider} API key from secure storage; treating as hasKey=false: {error}"
             );
             false
         }
@@ -207,6 +207,8 @@ fn has_key_from_lookup(lookup: Result<Option<String>, String>, provider: &str) -
 
 pub fn get_settings_response(app: &AppHandle) -> Result<LlmSettingsResponse, String> {
     let settings = load_settings(app)?;
+    // Never fail settings retrieval because secure-key lookup is unavailable.
+    // Missing keys and lookup errors are both represented as hasKey=false.
     let openai_has_key = has_key_from_lookup(openai_key(), "OpenAI");
     let anthropic_has_key = has_key_from_lookup(anthropic_key(), "Anthropic");
 
@@ -305,7 +307,6 @@ fn set_provider_key_with(
     provider: &str,
     api_key: &str,
     set_fn: impl Fn(&str, &str) -> Result<(), String>,
-    read_fn: impl Fn(&str) -> Result<Option<String>, String>,
 ) -> Result<(), String> {
     let username = match provider {
         "openai" => OPENAI_USER,
@@ -313,17 +314,7 @@ fn set_provider_key_with(
         _ => return Err("provider must be `openai` or `anthropic`".to_owned()),
     };
 
-    set_fn(username, api_key)?;
-
-    match read_fn(provider) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(format!(
-            "{provider} API key could not be verified after save; secure storage may be unavailable"
-        )),
-        Err(error) => Err(format!(
-            "failed to verify secure key for {provider} after save: {error}"
-        )),
-    }
+    set_fn(username, api_key)
 }
 
 pub fn set_provider_key(request: SetProviderKeyRequest) -> Result<(), String> {
@@ -336,11 +327,6 @@ pub fn set_provider_key(request: SetProviderKeyRequest) -> Result<(), String> {
         request.provider.as_str(),
         api_key,
         set_key,
-        |provider| match provider {
-            "openai" => openai_key(),
-            "anthropic" => anthropic_key(),
-            _ => Err("provider must be `openai` or `anthropic`".to_owned()),
-        },
     )
 }
 
@@ -405,39 +391,24 @@ mod tests {
     }
 
     #[test]
-    fn set_provider_key_with_verifies_persisted_key() {
+    fn set_provider_key_with_succeeds_when_write_succeeds() {
         let result = set_provider_key_with(
             "openai",
             "token",
             |_username, _value| Ok(()),
-            |_provider| Ok(Some("token".to_owned())),
         );
         assert!(result.is_ok());
     }
 
     #[test]
-    fn set_provider_key_with_rejects_missing_post_write_key() {
+    fn set_provider_key_with_surfaces_write_errors() {
         let error = set_provider_key_with(
             "openai",
             "token",
-            |_username, _value| Ok(()),
-            |_provider| Ok(None),
+            |_username, _value| Err("keychain unavailable".to_owned()),
         )
-        .expect_err("expected verification error");
-        assert!(error.contains("could not be verified after save"));
-    }
-
-    #[test]
-    fn set_provider_key_with_surfaces_readback_errors() {
-        let error = set_provider_key_with(
-            "anthropic",
-            "token",
-            |_username, _value| Ok(()),
-            |_provider| Err("keychain locked".to_owned()),
-        )
-        .expect_err("expected readback error");
-        assert!(error.contains("failed to verify secure key"));
-        assert!(error.contains("keychain locked"));
+        .expect_err("expected write error");
+        assert!(error.contains("keychain unavailable"));
     }
 
     #[test]
@@ -446,14 +417,13 @@ mod tests {
             "bogus",
             "token",
             |_username, _value| Ok(()),
-            |_provider| Ok(Some("token".to_owned())),
         )
         .expect_err("expected provider validation error");
         assert!(error.contains("provider must be `openai` or `anthropic`"));
     }
 
     #[test]
-    fn has_key_from_lookup_treats_failures_as_not_set() {
+    fn has_key_from_lookup_treats_missing_and_errors_as_not_set() {
         assert!(has_key_from_lookup(Ok(Some("token".to_owned())), "OpenAI"));
         assert!(!has_key_from_lookup(Ok(None), "OpenAI"));
         assert!(!has_key_from_lookup(
