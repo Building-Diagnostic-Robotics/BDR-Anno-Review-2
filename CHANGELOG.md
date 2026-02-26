@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-02-26
+
+### Fixed
+- Raised the backend default LLM suggestion request timeout from 30s to 120s and added a 10s connect-timeout guard for OpenAI transport so slow multimodal/tooling responses no longer fail prematurely as client-side timeouts.
+- Removed the frontend hardcoded 30s suggestion timeout override so runtime requests inherit backend timeout policy consistently.
+- Improved OpenAI proxy diagnostics to include `ALL_PROXY`/`all_proxy` and `NO_PROXY`/`no_proxy` signal reporting, reducing false "direct" hints in timeout troubleshooting.
+
 ## [1.2.7] - 2026-02-26
 
 ### Fixed

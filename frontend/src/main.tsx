@@ -705,7 +705,7 @@ export function App() {
     let cancelled = false;
     const run = async () => {
       try {
-        const response = await getSuggestions(datasetRoot, faceId, 30000);
+        const response = await getSuggestions(datasetRoot, faceId);
         if (cancelled) return;
         setSuggestionsByFace((prev) => ({ ...prev, [faceId]: response.suggestions }));
       } catch (cause) {
