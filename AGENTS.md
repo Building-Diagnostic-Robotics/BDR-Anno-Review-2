@@ -1,11 +1,5 @@
 # Repository Guidelines for Automation (AGENTS)
 
-## Document purpose and boundaries
-This document is the **canonical source for automation-only guardrails and agent workflow requirements**.
-
-## Agent scope
-These instructions apply to automated agents working in this repository.
-
 ## Automation guardrails
 - Fail loudly on missing required inputs and preserve explicit diagnostics.
 - Keep dependencies and implementation weight minimal unless a change clearly requires more.
