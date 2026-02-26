@@ -301,22 +301,52 @@ pub fn clear_provider_key(request: ProviderKeyRequest) -> Result<(), String> {
     }
 }
 
+fn set_provider_key_with(
+    provider: &str,
+    api_key: &str,
+    set_fn: impl Fn(&str, &str) -> Result<(), String>,
+    read_fn: impl Fn(&str) -> Result<Option<String>, String>,
+) -> Result<(), String> {
+    let username = match provider {
+        "openai" => OPENAI_USER,
+        "anthropic" => ANTHROPIC_USER,
+        _ => return Err("provider must be `openai` or `anthropic`".to_owned()),
+    };
+
+    set_fn(username, api_key)?;
+
+    match read_fn(provider) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(format!(
+            "{provider} API key could not be verified after save; secure storage may be unavailable"
+        )),
+        Err(error) => Err(format!(
+            "failed to verify secure key for {provider} after save: {error}"
+        )),
+    }
+}
+
 pub fn set_provider_key(request: SetProviderKeyRequest) -> Result<(), String> {
     let api_key = request.api_key.trim();
     if api_key.is_empty() {
         return Err("apiKey is required".to_owned());
     }
 
-    match request.provider.as_str() {
-        "openai" => set_key(OPENAI_USER, api_key),
-        "anthropic" => set_key(ANTHROPIC_USER, api_key),
-        _ => Err("provider must be `openai` or `anthropic`".to_owned()),
-    }
+    set_provider_key_with(
+        request.provider.as_str(),
+        api_key,
+        set_key,
+        |provider| match provider {
+            "openai" => openai_key(),
+            "anthropic" => anthropic_key(),
+            _ => Err("provider must be `openai` or `anthropic`".to_owned()),
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{has_key_from_lookup, is_missing_key_error, validate_provider_selection};
+    use super::{has_key_from_lookup, is_missing_key_error, set_provider_key_with, validate_provider_selection};
     use keyring::Error;
 
     #[test]
@@ -369,6 +399,55 @@ mod tests {
         assert!(!is_missing_key_error(&Error::PlatformFailure(
             "No such object path '/org/freedesktop/secrets/collection/login'".into()
         )));
+    }
+
+
+    #[test]
+    fn set_provider_key_with_verifies_persisted_key() {
+        let result = set_provider_key_with(
+            "openai",
+            "token",
+            |_username, _value| Ok(()),
+            |_provider| Ok(Some("token".to_owned())),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn set_provider_key_with_rejects_missing_post_write_key() {
+        let error = set_provider_key_with(
+            "openai",
+            "token",
+            |_username, _value| Ok(()),
+            |_provider| Ok(None),
+        )
+        .expect_err("expected verification error");
+        assert!(error.contains("could not be verified after save"));
+    }
+
+    #[test]
+    fn set_provider_key_with_surfaces_readback_errors() {
+        let error = set_provider_key_with(
+            "anthropic",
+            "token",
+            |_username, _value| Ok(()),
+            |_provider| Err("keychain locked".to_owned()),
+        )
+        .expect_err("expected readback error");
+        assert!(error.contains("failed to verify secure key"));
+        assert!(error.contains("keychain locked"));
+    }
+
+    #[test]
+    fn set_provider_key_with_rejects_unknown_provider() {
+        let error = set_provider_key_with(
+            "bogus",
+            "token",
+            |_username, _value| Ok(()),
+            |_provider| Ok(Some("token".to_owned())),
+        )
+        .expect_err("expected provider validation error");
+        assert!(error.contains("provider must be `openai` or `anthropic`"));
     }
 
     #[test]

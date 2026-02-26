@@ -1356,12 +1356,12 @@ export function App() {
           onSetProviderKey={async (provider, apiKey) => {
             await setLlmApiKey({ provider, apiKey });
             await refreshLlmSettings();
-            updateDiagnostics("API key updated", provider);
+            updateDiagnostics("API key updated");
           }}
           onClearProviderKey={async (provider) => {
             await clearLlmApiKey(provider);
             await refreshLlmSettings();
-            updateDiagnostics("API key cleared", provider);
+            updateDiagnostics("API key cleared");
           }}
         />
       ) : null}
