@@ -323,11 +323,7 @@ pub fn set_provider_key(request: SetProviderKeyRequest) -> Result<(), String> {
         return Err("apiKey is required".to_owned());
     }
 
-    set_provider_key_with(
-        request.provider.as_str(),
-        api_key,
-        set_key,
-    )
+    set_provider_key_with(request.provider.as_str(), api_key, set_key)
 }
 
 #[cfg(test)]
@@ -392,33 +388,23 @@ mod tests {
 
     #[test]
     fn set_provider_key_with_succeeds_when_write_succeeds() {
-        let result = set_provider_key_with(
-            "openai",
-            "token",
-            |_username, _value| Ok(()),
-        );
+        let result = set_provider_key_with("openai", "token", |_username, _value| Ok(()));
         assert!(result.is_ok());
     }
 
     #[test]
     fn set_provider_key_with_surfaces_write_errors() {
-        let error = set_provider_key_with(
-            "openai",
-            "token",
-            |_username, _value| Err("keychain unavailable".to_owned()),
-        )
+        let error = set_provider_key_with("openai", "token", |_username, _value| {
+            Err("keychain unavailable".to_owned())
+        })
         .expect_err("expected write error");
         assert!(error.contains("keychain unavailable"));
     }
 
     #[test]
     fn set_provider_key_with_rejects_unknown_provider() {
-        let error = set_provider_key_with(
-            "bogus",
-            "token",
-            |_username, _value| Ok(()),
-        )
-        .expect_err("expected provider validation error");
+        let error = set_provider_key_with("bogus", "token", |_username, _value| Ok(()))
+            .expect_err("expected provider validation error");
         assert!(error.contains("provider must be `openai` or `anthropic`"));
     }
 
