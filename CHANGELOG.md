@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Derived diagnostics terminal health badge from the latest log entry level so transient historical errors no longer keep status stuck in `ERROR` after recovery/clear actions.
+- Prevented concurrent editor warmup retries by guarding warmup entry while an existing warmup loop is in flight and disabling retry while the warmup modal is active.
+
 ## [1.2.9] - 2026-02-26
 
 ### Added

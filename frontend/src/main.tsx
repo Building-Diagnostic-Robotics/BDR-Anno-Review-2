@@ -176,6 +176,7 @@ export function App() {
   const inferredCocoPathRef = useRef("");
   const inferredMp4PathRef = useRef("");
   const skipWarmupRequestedRef = useRef(false);
+  const warmupInFlightRef = useRef(false);
 
   useEffect(() => {
     editsRef.current = edits;
@@ -487,6 +488,11 @@ export function App() {
   };
 
   const enterEditorWithWarmup = useCallback(async (nextFaces: FaceListItem[]) => {
+    if (warmupInFlightRef.current) {
+      updateDiagnostics("Editor warmup already in progress", "", { scope: "warmup", level: "warn" });
+      return;
+    }
+
     if (!llmSettings?.llmSuggestionsEnabled || nextFaces.length === 0 || !datasetRoot) {
       setPage("editor");
       return;
@@ -503,6 +509,7 @@ export function App() {
     const thresholdRatio = llmSettings.editorWarmupThresholdRatio ?? EDITOR_WARMUP_THRESHOLD_RATIO;
     const timeoutMs = llmSettings.editorWarmupTimeoutMs ?? EDITOR_WARMUP_TIMEOUT_MS;
     const requiredReady = Math.max(1, Math.ceil(uncachedFaceIds.length * thresholdRatio));
+    warmupInFlightRef.current = true;
     setIsEnteringEditor(true);
     setWarmupTimedOut(false);
     setEditorWarmupFaceIds(uncachedFaceIds);
@@ -548,6 +555,7 @@ export function App() {
     } catch (cause) {
       updateDiagnostics("Editor warmup failed", String(cause), { scope: "warmup" });
     } finally {
+      warmupInFlightRef.current = false;
       setIsEnteringEditor(false);
       setEditorWarmupReadyCount(0);
       setEditorWarmupMessage("");
@@ -1255,8 +1263,8 @@ export function App() {
     setPage("home");
   };
 
-  const latestError = [...diagnosticsLog].reverse().find((entry) => entry.level === "error");
-  const hasDiagnosticError = Boolean(latestError);
+  const latestDiagnosticEntry = diagnosticsLog[diagnosticsLog.length - 1] ?? null;
+  const hasDiagnosticError = latestDiagnosticEntry?.level === "error";
   const diagnosticsText = ["$ bdr-anno-review", ...diagnosticsLog.map((entry) => {
     const scope = `[${entry.scope}]`;
     const level = `[${entry.level}]`;
@@ -1571,7 +1579,7 @@ export function App() {
             <p className="mt-1 text-xs text-anno-text-muted">Targets: {editorWarmupFaceIds.length} • Required threshold ready: {Math.max(1, Math.ceil(editorWarmupFaceIds.length * (llmSettings?.editorWarmupThresholdRatio ?? EDITOR_WARMUP_THRESHOLD_RATIO)))} • Ready now: {editorWarmupReadyCount}</p>
             <p className="mt-1 text-xs text-anno-text-muted">Queue status: {queueSummaryText(warmupQueueSummary)}</p>
             <div className="mt-3 flex gap-2">
-              <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()}>Retry warmup for current buffer</Button>
+              <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()} disabled={isEnteringEditor}>Retry warmup for current buffer</Button>
               <Button variant="tonal" onClick={() => setSkipWarmupRequested(true)}>Continue immediately</Button>
             </div>
           </div>
