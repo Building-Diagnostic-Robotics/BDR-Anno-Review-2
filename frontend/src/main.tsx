@@ -21,8 +21,9 @@ import {
   setLlmApiKey,
   clearLlmApiKey,
   getSuggestions,
-  prefetchSuggestions,
-  getSuggestionQueueState,
+  startEditingSession,
+  getSuggestionsReadiness,
+  topupSuggestions,
 } from "./api";
 import type { AnnotationEdit, FaceListItem, LlmSettingsResponse, ReasoningPreset, SaveLlmSettingsRequest, SuggestionBox } from "./types";
 import "./styles.css";
@@ -89,19 +90,17 @@ const resolveFaceImagePath = (datasetRoot: string, imagePath: string) => {
 
 const emptyQueueSummary = (): QueueStatusSummary => ({ unseen: 0, queued: 0, inFlight: 0, ready: 0, failed: 0 });
 
-const summarizeQueueState = (items: { status: string }[]): QueueStatusSummary => {
-  const summary = emptyQueueSummary();
-  for (const item of items) {
-    if (item.status === "queued") summary.queued += 1;
-    else if (item.status === "in_flight") summary.inFlight += 1;
-    else if (item.status === "ready") summary.ready += 1;
-    else if (item.status === "failed") summary.failed += 1;
-    else summary.unseen += 1;
-  }
-  return summary;
-};
 
 const queueSummaryText = (summary: QueueStatusSummary) => `ready=${summary.ready}, queued=${summary.queued}, in_flight=${summary.inFlight}, failed=${summary.failed}, unseen=${summary.unseen}`;
+
+
+const summaryFromReadiness = (readiness: { readyCount: number; queuedCount: number; inProgressCount: number; failedCount: number }): QueueStatusSummary => ({
+  unseen: 0,
+  queued: readiness.queuedCount,
+  inFlight: readiness.inProgressCount,
+  ready: readiness.readyCount,
+  failed: readiness.failedCount,
+});
 
 export function App() {
   const [page, setPage] = useState<AppPage>("home");
@@ -233,16 +232,20 @@ export function App() {
     if (!llmSettings?.llmSuggestionsEnabled || !datasetRoot || faces.length === 0 || selectedIndex < 0) {
       return;
     }
-    const bufferStart = selectedIndex;
-    const bufferEnd = Math.min(faces.length, bufferStart + llmSettings.prefetchBufferSize);
-    const faceIds = faces.slice(bufferStart, bufferEnd).map((face) => face.faceId);
-    if (faceIds.length === 0) return;
+    const currentFaceId = faces[selectedIndex]?.faceId;
+    if (!currentFaceId) {
+      return;
+    }
     try {
-      const queued = await prefetchSuggestions(datasetRoot, faceIds);
-      const summary = summarizeQueueState(queued.items);
-      updateDiagnostics("Suggestion prefetch queued", "", { scope: "prefetch", metadata: `faces=${queued.items.length}, ${queueSummaryText(summary)}` });
-      const readyIds = queued.items.filter((item) => item.status === "ready").map((item) => item.faceId);
-      for (const readyFaceId of readyIds) {
+      const readiness = await topupSuggestions({
+        datasetRoot,
+        currentFaceId,
+        lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
+        targetBufferSize: llmSettings.prefetchBufferSize,
+      });
+      const summary = summaryFromReadiness(readiness);
+      updateDiagnostics("Suggestion prefetch queued", "", { scope: "prefetch", metadata: `faces=${readiness.candidateFaceIds.length}, ${queueSummaryText(summary)}` });
+      for (const readyFaceId of readiness.candidateFaceIds) {
         if (suggestionsByFace[readyFaceId]) {
           continue;
         }
@@ -522,11 +525,21 @@ export function App() {
     let dynamicDeadline = startedAt + timeoutMs;
     let lastReadyCount = 0;
     try {
-      const prefetched = await prefetchSuggestions(datasetRoot, uncachedFaceIds);
-      updateDiagnostics("Editor warmup started", "", { scope: "warmup", metadata: `targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summarizeQueueState(prefetched.items))}` });
+      const start = await startEditingSession({
+        datasetRoot,
+        currentFaceId: uncachedFaceIds[0],
+        lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
+        targetBufferSize: llmSettings.prefetchBufferSize,
+        minReadyToStart: requiredReady,
+      });
+      updateDiagnostics("Editor warmup started", "", { scope: "warmup", metadata: `targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summaryFromReadiness(start))}` });
       while (Date.now() < dynamicDeadline) {
-        const queue = await getSuggestionQueueState(datasetRoot, uncachedFaceIds);
-        const summary = summarizeQueueState(queue.items);
+        const readiness = await getSuggestionsReadiness({
+          datasetRoot,
+          currentFaceId: uncachedFaceIds[0],
+          lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
+        });
+        const summary = summaryFromReadiness(readiness);
         setWarmupQueueSummary(summary);
         const readyCount = summary.ready;
         setEditorWarmupReadyCount(readyCount);
@@ -543,11 +556,21 @@ export function App() {
           updateDiagnostics("Editor warmup skipped", "", { scope: "warmup", level: "warn", metadata: `Entered editor early. targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summary)}` });
           break;
         }
+        await topupSuggestions({
+          datasetRoot,
+          currentFaceId: uncachedFaceIds[0],
+          lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
+          targetBufferSize: llmSettings.prefetchBufferSize,
+        });
         await new Promise((resolve) => setTimeout(resolve, EDITOR_WARMUP_POLL_MS));
       }
       if (!skipWarmupRequestedRef.current && Date.now() >= dynamicDeadline) {
-        const queue = await getSuggestionQueueState(datasetRoot, uncachedFaceIds);
-        const summary = summarizeQueueState(queue.items);
+        const readiness = await getSuggestionsReadiness({
+          datasetRoot,
+          currentFaceId: uncachedFaceIds[0],
+          lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
+        });
+        const summary = summaryFromReadiness(readiness);
         setWarmupQueueSummary(summary);
         setWarmupTimedOut(true);
         updateDiagnostics("Editor warmup timed out", "", { scope: "warmup", level: "warn", metadata: `Entered editor after timeout. targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summary)}` });
@@ -822,7 +845,6 @@ export function App() {
         updateDiagnostics("Suggestion fetch failed", String(cause), { scope: "suggestion-fetch", metadata: `faceId=${faceId}` });
       }
 
-      void getSuggestionQueueState(datasetRoot, faces.map((f) => f.faceId)).catch(() => undefined);
     };
 
     void run();

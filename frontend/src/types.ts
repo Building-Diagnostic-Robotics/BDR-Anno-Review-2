@@ -192,3 +192,38 @@ export type QueueStateItem = {
 export type QueueStateResponse = {
   items: QueueStateItem[];
 };
+
+
+export type EditingSessionStartRequest = {
+  datasetRoot: string;
+  currentFaceId: string;
+  lookaheadWindow: number;
+  targetBufferSize: number;
+  minReadyToStart: number;
+  failureCooldownSeconds?: number;
+};
+
+export type SuggestionReadinessRequest = {
+  datasetRoot: string;
+  currentFaceId: string;
+  lookaheadWindow: number;
+};
+
+export type SuggestionTopupRequest = {
+  datasetRoot: string;
+  currentFaceId: string;
+  lookaheadWindow: number;
+  targetBufferSize: number;
+  failureCooldownSeconds?: number;
+};
+
+export type SuggestionReadinessResponse = {
+  readyCount: number;
+  queuedCount: number;
+  inProgressCount: number;
+  failedCount: number;
+  targetBufferSize: number;
+  minReadyToStart: number;
+  blocked: boolean;
+  candidateFaceIds: string[];
+};

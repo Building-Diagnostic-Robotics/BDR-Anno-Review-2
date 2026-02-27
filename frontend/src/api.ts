@@ -22,6 +22,10 @@ import type {
   StartGenerationResponse,
   AbortGenerationResponse,
   SetLlmApiKeyRequest,
+  EditingSessionStartRequest,
+  SuggestionReadinessRequest,
+  SuggestionTopupRequest,
+  SuggestionReadinessResponse,
 } from "./types";
 
 const normalizeInboundEdit = (edit: AnnotationEdit | Record<string, unknown>): AnnotationEdit => {
@@ -139,3 +143,13 @@ export const prefetchSuggestions = async (datasetRoot: string, faceIds: string[]
 
 export const getSuggestionQueueState = async (datasetRoot: string, faceIds: string[]) =>
   invoke<QueueStateResponse>("get_suggestion_queue_state_command", { datasetRoot, faceIds });
+
+
+export const startEditingSession = async (request: EditingSessionStartRequest) =>
+  invoke<SuggestionReadinessResponse>("editing_session_start_command", { request });
+
+export const getSuggestionsReadiness = async (request: SuggestionReadinessRequest) =>
+  invoke<SuggestionReadinessResponse>("suggestions_readiness_command", { request });
+
+export const topupSuggestions = async (request: SuggestionTopupRequest) =>
+  invoke<SuggestionReadinessResponse>("suggestions_topup_command", { request });
