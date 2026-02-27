@@ -6,13 +6,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 mod llm;
 mod settings;
+mod suggestion_signature;
+mod suggestion_store;
 
 use llm::{
     generate_suggestions_with_retry, QueueStateResponse, SuggestionQueue,
@@ -20,8 +22,15 @@ use llm::{
 };
 use settings::{
     anthropic_key, clear_provider_key, get_settings_response, load_settings, openai_key,
-    save_settings_request, set_provider_key, LlmSettingsResponse, ProviderKeyRequest,
+    save_settings_request, set_provider_key, LlmSettings, LlmSettingsResponse, ProviderKeyRequest,
     SaveLlmSettingsRequest, SetProviderKeyRequest,
+};
+use suggestion_signature::{compute_suggestion_signature, SuggestionSignatureInput};
+use suggestion_store::{
+    complete_job, ensure_schema, has_active_job, has_ready_suggestion, insert_jobs_if_missing,
+    lease_next_job, mark_suggestion_failed, readiness_snapshot, recently_failed,
+    upsert_suggestion_ready, JobInsert, ReadinessSnapshot, JOB_STATUS_CANCELLED, JOB_STATUS_DONE,
+    JOB_STATUS_FAILED,
 };
 
 use engine::{
@@ -40,9 +49,10 @@ const STAGING_WORKSPACE_MARKER_FILE: &str = ".bdr-anno-review-owned";
 
 struct AppState {
     annotation_cache: Mutex<HashMap<(String, String), Vec<AnnotationEdit>>>,
-    suggestion_cache: Mutex<HashMap<(String, String), SuggestionResponse>>,
+    suggestion_cache: Mutex<HashMap<(String, String, String), SuggestionResponse>>,
     suggestion_queue: Mutex<SuggestionQueue>,
     generation_jobs: Mutex<HashMap<String, GenerationJobRecord>>,
+    suggestion_worker_running: Mutex<bool>,
 }
 
 impl Default for AppState {
@@ -52,8 +62,52 @@ impl Default for AppState {
             suggestion_cache: Mutex::new(HashMap::new()),
             suggestion_queue: Mutex::new(SuggestionQueue::new()),
             generation_jobs: Mutex::new(HashMap::new()),
+            suggestion_worker_running: Mutex::new(false),
         }
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditingSessionStartRequest {
+    dataset_root: String,
+    current_face_id: String,
+    lookahead_window: usize,
+    target_buffer_size: usize,
+    min_ready_to_start: usize,
+    failure_cooldown_seconds: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionReadinessRequest {
+    dataset_root: String,
+    current_face_id: String,
+    lookahead_window: usize,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionTopupRequest {
+    dataset_root: String,
+    current_face_id: String,
+    lookahead_window: usize,
+    target_buffer_size: usize,
+    failure_cooldown_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestionReadinessResponse {
+    ready_count: usize,
+    queued_count: usize,
+    in_progress_count: usize,
+    failed_count: usize,
+    target_buffer_size: usize,
+    min_ready_to_start: usize,
+    blocked: bool,
+    candidate_face_ids: Vec<String>,
+    ready_face_ids: Vec<String>,
 }
 
 struct AppSession {
@@ -1307,26 +1361,327 @@ fn get_face_by_id(dataset_root: &str, face_id: &str) -> Result<FaceView, String>
         .ok_or_else(|| format!("unknown face_id: {face_id}"))
 }
 
+fn active_provider_model(settings: &LlmSettings) -> Result<String, String> {
+    if settings.openai.enabled {
+        return Ok(settings.openai.model.trim().to_owned());
+    }
+    if settings.anthropic.enabled {
+        return Ok(settings.anthropic.model.trim().to_owned());
+    }
+    Err("no LLM provider is enabled in settings".to_owned())
+}
+
+fn suggestion_signature_from_settings(settings: &LlmSettings) -> Result<String, String> {
+    let model_id = active_provider_model(settings)?;
+    compute_suggestion_signature(&SuggestionSignatureInput {
+        model_id,
+        prompt_template_version: "suggest_boxes_v1".to_owned(),
+        preprocessing_version: "face_manifest_v1".to_owned(),
+        generation_params: serde_json::json!({
+            "reasoningPreset": settings.reasoning_preset,
+            "prefetchBufferSize": settings.prefetch_buffer_size,
+            "editorWarmupThresholdRatio": settings.editor_warmup_threshold_ratio,
+        }),
+    })
+}
+
+fn candidate_face_ids(
+    manifest: &ViewManifest,
+    current_face_id: &str,
+    lookahead_window: usize,
+) -> Vec<String> {
+    let Some(current_index) = manifest
+        .faces
+        .iter()
+        .position(|face| face.face_id == current_face_id)
+    else {
+        return Vec::new();
+    };
+
+    let end = (current_index + lookahead_window + 1).min(manifest.faces.len());
+    manifest.faces[current_index..end]
+        .iter()
+        .map(|face| face.face_id.clone())
+        .collect()
+}
+
+fn to_readiness_response(
+    snapshot: ReadinessSnapshot,
+    target_buffer_size: usize,
+    min_ready_to_start: usize,
+    candidate_face_ids: Vec<String>,
+    ready_face_ids: Vec<String>,
+) -> SuggestionReadinessResponse {
+    SuggestionReadinessResponse {
+        ready_count: snapshot.ready_count,
+        queued_count: snapshot.queued_count,
+        in_progress_count: snapshot.in_progress_count,
+        failed_count: snapshot.failed_count,
+        target_buffer_size,
+        min_ready_to_start,
+        blocked: snapshot.ready_count < min_ready_to_start,
+        candidate_face_ids,
+        ready_face_ids,
+    }
+}
+
+fn suggestion_queue_key(dataset_root: &str, face_id: &str) -> (String, String) {
+    (dataset_root.to_owned(), face_id.to_owned())
+}
+
+fn ready_face_ids_for_signature(
+    app: &AppHandle,
+    dataset_root: &str,
+    candidate_face_ids: &[String],
+    signature: &str,
+) -> Vec<String> {
+    candidate_face_ids
+        .iter()
+        .filter_map(|face_id| {
+            has_ready_suggestion(app, dataset_root, face_id, signature)
+                .ok()
+                .and_then(|is_ready| {
+                    if is_ready {
+                        Some(face_id.clone())
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect()
+}
+
+fn run_suggestion_topup(
+    app: &AppHandle,
+    state: &AppState,
+    dataset_root: &str,
+    current_face_id: &str,
+    lookahead_window: usize,
+    target_buffer_size: usize,
+    failure_cooldown_seconds: u64,
+) -> Result<(ReadinessSnapshot, Vec<String>, Vec<String>, usize), String> {
+    let settings = load_settings(app)?;
+    let signature = suggestion_signature_from_settings(&settings)?;
+    let manifest = load_manifest(dataset_root)?;
+    let candidates = candidate_face_ids(&manifest, current_face_id, lookahead_window);
+    let before = readiness_snapshot(app, dataset_root, &candidates, &signature)?;
+    let tracked = before.ready_count + before.queued_count + before.in_progress_count;
+    let vacancy = target_buffer_size.saturating_sub(tracked);
+
+    let mut jobs = Vec::new();
+    if vacancy > 0 {
+        for (offset, frame_id) in candidates.iter().enumerate() {
+            if jobs.len() >= vacancy {
+                break;
+            }
+            if has_ready_suggestion(app, dataset_root, frame_id, &signature)? {
+                continue;
+            }
+            if has_active_job(app, dataset_root, frame_id, &signature)? {
+                continue;
+            }
+            if recently_failed(
+                app,
+                dataset_root,
+                frame_id,
+                &signature,
+                failure_cooldown_seconds as i64,
+            )? {
+                continue;
+            }
+            let priority = 1000_i64.saturating_sub(offset as i64);
+            jobs.push(JobInsert {
+                job_id: format!(
+                    "sjob-{}-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or_default(),
+                    offset
+                ),
+                dataset_id: dataset_root.to_owned(),
+                frame_id: frame_id.clone(),
+                suggestion_signature: signature.clone(),
+                priority,
+            });
+        }
+    }
+
+    let inserted = insert_jobs_if_missing(app, &jobs)?;
+    for job in &jobs {
+        let mut queue = state
+            .suggestion_queue
+            .lock()
+            .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
+        queue.states.insert(
+            suggestion_queue_key(dataset_root, &job.frame_id),
+            "queued".to_owned(),
+        );
+    }
+
+    let after = readiness_snapshot(app, dataset_root, &candidates, &signature)?;
+    let ready_face_ids = ready_face_ids_for_signature(app, dataset_root, &candidates, &signature);
+    Ok((after, candidates, ready_face_ids, inserted))
+}
+
+fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let mut running = state
+            .suggestion_worker_running
+            .lock()
+            .map_err(|_| "suggestion worker lock poisoned".to_owned())?;
+        if *running {
+            return Ok(());
+        }
+        *running = true;
+    }
+
+    let app_for_thread = app.clone();
+    std::thread::spawn(move || loop {
+        let lease = lease_next_job(&app_for_thread, 30);
+        let Some(job) = (match lease {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("suggestion worker lease failed: {error}");
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+        }) else {
+            std::thread::sleep(Duration::from_millis(350));
+            continue;
+        };
+
+        let state = app_for_thread.state::<AppState>();
+        if let Ok(mut queue) = state.suggestion_queue.lock() {
+            queue.states.insert(
+                suggestion_queue_key(&job.dataset_id, &job.frame_id),
+                "in_flight".to_owned(),
+            );
+        }
+
+        let maybe_ready = has_ready_suggestion(
+            &app_for_thread,
+            &job.dataset_id,
+            &job.frame_id,
+            &job.suggestion_signature,
+        );
+        match maybe_ready {
+            Ok(true) => {
+                let _ = complete_job(&app_for_thread, &job.job_id, JOB_STATUS_CANCELLED, None);
+                if let Ok(mut queue) = state.suggestion_queue.lock() {
+                    queue.states.insert(
+                        suggestion_queue_key(&job.dataset_id, &job.frame_id),
+                        "ready".to_owned(),
+                    );
+                }
+                continue;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                let _ = complete_job(
+                    &app_for_thread,
+                    &job.job_id,
+                    JOB_STATUS_FAILED,
+                    Some(&format!("dedup check failed: {error}")),
+                );
+                if let Ok(mut queue) = state.suggestion_queue.lock() {
+                    queue.states.insert(
+                        suggestion_queue_key(&job.dataset_id, &job.frame_id),
+                        "failed".to_owned(),
+                    );
+                }
+                continue;
+            }
+        }
+
+        let request = SuggestionRequest {
+            dataset_root: job.dataset_id.clone(),
+            face_id: job.frame_id.clone(),
+            timeout_ms: Some(20_000),
+        };
+        let result = generate_and_cache_suggestion(
+            &app_for_thread,
+            &state,
+            request,
+            Some(job.suggestion_signature.as_str()),
+        );
+        match result {
+            Ok(response) => {
+                if let Ok(payload) = serde_json::to_string(&response) {
+                    let _ = upsert_suggestion_ready(
+                        &app_for_thread,
+                        &job.dataset_id,
+                        &job.frame_id,
+                        &job.suggestion_signature,
+                        &payload,
+                    );
+                }
+                let _ = complete_job(&app_for_thread, &job.job_id, JOB_STATUS_DONE, None);
+                let _ = app_for_thread.emit("suggestion-job-complete", &job.frame_id);
+            }
+            Err(error) => {
+                let _ = mark_suggestion_failed(
+                    &app_for_thread,
+                    &job.dataset_id,
+                    &job.frame_id,
+                    &job.suggestion_signature,
+                );
+                let _ = complete_job(
+                    &app_for_thread,
+                    &job.job_id,
+                    JOB_STATUS_FAILED,
+                    Some(&error),
+                );
+                if let Ok(mut queue) = state.suggestion_queue.lock() {
+                    queue.states.insert(
+                        suggestion_queue_key(&job.dataset_id, &job.frame_id),
+                        "failed".to_owned(),
+                    );
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
 #[tauri::command]
 fn get_suggestions_command(
     app: AppHandle,
     state: State<AppState>,
     request: SuggestionRequest,
 ) -> Result<SuggestionResponse, String> {
-    generate_and_cache_suggestion(&app, &state, request)
+    ensure_schema(&app)?;
+    generate_and_cache_suggestion(&app, &state, request, None)
 }
 
 fn generate_and_cache_suggestion(
     app: &AppHandle,
     state: &AppState,
     request: SuggestionRequest,
+    expected_signature: Option<&str>,
 ) -> Result<SuggestionResponse, String> {
     let settings = load_settings(app)?;
     if !settings.llm_suggestions_enabled {
         return Err("LLM suggestions are disabled in settings".to_owned());
     }
 
-    let cache_key = (request.dataset_root.clone(), request.face_id.clone());
+    let signature = suggestion_signature_from_settings(&settings)?;
+    if let Some(expected) = expected_signature {
+        if signature != expected {
+            return Err(format!(
+                "suggestion signature mismatch: current={signature}, expected={expected}"
+            ));
+        }
+    }
+
+    let cache_key = (
+        request.dataset_root.clone(),
+        request.face_id.clone(),
+        signature,
+    );
     if let Some(cached) = state
         .suggestion_cache
         .lock()
@@ -1411,95 +1766,126 @@ fn generate_and_cache_suggestion(
     }
 }
 
-fn should_enqueue_prefetch(status: Option<&str>) -> bool {
-    !matches!(status, Some("queued" | "in_flight" | "ready"))
-}
-
-fn suggestion_queue_key(dataset_root: &str, face_id: &str) -> (String, String) {
-    (dataset_root.to_owned(), face_id.to_owned())
-}
-
 #[tauri::command]
 fn prefetch_suggestions_command(
     app: AppHandle,
     state: State<AppState>,
     request: SuggestionQueuePrefetchRequest,
 ) -> Result<QueueStateResponse, String> {
+    ensure_schema(&app)?;
+    ensure_suggestion_worker(&app)?;
+
     let settings = load_settings(&app)?;
     if !settings.llm_suggestions_enabled {
         return Ok(QueueStateResponse { items: Vec::new() });
     }
 
-    let limited: Vec<String> = request
-        .face_ids
-        .into_iter()
-        .take(settings.prefetch_buffer_size)
-        .collect();
-
-    for face_id in &limited {
-        {
-            let cache = state
-                .suggestion_cache
-                .lock()
-                .map_err(|_| "suggestion cache lock poisoned".to_owned())?;
-            if cache.contains_key(&(request.dataset_root.clone(), face_id.clone())) {
-                continue;
-            }
-        }
-
-        let should_spawn = {
-            let mut queue = state
-                .suggestion_queue
-                .lock()
-                .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
-            let key = suggestion_queue_key(&request.dataset_root, face_id);
-            if should_enqueue_prefetch(queue.states.get(&key).map(String::as_str)) {
-                queue.states.insert(key, "queued".to_owned());
-                true
-            } else {
-                false
-            }
-        };
-
-        if !should_spawn {
-            continue;
-        }
-
-        let app_for_task = app.clone();
-        let request_for_task = SuggestionRequest {
-            dataset_root: request.dataset_root.clone(),
-            face_id: face_id.clone(),
-            timeout_ms: Some(20_000),
-        };
-        tauri::async_runtime::spawn(async move {
-            let state = app_for_task.state::<AppState>();
-            let _ = generate_and_cache_suggestion(&app_for_task, &state, request_for_task);
-        });
-    }
+    let current = request.face_ids.first().cloned().unwrap_or_default();
+    let lookahead = settings.prefetch_buffer_size.saturating_sub(1);
+    let (_, candidate_face_ids, _, _) = run_suggestion_topup(
+        &app,
+        &state,
+        &request.dataset_root,
+        &current,
+        lookahead,
+        settings.prefetch_buffer_size,
+        30,
+    )?;
 
     let queue = state
         .suggestion_queue
         .lock()
         .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
-    Ok(queue.state(&request.dataset_root, &limited))
+    Ok(queue.state(&request.dataset_root, &candidate_face_ids))
 }
 
-#[cfg(test)]
-mod prefetch_tests {
-    use super::should_enqueue_prefetch;
+#[tauri::command]
+fn editing_session_start_command(
+    app: AppHandle,
+    state: State<AppState>,
+    request: EditingSessionStartRequest,
+) -> Result<SuggestionReadinessResponse, String> {
+    ensure_schema(&app)?;
+    ensure_suggestion_worker(&app)?;
 
-    #[test]
-    fn enqueue_prefetch_for_unseen_or_failed_faces() {
-        assert!(should_enqueue_prefetch(None));
-        assert!(should_enqueue_prefetch(Some("failed")));
-    }
+    let (snapshot, candidates, ready_face_ids, _) = run_suggestion_topup(
+        &app,
+        &state,
+        &request.dataset_root,
+        &request.current_face_id,
+        request.lookahead_window,
+        request.target_buffer_size,
+        request.failure_cooldown_seconds.unwrap_or(30),
+    )?;
 
-    #[test]
-    fn skip_prefetch_for_queued_in_flight_and_ready_faces() {
-        assert!(!should_enqueue_prefetch(Some("queued")));
-        assert!(!should_enqueue_prefetch(Some("in_flight")));
-        assert!(!should_enqueue_prefetch(Some("ready")));
-    }
+    Ok(to_readiness_response(
+        snapshot,
+        request.target_buffer_size,
+        request.min_ready_to_start,
+        candidates,
+        ready_face_ids,
+    ))
+}
+
+#[tauri::command]
+fn suggestions_readiness_command(
+    app: AppHandle,
+    request: SuggestionReadinessRequest,
+) -> Result<SuggestionReadinessResponse, String> {
+    ensure_schema(&app)?;
+    let settings = load_settings(&app)?;
+    let signature = suggestion_signature_from_settings(&settings)?;
+    let manifest = load_manifest(&request.dataset_root)?;
+    let candidates = candidate_face_ids(
+        &manifest,
+        &request.current_face_id,
+        request.lookahead_window,
+    );
+    let target = settings.prefetch_buffer_size;
+    let required = ((target as f64) * settings.editor_warmup_threshold_ratio).ceil() as usize;
+    let min_ready = required.clamp(1, target.max(1));
+    let snapshot = readiness_snapshot(&app, &request.dataset_root, &candidates, &signature)?;
+    let ready_face_ids =
+        ready_face_ids_for_signature(&app, &request.dataset_root, &candidates, &signature);
+    Ok(to_readiness_response(
+        snapshot,
+        target,
+        min_ready,
+        candidates,
+        ready_face_ids,
+    ))
+}
+
+#[tauri::command]
+fn suggestions_topup_command(
+    app: AppHandle,
+    state: State<AppState>,
+    request: SuggestionTopupRequest,
+) -> Result<SuggestionReadinessResponse, String> {
+    ensure_schema(&app)?;
+    ensure_suggestion_worker(&app)?;
+
+    let settings = load_settings(&app)?;
+    let min_ready = (((request.target_buffer_size as f64) * settings.editor_warmup_threshold_ratio)
+        .ceil() as usize)
+        .clamp(1, request.target_buffer_size.max(1));
+    let (snapshot, candidates, ready_face_ids, _) = run_suggestion_topup(
+        &app,
+        &state,
+        &request.dataset_root,
+        &request.current_face_id,
+        request.lookahead_window,
+        request.target_buffer_size,
+        request.failure_cooldown_seconds.unwrap_or(30),
+    )?;
+
+    Ok(to_readiness_response(
+        snapshot,
+        request.target_buffer_size,
+        min_ready,
+        candidates,
+        ready_face_ids,
+    ))
 }
 
 #[tauri::command]
@@ -1681,6 +2067,9 @@ fn main() {
             if let Err(error) = cleanup_registered_staging_workspaces(app.handle(), &session.id) {
                 eprintln!("startup staging workspace cleanup failed: {error}");
             }
+            if let Err(error) = ensure_schema(app.handle()) {
+                return Err(error.into());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1702,6 +2091,9 @@ fn main() {
             set_llm_api_key_command,
             get_suggestions_command,
             prefetch_suggestions_command,
+            editing_session_start_command,
+            suggestions_readiness_command,
+            suggestions_topup_command,
             get_suggestion_queue_state_command,
             stage_dropped_inputs_command,
             cleanup_staging_workspaces_command

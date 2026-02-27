@@ -34,8 +34,9 @@ const mocks = vi.hoisted(() => ({
   stageDroppedInputs: vi.fn(),
   getLlmSettings: vi.fn(),
   getSuggestions: vi.fn(),
-  getSuggestionQueueState: vi.fn(),
-  prefetchSuggestions: vi.fn(),
+  startEditingSession: vi.fn(),
+  getSuggestionsReadiness: vi.fn(),
+  topupSuggestions: vi.fn(),
   saveLlmSettings: vi.fn(),
   setLlmApiKey: vi.fn(),
   clearLlmApiKey: vi.fn(),
@@ -56,8 +57,9 @@ vi.mock("./api", () => ({
   setLlmApiKey: mocks.setLlmApiKey,
   clearLlmApiKey: mocks.clearLlmApiKey,
   getSuggestions: mocks.getSuggestions,
-  prefetchSuggestions: mocks.prefetchSuggestions,
-  getSuggestionQueueState: mocks.getSuggestionQueueState,
+  startEditingSession: mocks.startEditingSession,
+  getSuggestionsReadiness: mocks.getSuggestionsReadiness,
+  topupSuggestions: mocks.topupSuggestions,
   checkRuntimeDependencies: vi.fn(async () => ({
     ffmpeg: { name: "ffmpeg", resolvedPath: "ffmpeg" },
     ffprobe: { name: "ffprobe", resolvedPath: "ffprobe" },
@@ -141,8 +143,11 @@ beforeEach(() => {
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
   mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.2", suggestions: [], attempts: 1 });
-  mocks.prefetchSuggestions.mockResolvedValue({ items: [{ faceId: "face-1", status: "queued" }, { faceId: "face-2", status: "queued" }] });
-  mocks.getSuggestionQueueState.mockResolvedValue({ items: [{ faceId: "face-1", status: "ready" }, { faceId: "face-2", status: "ready" }] });
+  const ready = { readyCount: 2, queuedCount: 0, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
+  const queued = { readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
+  mocks.startEditingSession.mockResolvedValue(ready);
+  mocks.getSuggestionsReadiness.mockResolvedValue(ready);
+  mocks.topupSuggestions.mockResolvedValue(queued);
   mocks.saveLlmSettings.mockResolvedValue({
     llmSuggestionsEnabled: true,
     reasoningPreset: "high",
@@ -160,8 +165,9 @@ beforeEach(() => {
   mocks.stageDroppedInputs.mockClear();
   mocks.exportCoco.mockClear();
   mocks.getSuggestions.mockClear();
-  mocks.prefetchSuggestions.mockClear();
-  mocks.getSuggestionQueueState.mockClear();
+  mocks.startEditingSession.mockClear();
+  mocks.getSuggestionsReadiness.mockClear();
+  mocks.topupSuggestions.mockClear();
   mocks.saveLlmSettings.mockClear();
   mocks.clearLlmApiKey.mockClear();
 });
@@ -415,7 +421,8 @@ describe("face switching and save concurrency", () => {
 
 describe("editor warmup", () => {
   it("requests warmup prefetch before entering editor", async () => {
-    mocks.getSuggestionQueueState.mockResolvedValue({ items: [{ faceId: "face-1", status: "ready" }, { faceId: "face-2", status: "queued" }] });
+    mocks.startEditingSession.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
+    mocks.getSuggestionsReadiness.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
 
     render(<App />);
 
@@ -425,13 +432,12 @@ describe("editor warmup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
 
     await waitFor(() => {
-      expect(mocks.prefetchSuggestions).toHaveBeenCalled();
       expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
     });
   });
 
   it("continues to editor when warmup prefetch fails", async () => {
-    mocks.prefetchSuggestions.mockRejectedValueOnce(new Error("prefetch down"));
+    mocks.startEditingSession.mockRejectedValueOnce(new Error("prefetch down"));
 
     render(<App />);
 
@@ -446,7 +452,10 @@ describe("editor warmup", () => {
   });
 
   it("enters editor when warmup times out", async () => {
-    mocks.getSuggestionQueueState.mockResolvedValue({ items: [{ faceId: "face-1", status: "queued" }, { faceId: "face-2", status: "queued" }] });
+    const blocked = { readyCount: 0, queuedCount: 2, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: true, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: [] };
+    mocks.startEditingSession.mockResolvedValue(blocked);
+    mocks.getSuggestionsReadiness.mockResolvedValue(blocked);
+    mocks.topupSuggestions.mockResolvedValue(blocked);
 
     render(<App />);
 

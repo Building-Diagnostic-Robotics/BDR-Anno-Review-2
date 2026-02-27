@@ -8,6 +8,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- Filtered background prefetch fetches to `readyFaceIds` returned by readiness/top-up APIs so editor polling no longer triggers foreground generation for queued/in-progress faces.
+- Bound worker generation/cache reads to the job suggestion signature and rejected mismatches, preventing stale model/settings cache payloads from being persisted under a newer signature.
+
+## [1.3.1] - 2026-02-27
+
+### Fixed
+- Corrected SQLite enqueue semantics for `suggestion_jobs` by replacing invalid `ON CONFLICT(... ) WHERE ... DO NOTHING` syntax with `INSERT OR IGNORE`, relying on the existing partial unique index for active-job deduplication.
+
+## [1.3.0] - 2026-02-27
+
+### Added
+- Added persistent suggestion storage (`suggestions`) and background job queue storage (`suggestion_jobs`) in a local SQLite database, including uniqueness constraints for `(dataset_id, frame_id, suggestion_signature)` and active-job deduplication for queued/in-progress jobs.
+- Added deterministic suggestion-signature generation with canonical JSON serialization and SHA-256 hashing so orchestration and workers can consistently detect whether a frame already has valid suggestions.
+- Added backend orchestration endpoints for editor entry and readiness/top-up flows: `editing_session_start_command`, `suggestions_readiness_command`, and `suggestions_topup_command`.
+- Added a backend suggestion worker loop that leases jobs atomically, rechecks for existing ready suggestions before LLM calls, persists successful payloads via upsert, records failed suggestions, and marks terminal job states.
+
+### Changed
+- Changed suggestion prefetch behavior to use vacancy-based background top-up with readiness snapshots, rather than only in-memory queue checks, so buffer refill continues automatically.
+- Changed editor warmup flow to use backend readiness/session orchestration while preserving the entry blocker until the minimum ready threshold is met.
+- Changed frontend API/types and tests to use the new readiness/session/top-up contracts for deterministic blocker progress and polling.
+
+### Fixed
 - Derived diagnostics terminal health badge from the latest log entry level so transient historical errors no longer keep status stuck in `ERROR` after recovery/clear actions.
 - Prevented concurrent editor warmup retries by guarding warmup entry while an existing warmup loop is in flight and disabling retry while the warmup modal is active.
 
