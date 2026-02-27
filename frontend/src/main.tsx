@@ -244,8 +244,8 @@ export function App() {
         targetBufferSize: llmSettings.prefetchBufferSize,
       });
       const summary = summaryFromReadiness(readiness);
-      updateDiagnostics("Suggestion prefetch queued", "", { scope: "prefetch", metadata: `faces=${readiness.candidateFaceIds.length}, ${queueSummaryText(summary)}` });
-      for (const readyFaceId of readiness.candidateFaceIds) {
+      updateDiagnostics("Suggestion prefetch queued", "", { scope: "prefetch", metadata: `faces=${readiness.candidateFaceIds.length}, readyFaces=${readiness.readyFaceIds.length}, ${queueSummaryText(summary)}` });
+      for (const readyFaceId of readiness.readyFaceIds) {
         if (suggestionsByFace[readyFaceId]) {
           continue;
         }

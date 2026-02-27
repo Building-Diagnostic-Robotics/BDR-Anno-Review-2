@@ -143,8 +143,8 @@ beforeEach(() => {
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
   mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.2", suggestions: [], attempts: 1 });
-  const ready = { readyCount: 2, queuedCount: 0, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"] };
-  const queued = { readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"] };
+  const ready = { readyCount: 2, queuedCount: 0, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
+  const queued = { readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
   mocks.startEditingSession.mockResolvedValue(ready);
   mocks.getSuggestionsReadiness.mockResolvedValue(ready);
   mocks.topupSuggestions.mockResolvedValue(queued);
@@ -421,8 +421,8 @@ describe("face switching and save concurrency", () => {
 
 describe("editor warmup", () => {
   it("requests warmup prefetch before entering editor", async () => {
-    mocks.startEditingSession.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"] });
-    mocks.getSuggestionsReadiness.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"] });
+    mocks.startEditingSession.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
+    mocks.getSuggestionsReadiness.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
 
     render(<App />);
 
@@ -452,7 +452,7 @@ describe("editor warmup", () => {
   });
 
   it("enters editor when warmup times out", async () => {
-    const blocked = { readyCount: 0, queuedCount: 2, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: true, candidateFaceIds: ["face-1", "face-2"] };
+    const blocked = { readyCount: 0, queuedCount: 2, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: true, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: [] };
     mocks.startEditingSession.mockResolvedValue(blocked);
     mocks.getSuggestionsReadiness.mockResolvedValue(blocked);
     mocks.topupSuggestions.mockResolvedValue(blocked);

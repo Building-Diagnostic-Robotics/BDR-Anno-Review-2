@@ -49,7 +49,7 @@ const STAGING_WORKSPACE_MARKER_FILE: &str = ".bdr-anno-review-owned";
 
 struct AppState {
     annotation_cache: Mutex<HashMap<(String, String), Vec<AnnotationEdit>>>,
-    suggestion_cache: Mutex<HashMap<(String, String), SuggestionResponse>>,
+    suggestion_cache: Mutex<HashMap<(String, String, String), SuggestionResponse>>,
     suggestion_queue: Mutex<SuggestionQueue>,
     generation_jobs: Mutex<HashMap<String, GenerationJobRecord>>,
     suggestion_worker_running: Mutex<bool>,
@@ -107,6 +107,7 @@ struct SuggestionReadinessResponse {
     min_ready_to_start: usize,
     blocked: bool,
     candidate_face_ids: Vec<String>,
+    ready_face_ids: Vec<String>,
 }
 
 struct AppSession {
@@ -1409,6 +1410,7 @@ fn to_readiness_response(
     target_buffer_size: usize,
     min_ready_to_start: usize,
     candidate_face_ids: Vec<String>,
+    ready_face_ids: Vec<String>,
 ) -> SuggestionReadinessResponse {
     SuggestionReadinessResponse {
         ready_count: snapshot.ready_count,
@@ -1419,11 +1421,34 @@ fn to_readiness_response(
         min_ready_to_start,
         blocked: snapshot.ready_count < min_ready_to_start,
         candidate_face_ids,
+        ready_face_ids,
     }
 }
 
 fn suggestion_queue_key(dataset_root: &str, face_id: &str) -> (String, String) {
     (dataset_root.to_owned(), face_id.to_owned())
+}
+
+fn ready_face_ids_for_signature(
+    app: &AppHandle,
+    dataset_root: &str,
+    candidate_face_ids: &[String],
+    signature: &str,
+) -> Vec<String> {
+    candidate_face_ids
+        .iter()
+        .filter_map(|face_id| {
+            has_ready_suggestion(app, dataset_root, face_id, signature)
+                .ok()
+                .and_then(|is_ready| {
+                    if is_ready {
+                        Some(face_id.clone())
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect()
 }
 
 fn run_suggestion_topup(
@@ -1434,7 +1459,7 @@ fn run_suggestion_topup(
     lookahead_window: usize,
     target_buffer_size: usize,
     failure_cooldown_seconds: u64,
-) -> Result<(ReadinessSnapshot, Vec<String>, usize), String> {
+) -> Result<(ReadinessSnapshot, Vec<String>, Vec<String>, usize), String> {
     let settings = load_settings(app)?;
     let signature = suggestion_signature_from_settings(&settings)?;
     let manifest = load_manifest(dataset_root)?;
@@ -1496,7 +1521,8 @@ fn run_suggestion_topup(
     }
 
     let after = readiness_snapshot(app, dataset_root, &candidates, &signature)?;
-    Ok((after, candidates, inserted))
+    let ready_face_ids = ready_face_ids_for_signature(app, dataset_root, &candidates, &signature);
+    Ok((after, candidates, ready_face_ids, inserted))
 }
 
 fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
@@ -1575,7 +1601,12 @@ fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
             face_id: job.frame_id.clone(),
             timeout_ms: Some(20_000),
         };
-        let result = generate_and_cache_suggestion(&app_for_thread, &state, request);
+        let result = generate_and_cache_suggestion(
+            &app_for_thread,
+            &state,
+            request,
+            Some(job.suggestion_signature.as_str()),
+        );
         match result {
             Ok(response) => {
                 if let Ok(payload) = serde_json::to_string(&response) {
@@ -1623,20 +1654,34 @@ fn get_suggestions_command(
     request: SuggestionRequest,
 ) -> Result<SuggestionResponse, String> {
     ensure_schema(&app)?;
-    generate_and_cache_suggestion(&app, &state, request)
+    generate_and_cache_suggestion(&app, &state, request, None)
 }
 
 fn generate_and_cache_suggestion(
     app: &AppHandle,
     state: &AppState,
     request: SuggestionRequest,
+    expected_signature: Option<&str>,
 ) -> Result<SuggestionResponse, String> {
     let settings = load_settings(app)?;
     if !settings.llm_suggestions_enabled {
         return Err("LLM suggestions are disabled in settings".to_owned());
     }
 
-    let cache_key = (request.dataset_root.clone(), request.face_id.clone());
+    let signature = suggestion_signature_from_settings(&settings)?;
+    if let Some(expected) = expected_signature {
+        if signature != expected {
+            return Err(format!(
+                "suggestion signature mismatch: current={signature}, expected={expected}"
+            ));
+        }
+    }
+
+    let cache_key = (
+        request.dataset_root.clone(),
+        request.face_id.clone(),
+        signature,
+    );
     if let Some(cached) = state
         .suggestion_cache
         .lock()
@@ -1737,7 +1782,7 @@ fn prefetch_suggestions_command(
 
     let current = request.face_ids.first().cloned().unwrap_or_default();
     let lookahead = settings.prefetch_buffer_size.saturating_sub(1);
-    let (_, candidate_face_ids, _) = run_suggestion_topup(
+    let (_, candidate_face_ids, _, _) = run_suggestion_topup(
         &app,
         &state,
         &request.dataset_root,
@@ -1763,7 +1808,7 @@ fn editing_session_start_command(
     ensure_schema(&app)?;
     ensure_suggestion_worker(&app)?;
 
-    let (snapshot, candidates, _) = run_suggestion_topup(
+    let (snapshot, candidates, ready_face_ids, _) = run_suggestion_topup(
         &app,
         &state,
         &request.dataset_root,
@@ -1778,6 +1823,7 @@ fn editing_session_start_command(
         request.target_buffer_size,
         request.min_ready_to_start,
         candidates,
+        ready_face_ids,
     ))
 }
 
@@ -1799,8 +1845,14 @@ fn suggestions_readiness_command(
     let required = ((target as f64) * settings.editor_warmup_threshold_ratio).ceil() as usize;
     let min_ready = required.clamp(1, target.max(1));
     let snapshot = readiness_snapshot(&app, &request.dataset_root, &candidates, &signature)?;
+    let ready_face_ids =
+        ready_face_ids_for_signature(&app, &request.dataset_root, &candidates, &signature);
     Ok(to_readiness_response(
-        snapshot, target, min_ready, candidates,
+        snapshot,
+        target,
+        min_ready,
+        candidates,
+        ready_face_ids,
     ))
 }
 
@@ -1817,7 +1869,7 @@ fn suggestions_topup_command(
     let min_ready = (((request.target_buffer_size as f64) * settings.editor_warmup_threshold_ratio)
         .ceil() as usize)
         .clamp(1, request.target_buffer_size.max(1));
-    let (snapshot, candidates, _) = run_suggestion_topup(
+    let (snapshot, candidates, ready_face_ids, _) = run_suggestion_topup(
         &app,
         &state,
         &request.dataset_root,
@@ -1832,6 +1884,7 @@ fn suggestions_topup_command(
         request.target_buffer_size,
         min_ready,
         candidates,
+        ready_face_ids,
     ))
 }
 

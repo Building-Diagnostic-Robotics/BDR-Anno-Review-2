@@ -226,4 +226,5 @@ export type SuggestionReadinessResponse = {
   minReadyToStart: number;
   blocked: boolean;
   candidateFaceIds: string[];
+  readyFaceIds: string[];
 };
