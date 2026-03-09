@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Split the frontend runtime bootstrap from the `App` component and added shared Vitest cleanup so importing the app in `main.test.tsx` no longer mounts a hidden root that can keep CI frontend tests running indefinitely.
+
 ## [1.3.2] - 2026-03-09
 
 ### Changed

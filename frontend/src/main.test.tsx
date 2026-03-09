@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { App } from "./main";
+import { App } from "./app";
 import type { AnnotationEdit, FaceListItem } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({
