@@ -202,10 +202,14 @@ export function App() {
   const warmupAbortControllerRef = useRef<AbortController | null>(null);
   const isMountedRef = useRef(true);
 
-  useEffect(() => () => {
-    isMountedRef.current = false;
-    warmupAbortControllerRef.current?.abort();
-    warmupInFlightRef.current = false;
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+      warmupAbortControllerRef.current?.abort();
+      warmupInFlightRef.current = false;
+    };
   }, []);
 
   useEffect(() => {

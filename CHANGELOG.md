@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Restored the editor mount guard in `App` effect setup so React Strict Mode no longer leaves warmup permanently aborted after development-only cleanup/replay cycles.
+- Added a Strict Mode regression test for editor entry warmup so the mount-guard lifecycle bug is covered by frontend tests.
+
 ## [1.3.3] - 2026-03-09
 
 ### Fixed

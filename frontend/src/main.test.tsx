@@ -1,3 +1,4 @@
+import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { App } from "./app";
@@ -190,6 +191,24 @@ describe("workflow pages", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Finish & export" }));
     expect(screen.getByRole("heading", { name: "Export final annotations" })).toBeTruthy();
+  });
+
+  it("enters the editor when mounted in StrictMode", async () => {
+    render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>
+    );
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    });
   });
 });
 
