@@ -362,10 +362,6 @@ fn anthropic_thinking(preset: &str) -> serde_json::Value {
 }
 
 fn extract_openai_text(value: &serde_json::Value) -> Option<String> {
-    if let Some(text) = value.get("output_text").and_then(|v| v.as_str()) {
-        return Some(text.to_owned());
-    }
-
     let output = value.get("output")?.as_array()?;
     for item in output {
         if item.get("type").and_then(|v| v.as_str()) != Some("message") {
@@ -373,20 +369,26 @@ fn extract_openai_text(value: &serde_json::Value) -> Option<String> {
         }
         let content = item.get("content")?.as_array()?;
         for part in content {
-            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                return Some(text.to_owned());
-            }
-            if let Some(text) = part.get("output_text").and_then(|v| v.as_str()) {
-                return Some(text.to_owned());
-            }
             if let Some(value) = part.get("json").or_else(|| part.get("parsed")) {
                 if let Ok(text) = serde_json::to_string(value) {
                     return Some(text);
                 }
             }
         }
+        for part in content {
+            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                return Some(text.to_owned());
+            }
+            if let Some(text) = part.get("output_text").and_then(|v| v.as_str()) {
+                return Some(text.to_owned());
+            }
+        }
     }
-    None
+
+    value
+        .get("output_text")
+        .and_then(|v| v.as_str())
+        .map(|text| text.to_owned())
 }
 
 fn extract_anthropic_text(value: &serde_json::Value) -> Option<String> {

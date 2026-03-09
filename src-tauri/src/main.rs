@@ -1618,12 +1618,7 @@ fn suggestion_worker_loop(app_for_thread: &AppHandle) {
                     &job.frame_id,
                     &job.suggestion_signature,
                 );
-                let _ = complete_job(
-                    app_for_thread,
-                    &job.job_id,
-                    JOB_STATUS_FAILED,
-                    Some(&error),
-                );
+                let _ = complete_job(app_for_thread, &job.job_id, JOB_STATUS_FAILED, Some(&error));
                 if let Ok(mut queue) = state.suggestion_queue.lock() {
                     queue.states.insert(
                         suggestion_queue_key(&job.dataset_id, &job.frame_id),

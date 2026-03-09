@@ -442,13 +442,9 @@ mod tests {
         )
         .expect("insert payload");
 
-        let loaded: Option<SuggestionResponse> = load_ready_suggestion_on_connection(
-            &conn,
-            "/tmp/dataset",
-            "face-1",
-            "sig-1",
-        )
-        .expect("load ready payload");
+        let loaded: Option<SuggestionResponse> =
+            load_ready_suggestion_on_connection(&conn, "/tmp/dataset", "face-1", "sig-1")
+                .expect("load ready payload");
         let loaded = loaded.expect("payload should be present");
         assert_eq!(loaded.face_id, "face-1");
         assert_eq!(loaded.provider, "openai");
@@ -480,7 +476,8 @@ mod tests {
         let first = insert_jobs_if_missing_on_connection(&mut conn, &jobs).expect("first insert");
         assert_eq!(first, vec!["face-1".to_owned(), "face-2".to_owned()]);
 
-        let duplicate = insert_jobs_if_missing_on_connection(&mut conn, &jobs).expect("duplicate insert");
+        let duplicate =
+            insert_jobs_if_missing_on_connection(&mut conn, &jobs).expect("duplicate insert");
         assert!(duplicate.is_empty());
     }
 }

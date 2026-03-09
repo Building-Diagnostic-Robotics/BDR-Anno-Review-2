@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-03-09
+
+### Changed
+- Set the default OpenAI suggestion model to `gpt-5.4` in backend settings and the settings UI.
+
 ### Fixed
 - Filtered background prefetch fetches to `readyFaceIds` returned by readiness/top-up APIs so editor polling no longer triggers foreground generation for queued/in-progress faces.
 - Bound worker generation/cache reads to the job suggestion signature and rejected mismatches, preventing stale model/settings cache payloads from being persisted under a newer signature.
