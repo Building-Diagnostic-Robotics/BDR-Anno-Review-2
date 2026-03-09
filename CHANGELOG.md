@@ -8,6 +8,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- Added abort-aware frontend orchestration sleeps and unmount guards for warmup/generation loops so React test teardown can cleanly stop in-flight polling and timer work.
+- Hardened async event listener registration cleanup to dispose late-attached Tauri drag-drop and generation-progress listeners when components unmount.
+- Reduced frontend test wall-time by defaulting `main.test.tsx` to suggestions-disabled settings and using shorter warmup timeout test fixtures, while adding orchestration sleep unit tests for deterministic timer behavior.
+
 - Split the frontend runtime bootstrap from the `App` component and added shared Vitest cleanup so importing the app in `main.test.tsx` no longer mounts a hidden root that can keep CI frontend tests running indefinitely.
 
 ## [1.3.2] - 2026-03-09

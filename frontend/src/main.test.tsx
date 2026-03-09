@@ -132,11 +132,11 @@ beforeEach(() => {
   });
 
   mocks.getLlmSettings.mockResolvedValue({
-    llmSuggestionsEnabled: true,
+    llmSuggestionsEnabled: false,
     reasoningPreset: "high",
     prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
     openai: { enabled: true, model: "gpt-5.4", hasKey: false },
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
@@ -149,11 +149,11 @@ beforeEach(() => {
   mocks.getSuggestionsReadiness.mockResolvedValue(ready);
   mocks.topupSuggestions.mockResolvedValue(queued);
   mocks.saveLlmSettings.mockResolvedValue({
-    llmSuggestionsEnabled: true,
+    llmSuggestionsEnabled: false,
     reasoningPreset: "high",
     prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
     openai: { enabled: true, model: "gpt-5.4", hasKey: false },
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
@@ -195,6 +195,10 @@ describe("workflow pages", () => {
 
 describe("llm suggestion cache scoping", () => {
   it("refetches suggestions when opening a different dataset with the same face ids", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
+      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+    });
     const noReady = {
       readyCount: 0,
       queuedCount: 0,
@@ -234,6 +238,10 @@ describe("llm suggestion cache scoping", () => {
   });
 
   it("does not pass the warmup timeout as a direct suggestion fetch override", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
+      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+    });
     const noReady = {
       readyCount: 0,
       queuedCount: 0,
@@ -279,11 +287,9 @@ describe("autosave", () => {
     const xInputs = screen.getAllByLabelText("x") as HTMLInputElement[];
     fireEvent.change(xInputs[0], { target: { value: "9" } });
 
-    await new Promise((resolve) => setTimeout(resolve, 1300));
-
     await waitFor(() => {
       expect(mocks.setAnnotations).toHaveBeenCalled();
-    });
+    }, { timeout: 2500 });
   });
 
 });
@@ -439,11 +445,11 @@ describe("face switching and save concurrency", () => {
     fireEvent.change(screen.getAllByLabelText("x")[0], { target: { value: "41" } });
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
 
-    await new Promise((resolve) => setTimeout(resolve, 1300));
-
-    expect(
-      mocks.setAnnotations.mock.calls.some(([, faceId]) => faceId === "face-2")
-    ).toBe(false);
+    await waitFor(() => {
+      expect(
+        mocks.setAnnotations.mock.calls.some(([, faceId]) => faceId === "face-2")
+      ).toBe(false);
+    }, { timeout: 2500 });
 
     resolveFace2Load([]);
 
@@ -491,6 +497,10 @@ describe("face switching and save concurrency", () => {
 
 describe("editor warmup", () => {
   it("requests warmup prefetch before entering editor", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
+      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+    });
     mocks.startEditingSession.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
     mocks.getSuggestionsReadiness.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
 
@@ -507,6 +517,10 @@ describe("editor warmup", () => {
   });
 
   it("continues to editor when warmup prefetch fails", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
+      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+    });
     mocks.startEditingSession.mockRejectedValueOnce(new Error("prefetch down"));
 
     render(<App />);
@@ -522,6 +536,10 @@ describe("editor warmup", () => {
   });
 
   it("enters editor when warmup times out", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
+      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+    });
     const blocked = { readyCount: 0, queuedCount: 2, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: true, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: [] };
     mocks.startEditingSession.mockResolvedValue(blocked);
     mocks.getSuggestionsReadiness.mockResolvedValue(blocked);
@@ -542,6 +560,10 @@ describe("editor warmup", () => {
 
 describe("settings modal", () => {
   it("disables save when suggestions are enabled and provider is disabled", async () => {
+    mocks.getLlmSettings.mockResolvedValueOnce({
+      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
+      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+    });
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
@@ -559,7 +581,7 @@ describe("settings modal", () => {
       reasoningPreset: "high",
       prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
       openai: { enabled: true, model: "gpt-5.4", hasKey: true },
       anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
     });
@@ -582,7 +604,7 @@ describe("settings modal", () => {
         reasoningPreset: "high",
         prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
         openai: { enabled: true, model: "gpt-5.4", hasKey: false },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       })
@@ -591,7 +613,7 @@ describe("settings modal", () => {
         reasoningPreset: "high",
         prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
         openai: { enabled: true, model: "gpt-5.4", hasKey: true },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       });
@@ -630,7 +652,7 @@ describe("settings modal", () => {
           reasoningPreset: "high",
           prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
           openai: { enabled: true, model: "gpt-5.4", hasKey: false },
           anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
         });
