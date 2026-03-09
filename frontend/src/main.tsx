@@ -93,6 +93,7 @@ const emptyQueueSummary = (): QueueStatusSummary => ({ unseen: 0, queued: 0, inF
 
 const queueSummaryText = (summary: QueueStatusSummary) => `ready=${summary.ready}, queued=${summary.queued}, in_flight=${summary.inFlight}, failed=${summary.failed}, unseen=${summary.unseen}`;
 
+const suggestionEntryKey = (scopeKey: string, faceId: string) => `${scopeKey}::${faceId}`;
 
 const summaryFromReadiness = (readiness: { readyCount: number; queuedCount: number; inProgressCount: number; failedCount: number }): QueueStatusSummary => ({
   unseen: 0,
@@ -209,6 +210,28 @@ export function App() {
     () => faces.findIndex((face) => face.faceId === selectedFaceId),
     [faces, selectedFaceId]
   );
+  const suggestionScopeKey = useMemo(
+    () =>
+      JSON.stringify({
+        datasetRoot: datasetRoot.replace(/\\/g, "/").replace(/\/+$/, ""),
+        provider: llmSettings?.openai.enabled ? "openai" : llmSettings?.anthropic.enabled ? "anthropic" : "none",
+        openaiModel: llmSettings?.openai.model ?? "",
+        anthropicModel: llmSettings?.anthropic.model ?? "",
+        reasoningPreset: llmSettings?.reasoningPreset ?? "",
+        prefetchBufferSize: llmSettings?.prefetchBufferSize ?? 0,
+        editorWarmupThresholdRatio: llmSettings?.editorWarmupThresholdRatio ?? 0,
+      }),
+    [
+      datasetRoot,
+      llmSettings?.openai.enabled,
+      llmSettings?.anthropic.enabled,
+      llmSettings?.openai.model,
+      llmSettings?.anthropic.model,
+      llmSettings?.reasoningPreset,
+      llmSettings?.prefetchBufferSize,
+      llmSettings?.editorWarmupThresholdRatio,
+    ]
+  );
   const selectedFace = selectedIndex < 0 ? undefined : faces[selectedIndex];
   const selectedFaceImagePath = selectedFace ? resolveFaceImagePath(datasetRoot, selectedFace.imagePath) : "";
   const imageSrc = selectedFace ? convertFileSrc(selectedFaceImagePath) : "";
@@ -228,6 +251,10 @@ export function App() {
     void refreshLlmSettings();
   }, [refreshLlmSettings]);
 
+  useEffect(() => {
+    setSuggestionsByFace({});
+  }, [suggestionScopeKey]);
+
   const prefetchLinearSuggestions = useCallback(async () => {
     if (!llmSettings?.llmSuggestionsEnabled || !datasetRoot || faces.length === 0 || selectedIndex < 0) {
       return;
@@ -246,12 +273,13 @@ export function App() {
       const summary = summaryFromReadiness(readiness);
       updateDiagnostics("Suggestion prefetch queued", "", { scope: "prefetch", metadata: `faces=${readiness.candidateFaceIds.length}, readyFaces=${readiness.readyFaceIds.length}, ${queueSummaryText(summary)}` });
       for (const readyFaceId of readiness.readyFaceIds) {
-        if (suggestionsByFace[readyFaceId]) {
+        const readyKey = suggestionEntryKey(suggestionScopeKey, readyFaceId);
+        if (suggestionsByFace[readyKey]) {
           continue;
         }
         try {
-          const response = await getSuggestions(datasetRoot, readyFaceId, llmSettings.editorWarmupTimeoutMs);
-          setSuggestionsByFace((prev) => (prev[readyFaceId] ? prev : { ...prev, [readyFaceId]: response.suggestions }));
+          const response = await getSuggestions(datasetRoot, readyFaceId);
+          setSuggestionsByFace((prev) => (prev[readyKey] ? prev : { ...prev, [readyKey]: response.suggestions }));
         } catch {
           // queue will retry/fail; diagnostics logged in focused fetch path
         }
@@ -259,7 +287,7 @@ export function App() {
     } catch (cause) {
       updateDiagnostics("Suggestion prefetch failed", String(cause), { scope: "prefetch" });
     }
-  }, [llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, llmSettings?.editorWarmupTimeoutMs, datasetRoot, faces, selectedIndex, suggestionsByFace]);
+  }, [llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, datasetRoot, faces, selectedIndex, suggestionScopeKey, suggestionsByFace]);
 
   useEffect(() => {
     void prefetchLinearSuggestions();
@@ -503,7 +531,7 @@ export function App() {
 
     const maxFaces = Math.max(1, llmSettings.prefetchBufferSize);
     const targetFaceIds = nextFaces.slice(0, maxFaces).map((face) => face.faceId);
-    const uncachedFaceIds = targetFaceIds.filter((faceId) => !suggestionsByFace[faceId]);
+    const uncachedFaceIds = targetFaceIds.filter((faceId) => !suggestionsByFace[suggestionEntryKey(suggestionScopeKey, faceId)]);
     if (uncachedFaceIds.length === 0) {
       setPage("editor");
       return;
@@ -585,7 +613,7 @@ export function App() {
       setSkipWarmupRequested(false);
       setPage("editor");
     }
-  }, [datasetRoot, llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, llmSettings?.editorWarmupThresholdRatio, llmSettings?.editorWarmupTimeoutMs, suggestionsByFace]);
+  }, [datasetRoot, llmSettings?.llmSuggestionsEnabled, llmSettings?.prefetchBufferSize, llmSettings?.editorWarmupThresholdRatio, llmSettings?.editorWarmupTimeoutMs, suggestionScopeKey, suggestionsByFace]);
 
   const retryWarmupForCurrentBuffer = async () => {
     if (!datasetRoot || !llmSettings?.llmSuggestionsEnabled || faces.length === 0) {
@@ -826,16 +854,17 @@ export function App() {
     if (!faceId || !datasetRoot || !llmSettings?.llmSuggestionsEnabled) {
       return;
     }
-    if (suggestionsByFace[faceId]) {
+    const cacheKey = suggestionEntryKey(suggestionScopeKey, faceId);
+    if (suggestionsByFace[cacheKey]) {
       return;
     }
 
     let cancelled = false;
     const run = async () => {
       try {
-        const response = await getSuggestions(datasetRoot, faceId, llmSettings.editorWarmupTimeoutMs);
+        const response = await getSuggestions(datasetRoot, faceId);
         if (cancelled) return;
-        setSuggestionsByFace((prev) => ({ ...prev, [faceId]: response.suggestions }));
+        setSuggestionsByFace((prev) => ({ ...prev, [cacheKey]: response.suggestions }));
         updateDiagnostics("Suggestion fetch complete", "", {
           scope: "suggestion-fetch",
           metadata: `faceId=${faceId}, provider=${response.provider}, model=${response.model}, attempts=${response.attempts}, suggestions=${response.suggestions.length}`,
@@ -851,7 +880,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedFaceId, datasetRoot, llmSettings?.llmSuggestionsEnabled, llmSettings?.editorWarmupTimeoutMs, suggestionsByFace, faces, updateDiagnostics]);
+  }, [selectedFaceId, datasetRoot, llmSettings?.llmSuggestionsEnabled, suggestionScopeKey, suggestionsByFace, faces, updateDiagnostics]);
 
   useEffect(() => {
     const onResize = () => {
@@ -908,7 +937,7 @@ export function App() {
       }
     });
 
-    const selectedSuggestions = selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : [];
+    const selectedSuggestions = selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)] ?? []) : [];
     selectedSuggestions.forEach((entry, index) => {
       const [x, y, w, h] = entry.bbox;
       const isSelectedSuggestion = selectedSuggestionIndex === index;
@@ -922,7 +951,7 @@ export function App() {
       context.fillStyle = "#a7f3d0";
       context.fillText(`S${index + 1}`, x * scaleX + 4, y * scaleY + 28);
     });
-  }, [edits, imageViewport, activeBoxIndex, selectedFaceId, suggestionsByFace, selectedSuggestionIndex]);
+  }, [edits, imageViewport, activeBoxIndex, selectedFaceId, suggestionScopeKey, suggestionsByFace, selectedSuggestionIndex]);
 
   useEffect(() => {
     if (!selectedFaceId || isFaceLoading) {
@@ -1075,16 +1104,16 @@ export function App() {
   }, [suggestionToEdit]);
 
   const applyAllSuggestionsToEdits = useCallback(() => {
-    const suggestions = selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : [];
+    const suggestions = selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)] ?? []) : [];
     if (suggestions.length === 0) {
       return;
     }
     setEdits((previous) => [...previous, ...suggestions.map((suggestion) => suggestionToEdit(suggestion))]);
     setEditValidationError("");
-  }, [selectedFaceId, suggestionsByFace, suggestionToEdit]);
+  }, [selectedFaceId, suggestionScopeKey, suggestionsByFace, suggestionToEdit]);
 
   const replaceEditsWithSuggestions = useCallback(() => {
-    const suggestions = selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : [];
+    const suggestions = selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)] ?? []) : [];
     if (suggestions.length === 0) {
       return;
     }
@@ -1095,7 +1124,7 @@ export function App() {
     setEdits(suggestions.map((suggestion) => suggestionToEdit(suggestion)));
     setActiveBoxIndex(null);
     setEditValidationError("");
-  }, [selectedFaceId, suggestionsByFace, suggestionToEdit]);
+  }, [selectedFaceId, suggestionScopeKey, suggestionsByFace, suggestionToEdit]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1477,18 +1506,18 @@ export function App() {
 
             <h3 className="text-lg font-semibold">Bounding boxes</h3>
             <p className="mb-1 text-xs text-anno-text-muted">Editable boxes: {edits.length}</p>
-            <p className="mb-3 text-xs text-anno-text-muted">LLM suggestion count: {selectedFaceId ? (suggestionsByFace[selectedFaceId]?.length ?? 0) : 0}</p>
+            <p className="mb-3 text-xs text-anno-text-muted">LLM suggestion count: {selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)]?.length ?? 0) : 0}</p>
 
             <div className="mb-3 rounded-2xl bg-anno-surface-med p-3 ring-1 ring-white/5">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <h4 className="text-sm font-semibold">LLM suggestions</h4>
                 <div className="flex gap-2">
-                  <Button variant="tonal" onClick={applyAllSuggestionsToEdits} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[selectedFaceId]?.length ?? 0) === 0}>Apply all suggestions to edits</Button>
-                  <Button variant="outlined" onClick={replaceEditsWithSuggestions} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[selectedFaceId]?.length ?? 0) === 0}>Replace edits with suggestions</Button>
+                  <Button variant="tonal" onClick={applyAllSuggestionsToEdits} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)]?.length ?? 0) === 0}>Apply all suggestions to edits</Button>
+                  <Button variant="outlined" onClick={replaceEditsWithSuggestions} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)]?.length ?? 0) === 0}>Replace edits with suggestions</Button>
                 </div>
               </div>
               <div className="max-h-40 space-y-2 overflow-auto pr-1">
-                {(selectedFaceId ? (suggestionsByFace[selectedFaceId] ?? []) : []).map((suggestion, index) => (
+                {(selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)] ?? []) : []).map((suggestion, index) => (
                   <div key={`suggestion-${selectedFaceId}-${index}`} className={`rounded-xl p-2 ring-1 ${selectedSuggestionIndex === index ? "bg-anno-surface-high ring-purple-400/60" : "bg-anno-surface-low ring-teal-300/30"}`} onMouseEnter={() => setSelectedSuggestionIndex(index)}>
                     <div className="text-xs text-anno-text-muted">Suggestion {index + 1}: {suggestion.bbox.map(coord).join(", ")}</div>
                     <div className="mt-1 flex items-center justify-between">

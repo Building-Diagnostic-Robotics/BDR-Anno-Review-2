@@ -28,9 +28,9 @@ use settings::{
 use suggestion_signature::{compute_suggestion_signature, SuggestionSignatureInput};
 use suggestion_store::{
     complete_job, ensure_schema, has_active_job, has_ready_suggestion, insert_jobs_if_missing,
-    lease_next_job, mark_suggestion_failed, readiness_snapshot, recently_failed,
-    upsert_suggestion_ready, JobInsert, ReadinessSnapshot, JOB_STATUS_CANCELLED, JOB_STATUS_DONE,
-    JOB_STATUS_FAILED,
+    lease_next_job, load_ready_suggestion, mark_suggestion_failed, readiness_snapshot,
+    recently_failed, upsert_suggestion_ready, JobInsert, LeasedJob, ReadinessSnapshot,
+    JOB_STATUS_CANCELLED, JOB_STATUS_DONE, JOB_STATUS_FAILED,
 };
 
 use engine::{
@@ -1429,6 +1429,14 @@ fn suggestion_queue_key(dataset_root: &str, face_id: &str) -> (String, String) {
     (dataset_root.to_owned(), face_id.to_owned())
 }
 
+fn worker_suggestion_request(job: &LeasedJob) -> SuggestionRequest {
+    SuggestionRequest {
+        dataset_root: job.dataset_id.clone(),
+        face_id: job.frame_id.clone(),
+        timeout_ms: None,
+    }
+}
+
 fn ready_face_ids_for_signature(
     app: &AppHandle,
     dataset_root: &str,
@@ -1508,39 +1516,26 @@ fn run_suggestion_topup(
         }
     }
 
-    let inserted = insert_jobs_if_missing(app, &jobs)?;
-    for job in &jobs {
+    let inserted_frame_ids = insert_jobs_if_missing(app, &jobs)?;
+    for frame_id in inserted_frame_ids.iter() {
         let mut queue = state
             .suggestion_queue
             .lock()
             .map_err(|_| "suggestion queue lock poisoned".to_owned())?;
         queue.states.insert(
-            suggestion_queue_key(dataset_root, &job.frame_id),
+            suggestion_queue_key(dataset_root, frame_id),
             "queued".to_owned(),
         );
     }
 
     let after = readiness_snapshot(app, dataset_root, &candidates, &signature)?;
     let ready_face_ids = ready_face_ids_for_signature(app, dataset_root, &candidates, &signature);
-    Ok((after, candidates, ready_face_ids, inserted))
+    Ok((after, candidates, ready_face_ids, inserted_frame_ids.len()))
 }
 
-fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    {
-        let mut running = state
-            .suggestion_worker_running
-            .lock()
-            .map_err(|_| "suggestion worker lock poisoned".to_owned())?;
-        if *running {
-            return Ok(());
-        }
-        *running = true;
-    }
-
-    let app_for_thread = app.clone();
-    std::thread::spawn(move || loop {
-        let lease = lease_next_job(&app_for_thread, 30);
+fn suggestion_worker_loop(app_for_thread: &AppHandle) {
+    loop {
+        let lease = lease_next_job(app_for_thread, 30);
         let Some(job) = (match lease {
             Ok(value) => value,
             Err(error) => {
@@ -1562,14 +1557,14 @@ fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
         }
 
         let maybe_ready = has_ready_suggestion(
-            &app_for_thread,
+            app_for_thread,
             &job.dataset_id,
             &job.frame_id,
             &job.suggestion_signature,
         );
         match maybe_ready {
             Ok(true) => {
-                let _ = complete_job(&app_for_thread, &job.job_id, JOB_STATUS_CANCELLED, None);
+                let _ = complete_job(app_for_thread, &job.job_id, JOB_STATUS_CANCELLED, None);
                 if let Ok(mut queue) = state.suggestion_queue.lock() {
                     queue.states.insert(
                         suggestion_queue_key(&job.dataset_id, &job.frame_id),
@@ -1581,7 +1576,7 @@ fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
             Ok(false) => {}
             Err(error) => {
                 let _ = complete_job(
-                    &app_for_thread,
+                    app_for_thread,
                     &job.job_id,
                     JOB_STATUS_FAILED,
                     Some(&format!("dedup check failed: {error}")),
@@ -1596,40 +1591,35 @@ fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
             }
         }
 
-        let request = SuggestionRequest {
-            dataset_root: job.dataset_id.clone(),
-            face_id: job.frame_id.clone(),
-            timeout_ms: Some(20_000),
-        };
         let result = generate_and_cache_suggestion(
-            &app_for_thread,
+            app_for_thread,
             &state,
-            request,
+            worker_suggestion_request(&job),
             Some(job.suggestion_signature.as_str()),
         );
         match result {
             Ok(response) => {
                 if let Ok(payload) = serde_json::to_string(&response) {
                     let _ = upsert_suggestion_ready(
-                        &app_for_thread,
+                        app_for_thread,
                         &job.dataset_id,
                         &job.frame_id,
                         &job.suggestion_signature,
                         &payload,
                     );
                 }
-                let _ = complete_job(&app_for_thread, &job.job_id, JOB_STATUS_DONE, None);
+                let _ = complete_job(app_for_thread, &job.job_id, JOB_STATUS_DONE, None);
                 let _ = app_for_thread.emit("suggestion-job-complete", &job.frame_id);
             }
             Err(error) => {
                 let _ = mark_suggestion_failed(
-                    &app_for_thread,
+                    app_for_thread,
                     &job.dataset_id,
                     &job.frame_id,
                     &job.suggestion_signature,
                 );
                 let _ = complete_job(
-                    &app_for_thread,
+                    app_for_thread,
                     &job.job_id,
                     JOB_STATUS_FAILED,
                     Some(&error),
@@ -1641,6 +1631,39 @@ fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
                     );
                 }
             }
+        }
+    }
+}
+
+fn ensure_suggestion_worker(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    {
+        let mut running = state
+            .suggestion_worker_running
+            .lock()
+            .map_err(|_| "suggestion worker lock poisoned".to_owned())?;
+        if *running {
+            return Ok(());
+        }
+        *running = true;
+    }
+
+    let app_for_thread = app.clone();
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            suggestion_worker_loop(&app_for_thread);
+        }));
+
+        if result.is_err() {
+            eprintln!("suggestion worker crashed; allowing restart on next request");
+        }
+
+        if let Ok(mut running) = app_for_thread
+            .state::<AppState>()
+            .suggestion_worker_running
+            .lock()
+        {
+            *running = false;
         }
     });
 
@@ -1680,7 +1703,7 @@ fn generate_and_cache_suggestion(
     let cache_key = (
         request.dataset_root.clone(),
         request.face_id.clone(),
-        signature,
+        signature.clone(),
     );
     if let Some(cached) = state
         .suggestion_cache
@@ -1690,6 +1713,29 @@ fn generate_and_cache_suggestion(
         .cloned()
     {
         return Ok(cached);
+    }
+
+    if let Some(persisted) = load_ready_suggestion::<SuggestionResponse>(
+        app,
+        &request.dataset_root,
+        &request.face_id,
+        &signature,
+    )? {
+        state
+            .suggestion_cache
+            .lock()
+            .map_err(|_| "suggestion cache lock poisoned".to_owned())?
+            .insert(cache_key, persisted.clone());
+        state
+            .suggestion_queue
+            .lock()
+            .map_err(|_| "suggestion queue lock poisoned".to_owned())?
+            .states
+            .insert(
+                suggestion_queue_key(&request.dataset_root, &request.face_id),
+                "ready".to_owned(),
+            );
+        return Ok(persisted);
     }
 
     {
@@ -2126,9 +2172,10 @@ mod tests {
     use super::{
         cleanup_registered_staging_workspaces_by_registry_path, copy_dir_recursive,
         stage_dropped_inputs_inner, validate_face_image_paths, validate_manifest_request,
-        ImportStageRequest, SetAnnotationsRequest, StageDroppedInputsRequest,
-        STAGING_WORKSPACE_MARKER_FILE,
+        worker_suggestion_request, ImportStageRequest, SetAnnotationsRequest,
+        StageDroppedInputsRequest, STAGING_WORKSPACE_MARKER_FILE,
     };
+    use crate::suggestion_store::LeasedJob;
     use engine::FaceView;
     use std::fs;
     use std::path::PathBuf;
@@ -2150,6 +2197,20 @@ mod tests {
         assert_eq!(parsed.dataset_root, "/tmp/dataset");
         assert_eq!(parsed.coco_json_path, "annotations/instances_default.json");
         assert_eq!(parsed.mp4_path, "videos/source.mp4");
+    }
+
+    #[test]
+    fn worker_requests_inherit_backend_timeout_policy() {
+        let request = worker_suggestion_request(&LeasedJob {
+            job_id: "job-1".to_owned(),
+            dataset_id: "/tmp/dataset".to_owned(),
+            frame_id: "face-1".to_owned(),
+            suggestion_signature: "sig-1".to_owned(),
+        });
+
+        assert_eq!(request.dataset_root, "/tmp/dataset");
+        assert_eq!(request.face_id, "face-1");
+        assert_eq!(request.timeout_ms, None);
     }
 
     #[test]

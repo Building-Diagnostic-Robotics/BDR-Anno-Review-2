@@ -137,12 +137,12 @@ beforeEach(() => {
     prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
     editorWarmupTimeoutMs: 15000,
-    openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+    openai: { enabled: true, model: "gpt-5.4", hasKey: false },
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
 
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
-  mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.2", suggestions: [], attempts: 1 });
+  mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.4", suggestions: [], attempts: 1 });
   const ready = { readyCount: 2, queuedCount: 0, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
   const queued = { readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
   mocks.startEditingSession.mockResolvedValue(ready);
@@ -154,7 +154,7 @@ beforeEach(() => {
     prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
     editorWarmupTimeoutMs: 15000,
-    openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+    openai: { enabled: true, model: "gpt-5.4", hasKey: false },
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
 
@@ -190,6 +190,76 @@ describe("workflow pages", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Finish & export" }));
     expect(screen.getByRole("heading", { name: "Export final annotations" })).toBeTruthy();
+  });
+});
+
+describe("llm suggestion cache scoping", () => {
+  it("refetches suggestions when opening a different dataset with the same face ids", async () => {
+    const noReady = {
+      readyCount: 0,
+      queuedCount: 0,
+      inProgressCount: 0,
+      failedCount: 0,
+      targetBufferSize: 12,
+      minReadyToStart: 1,
+      blocked: false,
+      candidateFaceIds: ["face-1", "face-2"],
+      readyFaceIds: [],
+    };
+    mocks.startEditingSession.mockResolvedValue(noReady);
+    mocks.getSuggestionsReadiness.mockResolvedValue(noReady);
+    mocks.topupSuggestions.mockResolvedValue(noReady);
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset-a" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(mocks.getSuggestions).toHaveBeenCalledWith("/tmp/dataset-a", "face-1");
+    });
+
+    mocks.getSuggestions.mockClear();
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset-b" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(mocks.getSuggestions).toHaveBeenCalledWith("/tmp/dataset-b", "face-1");
+    });
+  });
+
+  it("does not pass the warmup timeout as a direct suggestion fetch override", async () => {
+    const noReady = {
+      readyCount: 0,
+      queuedCount: 0,
+      inProgressCount: 0,
+      failedCount: 0,
+      targetBufferSize: 12,
+      minReadyToStart: 1,
+      blocked: false,
+      candidateFaceIds: ["face-1", "face-2"],
+      readyFaceIds: [],
+    };
+    mocks.startEditingSession.mockResolvedValue(noReady);
+    mocks.getSuggestionsReadiness.mockResolvedValue(noReady);
+    mocks.topupSuggestions.mockResolvedValue(noReady);
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+      target: { value: "/tmp/dataset" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+
+    await waitFor(() => {
+      expect(mocks.getSuggestions).toHaveBeenCalledWith("/tmp/dataset", "face-1");
+    });
+    expect(mocks.getSuggestions.mock.calls[0]).toEqual(["/tmp/dataset", "face-1"]);
   });
 });
 
@@ -490,7 +560,7 @@ describe("settings modal", () => {
       prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
     editorWarmupTimeoutMs: 15000,
-      openai: { enabled: true, model: "gpt-5.2", hasKey: true },
+      openai: { enabled: true, model: "gpt-5.4", hasKey: true },
       anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
     });
 
@@ -513,7 +583,7 @@ describe("settings modal", () => {
         prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
     editorWarmupTimeoutMs: 15000,
-        openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+        openai: { enabled: true, model: "gpt-5.4", hasKey: false },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       })
       .mockResolvedValueOnce({
@@ -522,7 +592,7 @@ describe("settings modal", () => {
         prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
     editorWarmupTimeoutMs: 15000,
-        openai: { enabled: true, model: "gpt-5.2", hasKey: true },
+        openai: { enabled: true, model: "gpt-5.4", hasKey: true },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       });
 
@@ -561,7 +631,7 @@ describe("settings modal", () => {
           prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
     editorWarmupTimeoutMs: 15000,
-          openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+          openai: { enabled: true, model: "gpt-5.4", hasKey: false },
           anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
         });
       })

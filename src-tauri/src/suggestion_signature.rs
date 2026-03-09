@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn signature_is_stable_for_key_order_variants() {
         let left = SuggestionSignatureInput {
-            model_id: "gpt-5.2".to_owned(),
+            model_id: "gpt-5.4".to_owned(),
             prompt_template_version: "suggest_boxes_v1".to_owned(),
             preprocessing_version: "faces_v1".to_owned(),
             generation_params: serde_json::json!({
@@ -64,7 +64,7 @@ mod tests {
             }),
         };
         let right = SuggestionSignatureInput {
-            model_id: "gpt-5.2".to_owned(),
+            model_id: "gpt-5.4".to_owned(),
             prompt_template_version: "suggest_boxes_v1".to_owned(),
             preprocessing_version: "faces_v1".to_owned(),
             generation_params: serde_json::json!({

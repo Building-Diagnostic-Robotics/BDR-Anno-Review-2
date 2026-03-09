@@ -52,7 +52,7 @@ impl Default for LlmSettings {
             editor_warmup_timeout_ms: DEFAULT_EDITOR_WARMUP_TIMEOUT_MS,
             openai: LlmProviderSettings {
                 enabled: true,
-                model: "gpt-5.2".to_owned(),
+                model: "gpt-5.4".to_owned(),
             },
             anthropic: LlmProviderSettings {
                 enabled: false,
