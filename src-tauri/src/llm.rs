@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use engine::FaceView;
 use reqwest::blocking::Client;
@@ -15,7 +15,7 @@ const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const CODE_INTERPRETER_MEMORY_LIMIT: &str = "4g";
 const TOOL_CHOICE_REQUIRED_ENV: &str = "BDR_OPENAI_TOOL_CHOICE_REQUIRED";
 const CODE_EXECUTION_ENABLED_ENV: &str = "BDR_LLM_CODE_EXECUTION_ENABLED";
-const DEFAULT_SUGGESTION_TIMEOUT_MS: u64 = 120_000;
+pub const DEFAULT_SUGGESTION_TIMEOUT_MS: u64 = 180_000;
 const OPENAI_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,12 +369,26 @@ fn extract_openai_text(value: &serde_json::Value) -> Option<String> {
         }
         let content = item.get("content")?.as_array()?;
         for part in content {
+            if let Some(value) = part.get("json").or_else(|| part.get("parsed")) {
+                if let Ok(text) = serde_json::to_string(value) {
+                    return Some(text);
+                }
+            }
+        }
+        for part in content {
             if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                return Some(text.to_owned());
+            }
+            if let Some(text) = part.get("output_text").and_then(|v| v.as_str()) {
                 return Some(text.to_owned());
             }
         }
     }
-    None
+
+    value
+        .get("output_text")
+        .and_then(|v| v.as_str())
+        .map(|text| text.to_owned())
 }
 
 fn extract_anthropic_text(value: &serde_json::Value) -> Option<String> {
@@ -541,6 +555,51 @@ fn build_openai_response_body(
     let mut body = serde_json::json!({
         "model": model,
         "reasoning": reasoning_budget(reasoning_preset),
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "roof_defect_boxes",
+                "strict": true,
+                "schema": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "boxes": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "x": { "type": "number" },
+                                            "y": { "type": "number" },
+                                            "w": { "type": "number" },
+                                            "h": { "type": "number" }
+                                        },
+                                        "required": ["x", "y", "w", "h"]
+                                    }
+                                },
+                                "image_size": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "width": { "type": "number" },
+                                        "height": { "type": "number" }
+                                    },
+                                    "required": ["width", "height"]
+                                }
+                            },
+                            "required": ["boxes", "image_size"]
+                        },
+                        {
+                            "type": "string",
+                            "const": "No defects detected"
+                        }
+                    ]
+                }
+            }
+        },
         "input": [{
             "role": "user",
             "content": [
@@ -572,6 +631,7 @@ fn post_openai_response(
     let client = openai_http_client(timeout)?;
 
     let proxy_mode = proxy_mode_hint();
+    let started_at = Instant::now();
 
     let response = client
         .post(OPENAI_URL)
@@ -586,23 +646,27 @@ fn post_openai_response(
                 tags.join(",")
             };
             let detail = format_error_chain(&source);
+            let elapsed_ms = started_at.elapsed().as_millis();
             OpenAiRequestError {
                 message: format!(
-                    "openai request failed (class={tags_text}, proxy_mode={proxy_mode}): {detail}"
+                    "openai request failed (class={tags_text}, proxy_mode={proxy_mode}, elapsed_ms={elapsed_ms}): {detail}"
                 ),
             }
         })?;
 
     let status = response.status();
+    let elapsed_ms = started_at.elapsed().as_millis();
     let value: serde_json::Value = response.json().map_err(|source| OpenAiRequestError {
         message: format!(
-            "openai response parse failed: {}",
+            "openai response parse failed (proxy_mode={proxy_mode}, elapsed_ms={elapsed_ms}): {}",
             format_error_chain(&source)
         ),
     })?;
     if !status.is_success() {
         return Err(OpenAiRequestError {
-            message: format!("openai returned HTTP {status}: {value}"),
+            message: format!(
+                "openai returned HTTP {status} (proxy_mode={proxy_mode}, elapsed_ms={elapsed_ms}): {value}"
+            ),
         });
     }
     Ok(value)
@@ -870,7 +934,7 @@ mod tests {
     #[test]
     fn openai_payload_matches_responses_multimodal_tool_format() {
         let payload = build_openai_response_body(
-            "gpt-5.2",
+            "gpt-5.4",
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
             "image/png",
@@ -881,6 +945,12 @@ mod tests {
         assert_eq!(payload["input"][0]["role"], "user");
         assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(payload["input"][0]["content"][1]["type"], "input_image");
+        assert_eq!(payload["text"]["format"]["type"], "json_schema");
+        assert_eq!(payload["text"]["format"]["name"], "roof_defect_boxes");
+        assert_eq!(
+            payload["text"]["format"]["schema"]["anyOf"][1]["const"],
+            "No defects detected"
+        );
         assert_eq!(payload["tools"][0]["type"], "code_interpreter");
         assert_eq!(payload["tools"][0]["container"]["type"], "auto");
         assert_eq!(payload["tools"][0]["container"]["memory_limit"], "4g");
@@ -890,7 +960,7 @@ mod tests {
     #[test]
     fn openai_payload_can_require_tool_choice_for_debug_smoke() {
         let payload = build_openai_response_body(
-            "gpt-5.2",
+            "gpt-5.4",
             "run python",
             TEST_IMAGE_B64_PNG_1X1,
             "image/png",
@@ -904,7 +974,7 @@ mod tests {
     #[test]
     fn openai_payload_golden_json() {
         let payload = build_openai_response_body(
-            "gpt-5.2",
+            "gpt-5.4",
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
             "image/png",
@@ -929,9 +999,77 @@ mod tests {
       "role": "user"
     }
   ],
-  "model": "gpt-5.2",
+  "model": "gpt-5.4",
   "reasoning": {
     "effort": "low"
+  },
+  "text": {
+    "format": {
+      "name": "roof_defect_boxes",
+      "schema": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "boxes": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "h": {
+                      "type": "number"
+                    },
+                    "w": {
+                      "type": "number"
+                    },
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y",
+                    "w",
+                    "h"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "image_size": {
+                "additionalProperties": false,
+                "properties": {
+                  "height": {
+                    "type": "number"
+                  },
+                  "width": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "width",
+                  "height"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "boxes",
+              "image_size"
+            ],
+            "type": "object"
+          },
+          {
+            "const": "No defects detected",
+            "type": "string"
+          }
+        ]
+      },
+      "strict": true,
+      "type": "json_schema"
+    }
   },
   "tools": [
     {
@@ -949,7 +1087,7 @@ mod tests {
     #[test]
     fn openai_payload_can_disable_code_execution_tool() {
         let payload = build_openai_response_body(
-            "gpt-5.2",
+            "gpt-5.4",
             "find boxes",
             TEST_IMAGE_B64_PNG_1X1,
             "image/png",
@@ -958,6 +1096,34 @@ mod tests {
             false,
         );
         assert!(payload.get("tools").is_none());
+    }
+
+    #[test]
+    fn extract_openai_text_accepts_structured_json_payloads() {
+        let response = serde_json::json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_json",
+                            "json": {
+                                "boxes": [],
+                                "image_size": { "width": 1, "height": 1 }
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+        let text = super::extract_openai_text(&response).expect("structured text expected");
+        assert!(text.contains("\"boxes\":[]"));
+        assert!(text.contains("\"width\":1"));
+    }
+
+    #[test]
+    fn default_suggestion_timeout_is_extended_for_tool_enabled_requests() {
+        assert_eq!(super::DEFAULT_SUGGESTION_TIMEOUT_MS, 180_000);
     }
 
     #[test]
@@ -1040,7 +1206,7 @@ mod tests {
     fn code_interpreter_smoke_executes_python_when_required() {
         let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set");
         let body = build_openai_response_body(
-            "gpt-5.2",
+            "gpt-5.4",
             "Run Python to compute the sum of [2, 3, 5], then respond with just the integer result.",
             TEST_IMAGE_B64_PNG_1X1,
             "image/png",

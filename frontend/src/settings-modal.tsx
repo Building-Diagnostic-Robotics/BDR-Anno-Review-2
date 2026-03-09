@@ -19,7 +19,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
         prefetchBufferSize: 12,
         editorWarmupThresholdRatio: 0.4,
         editorWarmupTimeoutMs: 15000,
-        openai: { enabled: true, model: "gpt-5.2", hasKey: false },
+        openai: { enabled: true, model: "gpt-5.4", hasKey: false },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       },
     [initial]
@@ -210,7 +210,7 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
           <h4 className="text-base font-semibold">Credentials</h4>
           <Field label="OpenAI model">
             <select className={inputClassName} value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
-              <option value="gpt-5.2">gpt-5.2</option>
+              <option value="gpt-5.4">gpt-5.4</option>
             </select>
           </Field>
           <div className="flex flex-wrap items-center gap-2">

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::de::DeserializeOwned;
 use tauri::{AppHandle, Manager};
 
 pub const JOB_STATUS_QUEUED: &str = "queued";
@@ -73,8 +74,7 @@ fn open_connection(app: &AppHandle) -> Result<Connection, String> {
     Ok(connection)
 }
 
-pub fn ensure_schema(app: &AppHandle) -> Result<(), String> {
-    let conn = open_connection(app)?;
+fn ensure_schema_on_connection(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS suggestions (
@@ -117,6 +117,11 @@ pub fn ensure_schema(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn ensure_schema(app: &AppHandle) -> Result<(), String> {
+    let conn = open_connection(app)?;
+    ensure_schema_on_connection(&conn)
+}
+
 pub fn has_ready_suggestion(
     app: &AppHandle,
     dataset_id: &str,
@@ -149,6 +154,39 @@ pub fn has_active_job(
         )
         .map_err(|source| format!("failed to query active suggestion jobs: {source}"))?;
     Ok(count > 0)
+}
+
+fn load_ready_suggestion_on_connection<T: DeserializeOwned>(
+    conn: &Connection,
+    dataset_id: &str,
+    frame_id: &str,
+    suggestion_signature: &str,
+) -> Result<Option<T>, String> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload FROM suggestions WHERE dataset_id = ?1 AND frame_id = ?2 AND suggestion_signature = ?3 AND status = 'ready'",
+            params![dataset_id, frame_id, suggestion_signature],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|source| format!("failed to load ready suggestion payload: {source}"))?;
+
+    match payload {
+        Some(value) => serde_json::from_str(&value)
+            .map(Some)
+            .map_err(|source| format!("failed to parse ready suggestion payload: {source}")),
+        None => Ok(None),
+    }
+}
+
+pub fn load_ready_suggestion<T: DeserializeOwned>(
+    app: &AppHandle,
+    dataset_id: &str,
+    frame_id: &str,
+    suggestion_signature: &str,
+) -> Result<Option<T>, String> {
+    let conn = open_connection(app)?;
+    load_ready_suggestion_on_connection(&conn, dataset_id, frame_id, suggestion_signature)
 }
 
 pub fn upsert_suggestion_ready(
@@ -190,15 +228,17 @@ pub fn mark_suggestion_failed(
     Ok(())
 }
 
-pub fn insert_jobs_if_missing(app: &AppHandle, jobs: &[JobInsert]) -> Result<usize, String> {
+fn insert_jobs_if_missing_on_connection(
+    conn: &mut Connection,
+    jobs: &[JobInsert],
+) -> Result<Vec<String>, String> {
     if jobs.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
-    let mut conn = open_connection(app)?;
     let tx = conn
         .transaction()
         .map_err(|source| format!("failed to start suggestion job transaction: {source}"))?;
-    let mut inserted = 0usize;
+    let mut inserted = Vec::new();
     let now = unix_ts();
     for job in jobs {
         let affected = tx
@@ -208,11 +248,18 @@ pub fn insert_jobs_if_missing(app: &AppHandle, jobs: &[JobInsert]) -> Result<usi
                 params![job.job_id, job.dataset_id, job.frame_id, job.suggestion_signature, job.priority, now],
             )
             .map_err(|source| format!("failed to insert suggestion job: {source}"))?;
-        inserted += affected;
+        if affected > 0 {
+            inserted.push(job.frame_id.clone());
+        }
     }
     tx.commit()
         .map_err(|source| format!("failed to commit suggestion job transaction: {source}"))?;
     Ok(inserted)
+}
+
+pub fn insert_jobs_if_missing(app: &AppHandle, jobs: &[JobInsert]) -> Result<Vec<String>, String> {
+    let mut conn = open_connection(app)?;
+    insert_jobs_if_missing_on_connection(&mut conn, jobs)
 }
 
 pub fn lease_next_job(app: &AppHandle, lease_seconds: i64) -> Result<Option<LeasedJob>, String> {
@@ -360,4 +407,77 @@ pub fn recently_failed(
     Ok(updated_at
         .map(|ts| now.saturating_sub(ts) < cooldown_seconds)
         .unwrap_or(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ensure_schema_on_connection, insert_jobs_if_missing_on_connection,
+        load_ready_suggestion_on_connection, JobInsert,
+    };
+    use crate::llm::{SuggestionBox, SuggestionResponse};
+    use rusqlite::{params, Connection};
+
+    #[test]
+    fn ready_payload_can_be_loaded_and_deserialized() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        ensure_schema_on_connection(&conn).expect("schema");
+        let payload = serde_json::to_string(&SuggestionResponse {
+            face_id: "face-1".to_owned(),
+            provider: "openai".to_owned(),
+            model: "gpt-5.4".to_owned(),
+            suggestions: vec![SuggestionBox {
+                bbox: [1.0, 2.0, 3.0, 4.0],
+                confidence: Some(0.9),
+                source: "llm".to_owned(),
+            }],
+            attempts: 1,
+        })
+        .expect("payload");
+
+        conn.execute(
+            "INSERT INTO suggestions(dataset_id, frame_id, suggestion_signature, status, payload, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'ready', ?4, 1, 1)",
+            params!["/tmp/dataset", "face-1", "sig-1", payload],
+        )
+        .expect("insert payload");
+
+        let loaded: Option<SuggestionResponse> =
+            load_ready_suggestion_on_connection(&conn, "/tmp/dataset", "face-1", "sig-1")
+                .expect("load ready payload");
+        let loaded = loaded.expect("payload should be present");
+        assert_eq!(loaded.face_id, "face-1");
+        assert_eq!(loaded.provider, "openai");
+        assert_eq!(loaded.suggestions.len(), 1);
+        assert_eq!(loaded.suggestions[0].bbox, [1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn insert_jobs_reports_only_newly_inserted_frames() {
+        let mut conn = Connection::open_in_memory().expect("in-memory db");
+        ensure_schema_on_connection(&conn).expect("schema");
+        let jobs = vec![
+            JobInsert {
+                job_id: "job-1".to_owned(),
+                dataset_id: "/tmp/dataset".to_owned(),
+                frame_id: "face-1".to_owned(),
+                suggestion_signature: "sig-1".to_owned(),
+                priority: 10,
+            },
+            JobInsert {
+                job_id: "job-2".to_owned(),
+                dataset_id: "/tmp/dataset".to_owned(),
+                frame_id: "face-2".to_owned(),
+                suggestion_signature: "sig-1".to_owned(),
+                priority: 9,
+            },
+        ];
+
+        let first = insert_jobs_if_missing_on_connection(&mut conn, &jobs).expect("first insert");
+        assert_eq!(first, vec!["face-1".to_owned(), "face-2".to_owned()]);
+
+        let duplicate =
+            insert_jobs_if_missing_on_connection(&mut conn, &jobs).expect("duplicate insert");
+        assert!(duplicate.is_empty());
+    }
 }

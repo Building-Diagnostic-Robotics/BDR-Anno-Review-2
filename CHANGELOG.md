@@ -7,9 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-03-09
+
+### Changed
+- Set the default OpenAI suggestion model to `gpt-5.4` in backend settings and the settings UI.
+
 ### Fixed
 - Filtered background prefetch fetches to `readyFaceIds` returned by readiness/top-up APIs so editor polling no longer triggers foreground generation for queued/in-progress faces.
 - Bound worker generation/cache reads to the job suggestion signature and rejected mismatches, preventing stale model/settings cache payloads from being persisted under a newer signature.
+- Reused persisted `ready` suggestion payloads in foreground fetches before live generation, preventing duplicate OpenAI calls after warmup/prefetch and allowing cached suggestions to survive app restarts.
+- Raised OpenAI suggestion timeout policy for tool-enabled requests by extending the backend default timeout, removing the frontend warmup-timeout override from focused fetches, and letting worker jobs inherit the backend timeout budget instead of failing after 20 seconds.
+- Scoped frontend suggestion caching to the active dataset/settings context so overlapping face IDs across datasets or model-setting changes no longer suppress fresh suggestion fetches.
+- Added structured OpenAI JSON-output constraints plus broader response-shape parsing and elapsed-time diagnostics to make bbox responses more reliable and timeout failures more actionable.
 
 ## [1.3.1] - 2026-02-27
 
