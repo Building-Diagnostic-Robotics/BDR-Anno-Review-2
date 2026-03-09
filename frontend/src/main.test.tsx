@@ -136,7 +136,7 @@ beforeEach(() => {
     reasoningPreset: "high",
     prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
     openai: { enabled: true, model: "gpt-5.4", hasKey: false },
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
@@ -153,7 +153,7 @@ beforeEach(() => {
     reasoningPreset: "high",
     prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
     openai: { enabled: true, model: "gpt-5.4", hasKey: false },
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
@@ -559,7 +559,7 @@ describe("settings modal", () => {
       reasoningPreset: "high",
       prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
       openai: { enabled: true, model: "gpt-5.4", hasKey: true },
       anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
     });
@@ -582,7 +582,7 @@ describe("settings modal", () => {
         reasoningPreset: "high",
         prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
         openai: { enabled: true, model: "gpt-5.4", hasKey: false },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       })
@@ -591,7 +591,7 @@ describe("settings modal", () => {
         reasoningPreset: "high",
         prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
         openai: { enabled: true, model: "gpt-5.4", hasKey: true },
         anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
       });
@@ -630,7 +630,7 @@ describe("settings modal", () => {
           reasoningPreset: "high",
           prefetchBufferSize: 12,
     editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 15000,
+    editorWarmupTimeoutMs: 300,
           openai: { enabled: true, model: "gpt-5.4", hasKey: false },
           anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
         });

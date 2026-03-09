@@ -48,6 +48,29 @@ const EDITOR_WARMUP_POLL_MS = 300;
 const EDITOR_WARMUP_TIMEOUT_REFRESH_MS = 2500;
 const BACKGROUND_PREFETCH_POLL_MS = 1400;
 
+const WARMUP_ABORTED = "WARMUP_ABORTED";
+
+const sleepWithAbort = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error(WARMUP_ABORTED));
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error(WARMUP_ABORTED));
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+
 type ImageViewport = {
   naturalWidth: number;
   naturalHeight: number;
@@ -176,6 +199,14 @@ export function App() {
   const inferredMp4PathRef = useRef("");
   const skipWarmupRequestedRef = useRef(false);
   const warmupInFlightRef = useRef(false);
+  const warmupAbortControllerRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => () => {
+    isMountedRef.current = false;
+    warmupAbortControllerRef.current?.abort();
+    warmupInFlightRef.current = false;
+  }, []);
 
   useEffect(() => {
     editsRef.current = edits;
@@ -539,6 +570,16 @@ export function App() {
     const thresholdRatio = llmSettings.editorWarmupThresholdRatio ?? EDITOR_WARMUP_THRESHOLD_RATIO;
     const timeoutMs = llmSettings.editorWarmupTimeoutMs ?? EDITOR_WARMUP_TIMEOUT_MS;
     const requiredReady = Math.max(1, Math.ceil(uncachedFaceIds.length * thresholdRatio));
+    const warmupAbortController = new AbortController();
+    warmupAbortControllerRef.current?.abort();
+    warmupAbortControllerRef.current = warmupAbortController;
+
+    const assertWarmupActive = () => {
+      if (warmupAbortController.signal.aborted || !isMountedRef.current) {
+        throw new Error(WARMUP_ABORTED);
+      }
+    };
+
     warmupInFlightRef.current = true;
     setIsEnteringEditor(true);
     setWarmupTimedOut(false);
@@ -559,6 +600,7 @@ export function App() {
         targetBufferSize: llmSettings.prefetchBufferSize,
         minReadyToStart: requiredReady,
       });
+      assertWarmupActive();
       updateDiagnostics("Editor warmup started", "", { scope: "warmup", metadata: `targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summaryFromReadiness(start))}` });
       while (Date.now() < dynamicDeadline) {
         const readiness = await getSuggestionsReadiness({
@@ -566,6 +608,7 @@ export function App() {
           currentFaceId: uncachedFaceIds[0],
           lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
         });
+        assertWarmupActive();
         const summary = summaryFromReadiness(readiness);
         setWarmupQueueSummary(summary);
         const readyCount = summary.ready;
@@ -589,7 +632,8 @@ export function App() {
           lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
           targetBufferSize: llmSettings.prefetchBufferSize,
         });
-        await new Promise((resolve) => setTimeout(resolve, EDITOR_WARMUP_POLL_MS));
+        assertWarmupActive();
+        await sleepWithAbort(EDITOR_WARMUP_POLL_MS, warmupAbortController.signal);
       }
       if (!skipWarmupRequestedRef.current && Date.now() >= dynamicDeadline) {
         const readiness = await getSuggestionsReadiness({
@@ -597,15 +641,25 @@ export function App() {
           currentFaceId: uncachedFaceIds[0],
           lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
         });
+        assertWarmupActive();
         const summary = summaryFromReadiness(readiness);
         setWarmupQueueSummary(summary);
         setWarmupTimedOut(true);
         updateDiagnostics("Editor warmup timed out", "", { scope: "warmup", level: "warn", metadata: `Entered editor after timeout. targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summary)}` });
       }
     } catch (cause) {
+      if (String(cause).includes(WARMUP_ABORTED)) {
+        return;
+      }
       updateDiagnostics("Editor warmup failed", String(cause), { scope: "warmup" });
     } finally {
+      if (warmupAbortControllerRef.current === warmupAbortController) {
+        warmupAbortControllerRef.current = null;
+      }
       warmupInFlightRef.current = false;
+      if (!isMountedRef.current || warmupAbortController.signal.aborted) {
+        return;
+      }
       setIsEnteringEditor(false);
       setEditorWarmupReadyCount(0);
       setEditorWarmupMessage("");

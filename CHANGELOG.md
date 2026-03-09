@@ -7,8 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-03-09
+
 ### Fixed
 - Split the frontend runtime bootstrap from the `App` component and added shared Vitest cleanup so importing the app in `main.test.tsx` no longer mounts a hidden root that can keep CI frontend tests running indefinitely.
+- Added warmup cancellation guards in the frontend editor-entry flow so warmup polling timers are aborted on unmount and no longer leak async handles that can keep Vitest alive in CI.
+- Added explicit timeout guardrails for the CI `checks` job and frontend test step to fail fast when a regression causes test hangs.
+- Reduced mocked warmup timeout durations in `main.test.tsx` so warmup-path tests fail fast and no longer spend long periods blocked on timeout loops.
+
+### Changed
+- Bumped workspace, Tauri app config, and frontend package versions from `1.3.2` to `1.3.3` for this frontend test hang fix release.
 
 ## [1.3.2] - 2026-03-09
 
