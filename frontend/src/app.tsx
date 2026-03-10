@@ -38,6 +38,7 @@ import {
 } from "./editing";
 import { LlmSettingsModal } from "./settings-modal";
 import { Button, Card, Field, SectionHeading, inputClassName, modalOverlayClassName } from "./ui-primitives";
+import { defaultScheduler, sleep } from "./orchestration";
 
 const nowIso = () => new Date().toISOString();
 const AUTOSAVE_DEBOUNCE_MS = 1000;
@@ -176,6 +177,21 @@ export function App() {
   const inferredMp4PathRef = useRef("");
   const skipWarmupRequestedRef = useRef(false);
   const warmupInFlightRef = useRef(false);
+  const isDisposedRef = useRef(false);
+  const lifetimeAbortRef = useRef<AbortController | null>(null);
+
+  if (!lifetimeAbortRef.current) {
+    lifetimeAbortRef.current = new AbortController();
+  }
+
+  useEffect(() => {
+    return () => {
+      isDisposedRef.current = true;
+      lifetimeAbortRef.current?.abort();
+    };
+  }, []);
+
+  const isAlive = useCallback(() => !isDisposedRef.current, []);
 
   useEffect(() => {
     editsRef.current = edits;
@@ -432,20 +448,27 @@ export function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
 
     const attach = async () => {
-      unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+      const attached = await getCurrentWindow().onDragDropEvent((event) => {
         if (event.payload.type !== "drop") {
           return;
         }
 
         void applyDroppedPaths(event.payload.paths);
       });
+      if (disposed) {
+        attached();
+        return;
+      }
+      unlisten = attached;
     };
 
     void attach();
 
     return () => {
+      disposed = true;
       if (unlisten) {
         unlisten();
       }
@@ -457,7 +480,7 @@ export function App() {
     let unlistenProgress: (() => void) | undefined;
 
     const attach = async () => {
-      unlistenProgress = await listen("generation-progress", (event) => {
+      const attached = await listen("generation-progress", (event) => {
         if (disposed) return;
         const payload = event.payload as {
           phase: string;
@@ -479,6 +502,11 @@ export function App() {
         setGenerationDetail(payload.detail ?? "Working...");
         setGenerationHeartbeat(`Last update ${Math.round((payload.elapsedMs ?? 0) / 1000)}s`);
       });
+      if (disposed) {
+        attached();
+        return;
+      }
+      unlistenProgress = attached;
     };
 
     void attach();
@@ -561,6 +589,9 @@ export function App() {
       });
       updateDiagnostics("Editor warmup started", "", { scope: "warmup", metadata: `targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summaryFromReadiness(start))}` });
       while (Date.now() < dynamicDeadline) {
+        if (!isAlive() || lifetimeAbortRef.current?.signal.aborted) {
+          return;
+        }
         const readiness = await getSuggestionsReadiness({
           datasetRoot,
           currentFaceId: uncachedFaceIds[0],
@@ -589,7 +620,7 @@ export function App() {
           lookaheadWindow: Math.max(0, llmSettings.prefetchBufferSize - 1),
           targetBufferSize: llmSettings.prefetchBufferSize,
         });
-        await new Promise((resolve) => setTimeout(resolve, EDITOR_WARMUP_POLL_MS));
+        await sleep(EDITOR_WARMUP_POLL_MS, lifetimeAbortRef.current?.signal, defaultScheduler);
       }
       if (!skipWarmupRequestedRef.current && Date.now() >= dynamicDeadline) {
         const readiness = await getSuggestionsReadiness({
@@ -603,8 +634,14 @@ export function App() {
         updateDiagnostics("Editor warmup timed out", "", { scope: "warmup", level: "warn", metadata: `Entered editor after timeout. targets=${uncachedFaceIds.length}, required=${requiredReady}, ${queueSummaryText(summary)}` });
       }
     } catch (cause) {
+      if (!isAlive() || lifetimeAbortRef.current?.signal.aborted) {
+        return;
+      }
       updateDiagnostics("Editor warmup failed", String(cause), { scope: "warmup" });
     } finally {
+      if (!isAlive()) {
+        return;
+      }
       warmupInFlightRef.current = false;
       setIsEnteringEditor(false);
       setEditorWarmupReadyCount(0);
@@ -674,7 +711,10 @@ export function App() {
       setGenerationHeartbeat(`Job ${start.jobId} running`);
       let report;
       while (!report) {
-        await new Promise((resolve) => setTimeout(resolve, 350));
+        if (!isAlive() || lifetimeAbortRef.current?.signal.aborted) {
+          return;
+        }
+        await sleep(350, lifetimeAbortRef.current?.signal, defaultScheduler);
         const status = await getGenerationStatus(start.jobId);
         if (status.state === "done" && status.result) {
           report = status.result;
@@ -699,6 +739,9 @@ export function App() {
         `Review dataset generation complete\n${runtimeReport}\nsourceFramesDir (auto-generated): ${sourceFramesDir}\nextractedFrames: ${report.extractedFrameCount}\nskippedCachedFrames: ${report.skippedExistingCount}\nmanifest: ${report.writtenManifestPath}\nfaces: ${report.faceCount}\nfilteredBoxes: ${report.filteredBoxCount}`
       );
     } catch (cause) {
+      if (!isAlive() || lifetimeAbortRef.current?.signal.aborted) {
+        return;
+      }
       setGenerationStep("idle");
       setGenerationPercent(0);
       setGenerationDetail("Idle.");
@@ -707,6 +750,9 @@ export function App() {
       updateDiagnostics("Review dataset generation failed", message, { scope: "generation" });
       setNoticeMessage(message);
     } finally {
+      if (!isAlive()) {
+        return;
+      }
       setIsGenerating(false);
       setShowGenerationSpinner(false);
       setGenerationJobId("");
