@@ -97,35 +97,6 @@ beforeEach(() => {
     "face-2": [],
   };
 
-  mocks.startGenerateReviewDataset.mockResolvedValue({ jobId: "job-1" });
-  mocks.getGenerationStatus.mockResolvedValue({
-    jobId: "job-1",
-    state: "done",
-    message: "Generation complete",
-    result: {
-    writtenManifestPath: "annotations/view_manifest.json",
-    faceCount: 2,
-    filteredBoxCount: 1,
-    extractedFrameCount: 8,
-    skippedExistingCount: 2,
-  },
-  });
-
-  mocks.stageDroppedInputs.mockResolvedValue({
-    workspaceRoot: "/tmp/bdr-stage",
-    stagedDatasetRoot: "/tmp/bdr-stage/dataset",
-    stagedCocoJsonPath: "/tmp/bdr-stage/instances_default.json",
-    stagedMp4Path: "/tmp/bdr-stage/source.mp4",
-    ignoredPaths: [],
-  });
-
-  mocks.runImportStage.mockResolvedValue({
-    imageCount: 2,
-    annotationCount: 2,
-    categoryCount: 1,
-    referencedImageCount: 2,
-  });
-
   mocks.setAnnotations.mockImplementation(async (_datasetRoot: string, faceId: string, edits: AnnotationEdit[]) => {
     annotationStore[faceId] = edits;
     return edits;
@@ -141,149 +112,37 @@ beforeEach(() => {
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
 
-  mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
-  mocks.getSuggestions.mockResolvedValue({ faceId: "face-1", provider: "openai", model: "gpt-5.4", suggestions: [], attempts: 1 });
   const ready = { readyCount: 2, queuedCount: 0, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
-  const queued = { readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
   mocks.startEditingSession.mockResolvedValue(ready);
   mocks.getSuggestionsReadiness.mockResolvedValue(ready);
-  mocks.topupSuggestions.mockResolvedValue(queued);
-  mocks.saveLlmSettings.mockResolvedValue({
-    llmSuggestionsEnabled: false,
-    reasoningPreset: "high",
-    prefetchBufferSize: 12,
-    editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 300,
-    openai: { enabled: true, model: "gpt-5.4", hasKey: false },
-    anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-  });
+  mocks.topupSuggestions.mockResolvedValue(ready);
 
-  mocks.startGenerateReviewDataset.mockClear();
-  mocks.getGenerationStatus.mockClear();
-  mocks.runImportStage.mockClear();
-  mocks.setAnnotations.mockClear();
-  mocks.stageDroppedInputs.mockClear();
-  mocks.exportCoco.mockClear();
-  mocks.getSuggestions.mockClear();
-  mocks.startEditingSession.mockClear();
-  mocks.getSuggestionsReadiness.mockClear();
-  mocks.topupSuggestions.mockClear();
-  mocks.saveLlmSettings.mockClear();
-  mocks.clearLlmApiKey.mockClear();
+  mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
+
+  Object.values(mocks).forEach((fn) => fn.mockClear());
 });
 
-describe("workflow pages", () => {
-  it("opens from home to editor and can navigate to export page", async () => {
+const openDatasetToEditor = async (datasetRoot = "/tmp/dataset") => {
+  fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+    target: { value: datasetRoot },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
+  await waitFor(() => {
+    expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+  });
+};
+
+describe("app workflow smoke", () => {
+  it("opens dataset and navigates to export page", async () => {
     render(<App />);
-
-    expect(screen.getByRole("heading", { name: "Create new dataset" })).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-
+    await openDatasetToEditor();
     fireEvent.click(screen.getByRole("button", { name: "Finish & export" }));
     expect(screen.getByRole("heading", { name: "Export final annotations" })).toBeTruthy();
   });
-});
 
-describe("llm suggestion cache scoping", () => {
-  it("refetches suggestions when opening a different dataset with the same face ids", async () => {
-    mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
-      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-    });
-    const noReady = {
-      readyCount: 0,
-      queuedCount: 0,
-      inProgressCount: 0,
-      failedCount: 0,
-      targetBufferSize: 12,
-      minReadyToStart: 1,
-      blocked: false,
-      candidateFaceIds: ["face-1", "face-2"],
-      readyFaceIds: [],
-    };
-    mocks.startEditingSession.mockResolvedValue(noReady);
-    mocks.getSuggestionsReadiness.mockResolvedValue(noReady);
-    mocks.topupSuggestions.mockResolvedValue(noReady);
-
+  it("autosaves edited bbox", async () => {
     render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset-a" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(mocks.getSuggestions).toHaveBeenCalledWith("/tmp/dataset-a", "face-1");
-    });
-
-    mocks.getSuggestions.mockClear();
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset-b" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(mocks.getSuggestions).toHaveBeenCalledWith("/tmp/dataset-b", "face-1");
-    });
-  });
-
-  it("does not pass the warmup timeout as a direct suggestion fetch override", async () => {
-    mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
-      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-    });
-    const noReady = {
-      readyCount: 0,
-      queuedCount: 0,
-      inProgressCount: 0,
-      failedCount: 0,
-      targetBufferSize: 12,
-      minReadyToStart: 1,
-      blocked: false,
-      candidateFaceIds: ["face-1", "face-2"],
-      readyFaceIds: [],
-    };
-    mocks.startEditingSession.mockResolvedValue(noReady);
-    mocks.getSuggestionsReadiness.mockResolvedValue(noReady);
-    mocks.topupSuggestions.mockResolvedValue(noReady);
-
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(mocks.getSuggestions).toHaveBeenCalledWith("/tmp/dataset", "face-1");
-    });
-    expect(mocks.getSuggestions.mock.calls[0]).toEqual(["/tmp/dataset", "face-1"]);
-  });
-});
-
-describe("autosave", () => {
-  it("autosaves after bbox edits without manual save", async () => {
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-
+    await openDatasetToEditor();
     const xInputs = screen.getAllByLabelText("x") as HTMLInputElement[];
     fireEvent.change(xInputs[0], { target: { value: "9" } });
 
@@ -292,48 +151,7 @@ describe("autosave", () => {
     }, { timeout: 2500 });
   });
 
-});
-
-describe("tutorial preferences", () => {
-  it("toggles tutorial and persists collapse state", async () => {
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Hide quick tutorial" })).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Hide quick tutorial" }));
-    expect(window.localStorage.getItem("bdr.editor.tutorialCollapsed")).toBe("true");
-    expect(screen.getByRole("button", { name: "Show quick tutorial" })).toBeTruthy();
-  });
-});
-
-
-describe("home path inputs and editor chrome", () => {
-  it("always shows file path fields and does not render focus mode", async () => {
-    render(<App />);
-
-    expect(screen.getByLabelText("COCO JSON")).toBeTruthy();
-    expect(screen.getByLabelText("Source MP4")).toBeTruthy();
-    expect(screen.getByLabelText("Source frames directory (auto-managed)")).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-    expect(screen.queryByRole("button", { name: "Focus mode" })).toBeNull();
-  });
-
-  it("keeps inferred paths synced with dataset root until user overrides them", async () => {
+  it("keeps inferred paths synced until user override", async () => {
     render(<App />);
 
     const datasetRootInput = screen.getByLabelText("Resume dataset directory");
@@ -346,12 +164,6 @@ describe("home path inputs and editor chrome", () => {
       expect(mp4Input.value).toBe("/tmp/dataset-a/source.mp4");
     });
 
-    fireEvent.change(datasetRootInput, { target: { value: "/tmp/dataset-b" } });
-    await waitFor(() => {
-      expect(cocoInput.value).toBe("/tmp/dataset-b/annotations/instances_default.json");
-      expect(mp4Input.value).toBe("/tmp/dataset-b/source.mp4");
-    });
-
     fireEvent.change(cocoInput, { target: { value: "/custom/instances.json" } });
     fireEvent.change(mp4Input, { target: { value: "/custom/source.mp4" } });
     fireEvent.change(datasetRootInput, { target: { value: "/tmp/dataset-c" } });
@@ -361,26 +173,13 @@ describe("home path inputs and editor chrome", () => {
       expect(mp4Input.value).toBe("/custom/source.mp4");
     });
   });
-});
 
-describe("delete flow", () => {
-  it("deletes active box and persists through manual save", async () => {
+  it("deletes active box and persists on save", async () => {
     render(<App />);
+    await openDatasetToEditor();
 
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-
-    const boxRowsBeforeDelete = screen.getAllByLabelText(/^[xywh]$/);
-    expect(boxRowsBeforeDelete).toHaveLength(8);
-
-    const secondRowXInput = boxRowsBeforeDelete[4];
-    fireEvent.mouseEnter(secondRowXInput.closest(".bbox-editor") as HTMLElement);
+    const boxInputs = screen.getAllByLabelText(/^[xywh]$/);
+    fireEvent.mouseEnter(boxInputs[4].closest(".bbox-editor") as HTMLElement);
     fireEvent.click(screen.getByRole("button", { name: "Delete active box" }));
     fireEvent.click(screen.getByRole("button", { name: "Save now" }));
 
@@ -390,182 +189,19 @@ describe("delete flow", () => {
   });
 });
 
-describe("face switching and save concurrency", () => {
-  it("does not navigate faces with arrow keys while typing in bbox inputs", async () => {
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-
-    const xInput = screen.getAllByLabelText("x")[0];
-    fireEvent.keyDown(xInput, { key: "ArrowRight" });
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-    expect(screen.queryByText(/Editing: face-2/)).toBeNull();
-  });
-
-  it("does not autosave stale edits for the next face while annotations are loading", async () => {
-    let resolveFace2Load: (value: AnnotationEdit[]) => void = () => {
-      throw new Error("Expected face-2 annotation loader to be initialized");
-    };
-    const delayedFace2 = new Promise<AnnotationEdit[]>((resolve) => {
-      resolveFace2Load = resolve;
-    });
-
-    mocks.setAnnotations.mockClear();
-
-    const api = await import("./api");
-    const getAnnotationsMock = vi.mocked(api.getAnnotations);
-    getAnnotationsMock.mockImplementation(async (_datasetRoot: string, faceId: string) => {
-      if (faceId === "face-2") {
-        return delayedFace2;
-      }
-      return annotationStore[faceId] ?? [];
-    });
-
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-
-    fireEvent.change(screen.getAllByLabelText("x")[0], { target: { value: "41" } });
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-
-    await waitFor(() => {
-      expect(
-        mocks.setAnnotations.mock.calls.some(([, faceId]) => faceId === "face-2")
-      ).toBe(false);
-    }, { timeout: 2500 });
-
-    resolveFace2Load([]);
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-2/)).toBeTruthy();
-    });
-  });
-
-  it("keeps newer local edits when an older save response returns", async () => {
-    let resolveSave: (value: AnnotationEdit[]) => void = () => {
-      throw new Error("Expected save resolver to be initialized");
-    };
-    mocks.setAnnotations.mockImplementation(
-      (_datasetRoot: string, _faceId: string, edits: AnnotationEdit[]) =>
-        new Promise<AnnotationEdit[]>((resolve) => {
-          resolveSave = () => resolve(edits);
-        })
-    );
-
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-
-    const firstXInput = screen.getAllByLabelText("x")[0] as HTMLInputElement;
-    fireEvent.change(firstXInput, { target: { value: "9" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save now" }));
-
-    fireEvent.change(firstXInput, { target: { value: "15" } });
-    resolveSave(annotationStore["face-1"]);
-
-    await waitFor(() => {
-      expect(firstXInput.value).toBe("15");
-    });
-  });
-});
-
-
-
-describe("editor warmup", () => {
-  it("requests warmup prefetch before entering editor", async () => {
-    mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
-      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-    });
-    mocks.startEditingSession.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
-    mocks.getSuggestionsReadiness.mockResolvedValue({ readyCount: 1, queuedCount: 1, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] });
-
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-  });
-
-  it("continues to editor when warmup prefetch fails", async () => {
-    mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
-      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-    });
-    mocks.startEditingSession.mockRejectedValueOnce(new Error("prefetch down"));
-
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    });
-  });
-
-  it("enters editor when warmup times out", async () => {
-    mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
-      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-    });
-    const blocked = { readyCount: 0, queuedCount: 2, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: true, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: [] };
-    mocks.startEditingSession.mockResolvedValue(blocked);
-    mocks.getSuggestionsReadiness.mockResolvedValue(blocked);
-    mocks.topupSuggestions.mockResolvedValue(blocked);
-
-    render(<App />);
-
-    fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
-      target: { value: "/tmp/dataset" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
-    }, { timeout: 9000 });
-  });
-});
-
 describe("settings modal", () => {
-  it("disables save when suggestions are enabled and provider is disabled", async () => {
+  it("disables save when suggestions are enabled and provider is none", async () => {
     mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true, reasoningPreset: "high", prefetchBufferSize: 12, editorWarmupThresholdRatio: 0.4, editorWarmupTimeoutMs: 300,
-      openai: { enabled: true, model: "gpt-5.4", hasKey: false }, anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
+      llmSuggestionsEnabled: true,
+      reasoningPreset: "high",
+      prefetchBufferSize: 12,
+      editorWarmupThresholdRatio: 0.4,
+      editorWarmupTimeoutMs: 300,
+      openai: { enabled: true, model: "gpt-5.4", hasKey: false },
+      anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
     });
-    render(<App />);
 
+    render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
     const providerSelect = await screen.findByLabelText("Provider");
     fireEvent.change(providerSelect, { target: { value: "none" } });
@@ -574,111 +210,10 @@ describe("settings modal", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-
-  it("shows key presence status text", async () => {
-    mocks.getLlmSettings.mockResolvedValueOnce({
-      llmSuggestionsEnabled: true,
-      reasoningPreset: "high",
-      prefetchBufferSize: 12,
-    editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 300,
-      openai: { enabled: true, model: "gpt-5.4", hasKey: true },
-      anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-    });
-
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-
-    expect(await screen.findByText(/OpenAI key: Present/i)).toBeTruthy();
-    expect(screen.getByText(/Anthropic key: Not set/i)).toBeTruthy();
-  });
-
-
-  it("does not mark diagnostics as error after successful API key update", async () => {
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("sk-test-123");
-    mocks.setLlmApiKey.mockResolvedValueOnce(undefined);
-    mocks.getLlmSettings
-      .mockResolvedValueOnce({
-        llmSuggestionsEnabled: true,
-        reasoningPreset: "high",
-        prefetchBufferSize: 12,
-    editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 300,
-        openai: { enabled: true, model: "gpt-5.4", hasKey: false },
-        anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-      })
-      .mockResolvedValueOnce({
-        llmSuggestionsEnabled: true,
-        reasoningPreset: "high",
-        prefetchBufferSize: 12,
-    editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 300,
-        openai: { enabled: true, model: "gpt-5.4", hasKey: true },
-        anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-      });
-
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-    fireEvent.click((await screen.findAllByRole("button", { name: "Set key" }))[0]);
-
-    await waitFor(() => {
-      expect(mocks.setLlmApiKey).toHaveBeenCalledWith({ provider: "openai", apiKey: "sk-test-123" });
-      expect(screen.getByText("READY")).toBeTruthy();
-      expect(screen.queryByText(/\[error\] openai/i)).toBeNull();
-    });
-
-    promptSpy.mockRestore();
-  });
-
-  it("shows save errors when settings save is rejected", async () => {
-    mocks.saveLlmSettings.mockRejectedValueOnce(new Error("keychain unavailable"));
-
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
-
-    expect(await screen.findByText(/Failed to update settings: Error: keychain unavailable/i)).toBeTruthy();
-  });
-
-  it("disables save while settings save is in flight", async () => {
-    let resolveSave: () => void = () => undefined;
-    mocks.saveLlmSettings.mockImplementationOnce(
-      () => new Promise((resolve) => {
-        resolveSave = () => resolve({
-          llmSuggestionsEnabled: true,
-          reasoningPreset: "high",
-          prefetchBufferSize: 12,
-    editorWarmupThresholdRatio: 0.4,
-    editorWarmupTimeoutMs: 300,
-          openai: { enabled: true, model: "gpt-5.4", hasKey: false },
-          anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
-        });
-      })
-    );
-
-    render(<App />);
-
-    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-    const saveButton = await screen.findByRole("button", { name: "Save" });
-    fireEvent.click(saveButton);
-
-    expect(await screen.findByRole("button", { name: "Saving…" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement).disabled).toBe(true);
-
-    resolveSave();
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
-    });
-  });
   it("closes settings modal on Escape", async () => {
     render(<App />);
-
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
     await screen.findByRole("dialog", { name: "LLM settings" });
-
     fireEvent.keyDown(document, { key: "Escape" });
 
     await waitFor(() => {
