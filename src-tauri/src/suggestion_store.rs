@@ -331,6 +331,16 @@ pub fn readiness_snapshot(
     candidate_frame_ids: &[String],
     signature: &str,
 ) -> Result<ReadinessSnapshot, String> {
+    let conn = open_connection(app)?;
+    readiness_snapshot_on_connection(&conn, dataset_id, candidate_frame_ids, signature)
+}
+
+fn readiness_snapshot_on_connection(
+    conn: &Connection,
+    dataset_id: &str,
+    candidate_frame_ids: &[String],
+    signature: &str,
+) -> Result<ReadinessSnapshot, String> {
     if candidate_frame_ids.is_empty() {
         return Ok(ReadinessSnapshot {
             ready_count: 0,
@@ -339,8 +349,6 @@ pub fn readiness_snapshot(
             failed_count: 0,
         });
     }
-
-    let conn = open_connection(app)?;
     let mut ready_count = 0usize;
     let mut failed_count = 0usize;
     let mut queued_count = 0usize;
@@ -413,9 +421,9 @@ pub fn recently_failed(
 mod tests {
     use super::{
         ensure_schema_on_connection, insert_jobs_if_missing_on_connection,
-        load_ready_suggestion_on_connection, JobInsert,
+        load_ready_suggestion_on_connection, readiness_snapshot_on_connection, JobInsert,
     };
-    use crate::llm::{SuggestionBox, SuggestionResponse};
+    use crate::llm::{SuggestionBox, SuggestionDiagnostics, SuggestionResponse};
     use rusqlite::{params, Connection};
 
     #[test]
@@ -432,6 +440,12 @@ mod tests {
                 source: "llm".to_owned(),
             }],
             attempts: 1,
+            diagnostics: Some(SuggestionDiagnostics {
+                tool_enabled: true,
+                output_mode: "structured_output".to_owned(),
+                provider_status: "completed".to_owned(),
+                provider_response_id: Some("resp_123".to_owned()),
+            }),
         })
         .expect("payload");
 
@@ -450,6 +464,13 @@ mod tests {
         assert_eq!(loaded.provider, "openai");
         assert_eq!(loaded.suggestions.len(), 1);
         assert_eq!(loaded.suggestions[0].bbox, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            loaded
+                .diagnostics
+                .as_ref()
+                .and_then(|value| value.provider_response_id.as_deref()),
+            Some("resp_123")
+        );
     }
 
     #[test]
@@ -479,5 +500,29 @@ mod tests {
         let duplicate =
             insert_jobs_if_missing_on_connection(&mut conn, &jobs).expect("duplicate insert");
         assert!(duplicate.is_empty());
+    }
+
+    #[test]
+    fn readiness_snapshot_counts_persisted_ready_payloads() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        ensure_schema_on_connection(&conn).expect("schema");
+        conn.execute(
+            "INSERT INTO suggestions(dataset_id, frame_id, suggestion_signature, status, payload, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'ready', ?4, 1, 1)",
+            params!["/tmp/dataset", "face-1", "sig-1", "{\"faceId\":\"face-1\",\"provider\":\"openai\",\"model\":\"gpt-5.4\",\"suggestions\":[],\"attempts\":1}"],
+        )
+        .expect("insert ready suggestion");
+
+        let snapshot = readiness_snapshot_on_connection(
+            &conn,
+            "/tmp/dataset",
+            &["face-1".to_owned()],
+            "sig-1",
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot.ready_count, 1);
+        assert_eq!(snapshot.queued_count, 0);
+        assert_eq!(snapshot.in_progress_count, 0);
+        assert_eq!(snapshot.failed_count, 0);
     }
 }

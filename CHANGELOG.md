@@ -8,11 +8,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- Preserved JSON quoting when OpenAI structured outputs return the schema string branch (for example, `"No defects detected"`) so valid negative-case responses continue to parse and cache successfully.
+- Removed a Clippy `let_and_return` violation in OpenAI tool-choice env parsing to restore `Rust checks` CI stability.
+
+## [1.3.3] - 2026-03-12
+
+### Fixed
+- Refactored the LLM suggestion backend around typed provider adapters with OpenAI-first structured-output handling, clearer refusal/incomplete/error diagnostics, and best-effort Anthropic JSON extraction.
+- Persisted foreground suggestion successes and durable failure states through the shared SQLite suggestion store so direct fetches, warmup, and background top-up all reuse the same readiness/cooldown data.
+- Narrowed suggestion-signature inputs to generation-affecting provider/model/reasoning/tool settings, preventing warmup-only UI settings from invalidating reusable suggestion payloads.
+- Added additive suggestion diagnostics (`toolEnabled`, `outputMode`, provider status/response id) to successful responses and surfaced them in frontend diagnostics logging.
+- Expanded backend regression coverage for structured-output parsing, signature stability, and persisted-ready readiness snapshots.
 - Added abort-aware frontend orchestration sleeps and unmount guards for warmup/generation loops so React test teardown can cleanly stop in-flight polling and timer work.
 - Hardened async event listener registration cleanup to dispose late-attached Tauri drag-drop and generation-progress listeners when components unmount.
 - Rebuilt `frontend/src/main.test.tsx` into a compact deterministic smoke suite (workflow, autosave, path inference, delete/save, and settings modal behaviors) that avoids warmup/cache-poll integration loops which were causing CI vitest hangs.
 - Reduced frontend test wall-time by defaulting `main.test.tsx` to suggestions-disabled settings and using shorter warmup timeout test fixtures, while adding orchestration sleep unit tests for deterministic timer behavior.
-
 - Split the frontend runtime bootstrap from the `App` component and added shared Vitest cleanup so importing the app in `main.test.tsx` no longer mounts a hidden root that can keep CI frontend tests running indefinitely.
 
 ## [1.3.2] - 2026-03-09

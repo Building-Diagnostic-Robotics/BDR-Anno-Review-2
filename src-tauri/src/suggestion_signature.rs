@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuggestionSignatureInput {
+    pub provider_id: String,
     pub model_id: String,
     pub prompt_template_version: String,
     pub preprocessing_version: String,
@@ -31,6 +32,7 @@ fn canonicalize_value(value: &Value) -> Value {
 
 pub fn compute_suggestion_signature(input: &SuggestionSignatureInput) -> Result<String, String> {
     let canonical_input = SuggestionSignatureInput {
+        provider_id: input.provider_id.clone(),
         model_id: input.model_id.clone(),
         prompt_template_version: input.prompt_template_version.clone(),
         preprocessing_version: input.preprocessing_version.clone(),
@@ -52,6 +54,7 @@ mod tests {
     #[test]
     fn signature_is_stable_for_key_order_variants() {
         let left = SuggestionSignatureInput {
+            provider_id: "openai".to_owned(),
             model_id: "gpt-5.4".to_owned(),
             prompt_template_version: "suggest_boxes_v1".to_owned(),
             preprocessing_version: "faces_v1".to_owned(),
@@ -64,6 +67,7 @@ mod tests {
             }),
         };
         let right = SuggestionSignatureInput {
+            provider_id: "openai".to_owned(),
             model_id: "gpt-5.4".to_owned(),
             prompt_template_version: "suggest_boxes_v1".to_owned(),
             preprocessing_version: "faces_v1".to_owned(),
