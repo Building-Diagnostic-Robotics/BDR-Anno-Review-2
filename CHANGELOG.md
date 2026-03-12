@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- Preserved JSON quoting when OpenAI structured outputs return the schema string branch (for example, `"No defects detected"`) so valid negative-case responses continue to parse and cache successfully.
+
 ## [1.3.3] - 2026-03-12
 
 ### Fixed

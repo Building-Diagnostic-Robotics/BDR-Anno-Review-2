@@ -2215,8 +2215,7 @@ mod tests {
         cleanup_registered_staging_workspaces_by_registry_path, copy_dir_recursive,
         stage_dropped_inputs_inner, suggestion_signature_from_settings, validate_face_image_paths,
         validate_manifest_request, worker_suggestion_request, ImportStageRequest,
-        SetAnnotationsRequest,
-        StageDroppedInputsRequest, STAGING_WORKSPACE_MARKER_FILE,
+        SetAnnotationsRequest, StageDroppedInputsRequest, STAGING_WORKSPACE_MARKER_FILE,
     };
     use crate::settings::{LlmProviderSettings, LlmSettings};
     use crate::suggestion_store::LeasedJob;

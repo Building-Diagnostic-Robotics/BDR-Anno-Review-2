@@ -505,7 +505,8 @@ fn truncate_for_error(text: &str, max_len: usize) -> String {
 }
 
 fn provider_status_from_response(value: &serde_json::Value, fallback: &str) -> String {
-    value.get("status")
+    value
+        .get("status")
         .and_then(|raw| raw.as_str())
         .or_else(|| value.get("stop_reason").and_then(|raw| raw.as_str()))
         .unwrap_or(fallback)
@@ -513,7 +514,8 @@ fn provider_status_from_response(value: &serde_json::Value, fallback: &str) -> S
 }
 
 fn provider_response_id(value: &serde_json::Value) -> Option<String> {
-    value.get("id")
+    value
+        .get("id")
         .and_then(|raw| raw.as_str())
         .map(|value| value.to_owned())
 }
@@ -696,7 +698,9 @@ fn anthropic_message_text(value: &serde_json::Value) -> Result<String, Suggestio
         .unwrap_or_else(|| "no text blocks".to_owned());
     Err(generation_error(
         SuggestionFailureCategory::ProviderContract,
-        format!("anthropic response did not contain JSON suggestion text; first text block: {preview}"),
+        format!(
+            "anthropic response did not contain JSON suggestion text; first text block: {preview}"
+        ),
     ))
 }
 
@@ -706,7 +710,12 @@ fn value_to_output_text(
     provider: &str,
 ) -> Result<String, SuggestionGenerationError> {
     match value {
-        serde_json::Value::String(text) => Ok(text.clone()),
+        serde_json::Value::String(_) => serde_json::to_string(value).map_err(|source| {
+            generation_error(
+                category,
+                format!("{provider} response could not be serialized for parsing: {source}"),
+            )
+        }),
         serde_json::Value::Object(map) => {
             if let Some(text) = map
                 .get("output_text")
@@ -1001,7 +1010,11 @@ fn run_openai(
         response_status,
         response_id,
     );
-    let raw_text = value_to_output_text(payload, SuggestionFailureCategory::ProviderContract, "openai")?;
+    let raw_text = value_to_output_text(
+        payload,
+        SuggestionFailureCategory::ProviderContract,
+        "openai",
+    )?;
     let suggestions = parse_provider_suggestions(
         "openai",
         &raw_text,
@@ -1041,7 +1054,10 @@ fn run_anthropic(
             } else {
                 SuggestionFailureCategory::Unknown
             };
-            generation_error(category, format!("anthropic request failed: {}", format_error_chain(&source)))
+            generation_error(
+                category,
+                format!("anthropic request failed: {}", format_error_chain(&source)),
+            )
         })?;
 
     let status = response.status();
@@ -1203,9 +1219,7 @@ pub fn generate_suggestions_with_retry(
 
     Err(generation_error(
         last_category,
-        format!(
-            "suggestion request failed after {attempts} attempt(s): {last_error}"
-        ),
+        format!("suggestion request failed after {attempts} attempt(s): {last_error}"),
     ))
 }
 
@@ -1470,6 +1484,32 @@ mod tests {
         .expect("structured text expected");
         assert!(text.contains("\"boxes\":[]"));
         assert!(text.contains("\"width\":1"));
+    }
+
+    #[test]
+    fn openai_message_text_preserves_structured_string_json_quoting() {
+        let response = serde_json::json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_json",
+                            "json": "No defects detected"
+                        }
+                    ]
+                }
+            ]
+        });
+        let (payload, mode) = openai_message_text(&response).expect("structured payload expected");
+        assert_eq!(mode, "structured_output");
+        let text = value_to_output_text(
+            payload,
+            SuggestionFailureCategory::ProviderContract,
+            "openai",
+        )
+        .expect("structured text expected");
+        assert_eq!(text, r#""No defects detected""#);
     }
 
     #[test]
