@@ -429,11 +429,10 @@ pub fn suggestion_tool_settings(provider_id: &str) -> serde_json::Value {
 }
 
 fn openai_tool_choice_required() -> bool {
-    let tool_choice_required = std::env::var(TOOL_CHOICE_REQUIRED_ENV)
+    std::env::var(TOOL_CHOICE_REQUIRED_ENV)
         .ok()
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    tool_choice_required
+        .unwrap_or(false)
 }
 
 fn reasoning_budget(preset: &str) -> serde_json::Value {

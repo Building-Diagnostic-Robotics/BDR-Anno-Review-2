@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 - Preserved JSON quoting when OpenAI structured outputs return the schema string branch (for example, `"No defects detected"`) so valid negative-case responses continue to parse and cache successfully.
+- Removed a Clippy `let_and_return` violation in OpenAI tool-choice env parsing to restore `Rust checks` CI stability.
 
 ## [1.3.3] - 2026-03-12
 
