@@ -182,6 +182,12 @@ export type SuggestionResponse = {
   model: string;
   suggestions: SuggestionBox[];
   attempts: number;
+  diagnostics?: {
+    toolEnabled: boolean;
+    outputMode: string;
+    providerStatus: string;
+    providerResponseId?: string;
+  };
 };
 
 export type QueueStateItem = {

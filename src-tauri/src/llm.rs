@@ -15,6 +15,7 @@ const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 const CODE_INTERPRETER_MEMORY_LIMIT: &str = "4g";
 const TOOL_CHOICE_REQUIRED_ENV: &str = "BDR_OPENAI_TOOL_CHOICE_REQUIRED";
 const CODE_EXECUTION_ENABLED_ENV: &str = "BDR_LLM_CODE_EXECUTION_ENABLED";
+const DEFAULT_CODE_EXECUTION_ENABLED: bool = true;
 pub const DEFAULT_SUGGESTION_TIMEOUT_MS: u64 = 180_000;
 const OPENAI_CONNECT_TIMEOUT_SECS: u64 = 10;
 
@@ -42,6 +43,18 @@ pub struct SuggestionResponse {
     pub model: String,
     pub suggestions: Vec<SuggestionBox>,
     pub attempts: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<SuggestionDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestionDiagnostics {
+    pub tool_enabled: bool,
+    pub output_mode: String,
+    pub provider_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_response_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +145,68 @@ struct ParsedSuggestionItem {
     xmax: f64,
     ymax: f64,
     confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuggestionFailureCategory {
+    Authentication,
+    Configuration,
+    ProviderContract,
+    RateLimit,
+    Refusal,
+    Server,
+    StructuredOutput,
+    Transport,
+    Unknown,
+}
+
+impl SuggestionFailureCategory {
+    pub fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            SuggestionFailureCategory::RateLimit
+                | SuggestionFailureCategory::Server
+                | SuggestionFailureCategory::Transport
+        )
+    }
+
+    pub fn should_persist_failure(self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SuggestionGenerationError {
+    pub category: SuggestionFailureCategory,
+    pub message: String,
+}
+
+impl std::fmt::Display for SuggestionGenerationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SuggestionGenerationError {}
+
+#[derive(Debug, Clone)]
+struct ProviderExecutionContext<'a> {
+    provider_id: &'static str,
+    model: &'a str,
+    prompt: &'a str,
+    image_b64: &'a str,
+    image_media_type: &'a str,
+    timeout: Duration,
+    reasoning_preset: &'a str,
+    width: f64,
+    height: f64,
+    tool_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderExecutionSuccess {
+    suggestions: Vec<SuggestionBox>,
+    metadata: SuggestionDiagnostics,
 }
 
 pub fn prompt_text(app: &AppHandle) -> Result<String, String> {
@@ -342,7 +417,23 @@ fn code_execution_enabled() -> bool {
     std::env::var(CODE_EXECUTION_ENABLED_ENV)
         .ok()
         .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
-        .unwrap_or(true)
+        .unwrap_or(DEFAULT_CODE_EXECUTION_ENABLED)
+}
+
+pub fn suggestion_tool_settings(provider_id: &str) -> serde_json::Value {
+    let tool_choice_required = openai_tool_choice_required();
+    serde_json::json!({
+        "codeExecutionEnabled": code_execution_enabled(),
+        "toolChoiceRequired": provider_id == "openai" && tool_choice_required,
+    })
+}
+
+fn openai_tool_choice_required() -> bool {
+    let tool_choice_required = std::env::var(TOOL_CHOICE_REQUIRED_ENV)
+        .ok()
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    tool_choice_required
 }
 
 fn reasoning_budget(preset: &str) -> serde_json::Value {
@@ -361,43 +452,224 @@ fn anthropic_thinking(preset: &str) -> serde_json::Value {
     }
 }
 
-fn extract_openai_text(value: &serde_json::Value) -> Option<String> {
-    let output = value.get("output")?.as_array()?;
+fn suggestion_output_schema() -> serde_json::Value {
+    serde_json::json!({
+        "anyOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "boxes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "x": { "type": "number" },
+                                "y": { "type": "number" },
+                                "w": { "type": "number" },
+                                "h": { "type": "number" }
+                            },
+                            "required": ["x", "y", "w", "h"]
+                        }
+                    },
+                    "image_size": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "width": { "type": "number" },
+                            "height": { "type": "number" }
+                        },
+                        "required": ["width", "height"]
+                    }
+                },
+                "required": ["boxes", "image_size"]
+            },
+            {
+                "type": "string",
+                "const": "No defects detected"
+            }
+        ]
+    })
+}
+
+fn truncate_for_error(text: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    for ch in text.chars().take(max_len) {
+        out.push(ch);
+    }
+    if text.chars().count() > max_len {
+        out.push_str("...");
+    }
+    out
+}
+
+fn provider_status_from_response(value: &serde_json::Value, fallback: &str) -> String {
+    value.get("status")
+        .and_then(|raw| raw.as_str())
+        .or_else(|| value.get("stop_reason").and_then(|raw| raw.as_str()))
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+fn provider_response_id(value: &serde_json::Value) -> Option<String> {
+    value.get("id")
+        .and_then(|raw| raw.as_str())
+        .map(|value| value.to_owned())
+}
+
+fn suggestion_diagnostics(
+    tool_enabled: bool,
+    output_mode: &str,
+    provider_status: String,
+    provider_response_id: Option<String>,
+) -> SuggestionDiagnostics {
+    SuggestionDiagnostics {
+        tool_enabled,
+        output_mode: output_mode.to_owned(),
+        provider_status,
+        provider_response_id,
+    }
+}
+
+fn generation_error(
+    category: SuggestionFailureCategory,
+    message: impl Into<String>,
+) -> SuggestionGenerationError {
+    SuggestionGenerationError {
+        category,
+        message: message.into(),
+    }
+}
+
+fn parse_provider_suggestions(
+    provider: &str,
+    raw: &str,
+    width: f64,
+    height: f64,
+    diagnostics: &SuggestionDiagnostics,
+) -> Result<Vec<SuggestionBox>, SuggestionGenerationError> {
+    parse_json_suggestions(raw, width, height).map_err(|source| {
+        generation_error(
+            SuggestionFailureCategory::StructuredOutput,
+            format!(
+                "{provider} structured output failed validation (status={}, mode={}): {source}",
+                diagnostics.provider_status, diagnostics.output_mode
+            ),
+        )
+    })
+}
+
+fn openai_message_text(
+    value: &serde_json::Value,
+) -> Result<(&serde_json::Value, &'static str), SuggestionGenerationError> {
+    if let Some(error) = value.get("error").filter(|entry| !entry.is_null()) {
+        return Err(generation_error(
+            SuggestionFailureCategory::ProviderContract,
+            format!("openai response included an error payload: {error}"),
+        ));
+    }
+
+    let status = provider_status_from_response(value, "unknown");
+    if status == "failed" {
+        return Err(generation_error(
+            SuggestionFailureCategory::Server,
+            format!("openai response status was `failed`: {value}"),
+        ));
+    }
+    if status == "incomplete" {
+        let details = value
+            .get("incomplete_details")
+            .map(|entry| entry.to_string())
+            .unwrap_or_else(|| "missing incomplete_details".to_owned());
+        return Err(generation_error(
+            SuggestionFailureCategory::ProviderContract,
+            format!("openai response was incomplete: {details}"),
+        ));
+    }
+
+    let output = value
+        .get("output")
+        .and_then(|entry| entry.as_array())
+        .ok_or_else(|| {
+            generation_error(
+                SuggestionFailureCategory::ProviderContract,
+                format!("openai response did not contain an output array (status={status})"),
+            )
+        })?;
+
     for item in output {
-        if item.get("type").and_then(|v| v.as_str()) != Some("message") {
+        if item.get("type").and_then(|entry| entry.as_str()) != Some("message") {
             continue;
         }
-        let content = item.get("content")?.as_array()?;
+        let Some(content) = item.get("content").and_then(|entry| entry.as_array()) else {
+            continue;
+        };
         for part in content {
-            if let Some(value) = part.get("json").or_else(|| part.get("parsed")) {
-                if let Ok(text) = serde_json::to_string(value) {
-                    return Some(text);
-                }
+            if part.get("type").and_then(|entry| entry.as_str()) == Some("refusal") {
+                let refusal = part
+                    .get("refusal")
+                    .or_else(|| part.get("text"))
+                    .map(|entry| entry.to_string())
+                    .unwrap_or_else(|| "model refused".to_owned());
+                return Err(generation_error(
+                    SuggestionFailureCategory::Refusal,
+                    format!("openai refused the request: {refusal}"),
+                ));
+            }
+            if let Some(structured) = part.get("json").or_else(|| part.get("parsed")) {
+                return Ok((structured, "structured_output"));
             }
         }
         for part in content {
-            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                return Some(text.to_owned());
-            }
-            if let Some(text) = part.get("output_text").and_then(|v| v.as_str()) {
-                return Some(text.to_owned());
+            if part
+                .get("output_text")
+                .and_then(|entry| entry.as_str())
+                .or_else(|| part.get("text").and_then(|entry| entry.as_str()))
+                .is_some()
+            {
+                return Ok((part, "text_fallback"));
             }
         }
     }
 
-    value
+    if value
         .get("output_text")
-        .and_then(|v| v.as_str())
-        .map(|text| text.to_owned())
+        .and_then(|entry| entry.as_str())
+        .is_some()
+    {
+        return Ok((value.get("output_text").unwrap_or(value), "text_fallback"));
+    }
+
+    Err(generation_error(
+        SuggestionFailureCategory::ProviderContract,
+        format!("openai response did not contain message content (status={status})"),
+    ))
 }
 
-fn extract_anthropic_text(value: &serde_json::Value) -> Option<String> {
-    let content = value.get("content")?.as_array()?;
+fn anthropic_message_text(value: &serde_json::Value) -> Result<String, SuggestionGenerationError> {
+    if let Some(error) = value.get("error").filter(|entry| !entry.is_null()) {
+        return Err(generation_error(
+            SuggestionFailureCategory::ProviderContract,
+            format!("anthropic response included an error payload: {error}"),
+        ));
+    }
+
+    let content = value
+        .get("content")
+        .and_then(|entry| entry.as_array())
+        .ok_or_else(|| {
+            generation_error(
+                SuggestionFailureCategory::ProviderContract,
+                "anthropic response did not contain a content array",
+            )
+        })?;
+
     let mut first_text: Option<String> = None;
     for part in content {
         let part_type = part
             .get("type")
-            .and_then(|v| v.as_str())
+            .and_then(|entry| entry.as_str())
             .unwrap_or("unknown");
         if part_type != "text" {
             if cfg!(debug_assertions) {
@@ -405,7 +677,7 @@ fn extract_anthropic_text(value: &serde_json::Value) -> Option<String> {
             }
             continue;
         }
-        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+        if let Some(text) = part.get("text").and_then(|entry| entry.as_str()) {
             if first_text.is_none() {
                 first_text = Some(text.to_owned());
             }
@@ -414,45 +686,53 @@ fn extract_anthropic_text(value: &serde_json::Value) -> Option<String> {
                 || trimmed.starts_with('[')
                 || trimmed == "\"No defects detected\""
             {
-                return Some(text.to_owned());
+                return Ok(text.to_owned());
             }
         }
     }
-    first_text
+
+    let preview = first_text
+        .map(|text| truncate_for_error(&text, 160))
+        .unwrap_or_else(|| "no text blocks".to_owned());
+    Err(generation_error(
+        SuggestionFailureCategory::ProviderContract,
+        format!("anthropic response did not contain JSON suggestion text; first text block: {preview}"),
+    ))
 }
 
-fn run_openai(
-    api_key: &str,
-    model: &str,
-    prompt: &str,
-    image_b64: &str,
-    image_media_type: &str,
-    timeout: Duration,
-    reasoning_preset: &str,
-) -> Result<String, String> {
-    let code_exec_enabled = code_execution_enabled();
-    let tool_choice_required = std::env::var(TOOL_CHOICE_REQUIRED_ENV)
-        .ok()
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let body = build_openai_response_body(
-        model,
-        prompt,
-        image_b64,
-        image_media_type,
-        reasoning_preset,
-        code_exec_enabled,
-        tool_choice_required,
-    );
-
-    let value = post_openai_response(api_key, timeout, &body).map_err(|error| error.message)?;
-    extract_openai_text(&value)
-        .ok_or_else(|| "openai response did not contain message text".to_owned())
-}
-
-#[derive(Debug)]
-struct OpenAiRequestError {
-    message: String,
+fn value_to_output_text(
+    value: &serde_json::Value,
+    category: SuggestionFailureCategory,
+    provider: &str,
+) -> Result<String, SuggestionGenerationError> {
+    match value {
+        serde_json::Value::String(text) => Ok(text.clone()),
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map
+                .get("output_text")
+                .and_then(|entry| entry.as_str())
+                .or_else(|| map.get("text").and_then(|entry| entry.as_str()))
+            {
+                return Ok(text.to_owned());
+            }
+            serde_json::to_string(value).map_err(|source| {
+                generation_error(
+                    category,
+                    format!("{provider} response could not be serialized for parsing: {source}"),
+                )
+            })
+        }
+        serde_json::Value::Array(_) => serde_json::to_string(value).map_err(|source| {
+            generation_error(
+                category,
+                format!("{provider} response could not be serialized for parsing: {source}"),
+            )
+        }),
+        _ => Err(generation_error(
+            category,
+            format!("{provider} response did not contain a JSON object/array/string payload"),
+        )),
+    }
 }
 
 fn format_error_chain(error: &dyn std::error::Error) -> String {
@@ -524,18 +804,36 @@ fn proxy_mode_hint() -> String {
     }
 }
 
-fn openai_http_client(timeout: Duration) -> Result<Client, OpenAiRequestError> {
+fn provider_status_error_category(status: reqwest::StatusCode) -> SuggestionFailureCategory {
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        SuggestionFailureCategory::Authentication
+    } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        SuggestionFailureCategory::RateLimit
+    } else if status.is_server_error() {
+        SuggestionFailureCategory::Server
+    } else {
+        SuggestionFailureCategory::ProviderContract
+    }
+}
+
+fn provider_http_client(
+    provider: &str,
+    timeout: Duration,
+) -> Result<Client, SuggestionGenerationError> {
     let proxy_mode = proxy_mode_hint();
 
     Client::builder()
         .connect_timeout(Duration::from_secs(OPENAI_CONNECT_TIMEOUT_SECS))
         .timeout(timeout)
         .build()
-        .map_err(|source| OpenAiRequestError {
-            message: format!(
-                "openai client init failed (proxy_mode={proxy_mode}): {}",
-                format_error_chain(&source)
-            ),
+        .map_err(|source| {
+            generation_error(
+                SuggestionFailureCategory::Transport,
+                format!(
+                    "{provider} client init failed (proxy_mode={proxy_mode}): {}",
+                    format_error_chain(&source)
+                ),
+            )
         })
 }
 
@@ -560,44 +858,7 @@ fn build_openai_response_body(
                 "type": "json_schema",
                 "name": "roof_defect_boxes",
                 "strict": true,
-                "schema": {
-                    "anyOf": [
-                        {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "boxes": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "properties": {
-                                            "x": { "type": "number" },
-                                            "y": { "type": "number" },
-                                            "w": { "type": "number" },
-                                            "h": { "type": "number" }
-                                        },
-                                        "required": ["x", "y", "w", "h"]
-                                    }
-                                },
-                                "image_size": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "width": { "type": "number" },
-                                        "height": { "type": "number" }
-                                    },
-                                    "required": ["width", "height"]
-                                }
-                            },
-                            "required": ["boxes", "image_size"]
-                        },
-                        {
-                            "type": "string",
-                            "const": "No defects detected"
-                        }
-                    ]
-                }
+                "schema": suggestion_output_schema()
             }
         },
         "input": [{
@@ -627,8 +888,8 @@ fn post_openai_response(
     api_key: &str,
     timeout: Duration,
     body: &serde_json::Value,
-) -> Result<serde_json::Value, OpenAiRequestError> {
-    let client = openai_http_client(timeout)?;
+) -> Result<serde_json::Value, SuggestionGenerationError> {
+    let client = provider_http_client("openai", timeout)?;
 
     let proxy_mode = proxy_mode_hint();
     let started_at = Instant::now();
@@ -636,7 +897,7 @@ fn post_openai_response(
     let response = client
         .post(OPENAI_URL)
         .bearer_auth(api_key)
-        .json(&body)
+        .json(body)
         .send()
         .map_err(|source| {
             let tags = reqwest_error_tags(&source);
@@ -647,27 +908,37 @@ fn post_openai_response(
             };
             let detail = format_error_chain(&source);
             let elapsed_ms = started_at.elapsed().as_millis();
-            OpenAiRequestError {
-                message: format!(
+            let category = if source.is_timeout() || source.is_connect() || source.is_request() {
+                SuggestionFailureCategory::Transport
+            } else {
+                SuggestionFailureCategory::Unknown
+            };
+            generation_error(
+                category,
+                format!(
                     "openai request failed (class={tags_text}, proxy_mode={proxy_mode}, elapsed_ms={elapsed_ms}): {detail}"
                 ),
-            }
+            )
         })?;
 
     let status = response.status();
     let elapsed_ms = started_at.elapsed().as_millis();
-    let value: serde_json::Value = response.json().map_err(|source| OpenAiRequestError {
-        message: format!(
-            "openai response parse failed (proxy_mode={proxy_mode}, elapsed_ms={elapsed_ms}): {}",
-            format_error_chain(&source)
-        ),
+    let value: serde_json::Value = response.json().map_err(|source| {
+        generation_error(
+            SuggestionFailureCategory::ProviderContract,
+            format!(
+                "openai response parse failed (proxy_mode={proxy_mode}, elapsed_ms={elapsed_ms}): {}",
+                format_error_chain(&source)
+            ),
+        )
     })?;
     if !status.is_success() {
-        return Err(OpenAiRequestError {
-            message: format!(
+        return Err(generation_error(
+            provider_status_error_category(status),
+            format!(
                 "openai returned HTTP {status} (proxy_mode={proxy_mode}, elapsed_ms={elapsed_ms}): {value}"
             ),
-        });
+        ));
     }
     Ok(value)
 }
@@ -706,27 +977,56 @@ fn build_anthropic_message_body(
     })
 }
 
+fn run_openai(
+    api_key: &str,
+    context: &ProviderExecutionContext<'_>,
+) -> Result<ProviderExecutionSuccess, SuggestionGenerationError> {
+    let tool_choice_required = openai_tool_choice_required();
+    let body = build_openai_response_body(
+        context.model,
+        context.prompt,
+        context.image_b64,
+        context.image_media_type,
+        context.reasoning_preset,
+        context.tool_enabled,
+        tool_choice_required,
+    );
+    let value = post_openai_response(api_key, context.timeout, &body)?;
+    let response_status = provider_status_from_response(&value, "completed");
+    let response_id = provider_response_id(&value);
+    let (payload, output_mode) = openai_message_text(&value)?;
+    let diagnostics = suggestion_diagnostics(
+        context.tool_enabled,
+        output_mode,
+        response_status,
+        response_id,
+    );
+    let raw_text = value_to_output_text(payload, SuggestionFailureCategory::ProviderContract, "openai")?;
+    let suggestions = parse_provider_suggestions(
+        "openai",
+        &raw_text,
+        context.width,
+        context.height,
+        &diagnostics,
+    )?;
+    Ok(ProviderExecutionSuccess {
+        suggestions,
+        metadata: diagnostics,
+    })
+}
+
 fn run_anthropic(
     api_key: &str,
-    model: &str,
-    prompt: &str,
-    image_b64: &str,
-    image_media_type: &str,
-    timeout: Duration,
-    reasoning_preset: &str,
-) -> Result<String, String> {
-    let client = Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let code_exec_enabled = code_execution_enabled();
+    context: &ProviderExecutionContext<'_>,
+) -> Result<ProviderExecutionSuccess, SuggestionGenerationError> {
+    let client = provider_http_client("anthropic", context.timeout)?;
     let body = build_anthropic_message_body(
-        model,
-        prompt,
-        image_b64,
-        image_media_type,
-        reasoning_preset,
-        code_exec_enabled,
+        context.model,
+        context.prompt,
+        context.image_b64,
+        context.image_media_type,
+        context.reasoning_preset,
+        context.tool_enabled,
     );
     let response = client
         .post(ANTHROPIC_URL)
@@ -735,18 +1035,52 @@ fn run_anthropic(
         .header("content-type", "application/json")
         .json(&body)
         .send()
-        .map_err(|source| format!("anthropic request failed: {source}"))?;
+        .map_err(|source| {
+            let category = if source.is_timeout() || source.is_connect() || source.is_request() {
+                SuggestionFailureCategory::Transport
+            } else {
+                SuggestionFailureCategory::Unknown
+            };
+            generation_error(category, format!("anthropic request failed: {}", format_error_chain(&source)))
+        })?;
 
     let status = response.status();
-    let value: serde_json::Value = response
-        .json()
-        .map_err(|source| format!("anthropic response parse failed: {source}"))?;
+    let value: serde_json::Value = response.json().map_err(|source| {
+        generation_error(
+            SuggestionFailureCategory::ProviderContract,
+            format!(
+                "anthropic response parse failed: {}",
+                format_error_chain(&source)
+            ),
+        )
+    })?;
     if !status.is_success() {
-        return Err(format!("anthropic returned HTTP {status}: {value}"));
+        return Err(generation_error(
+            provider_status_error_category(status),
+            format!("anthropic returned HTTP {status}: {value}"),
+        ));
     }
 
-    extract_anthropic_text(&value)
-        .ok_or_else(|| "anthropic response did not contain text content".to_owned())
+    let response_status = provider_status_from_response(&value, "ok");
+    let response_id = provider_response_id(&value);
+    let diagnostics = suggestion_diagnostics(
+        context.tool_enabled,
+        "best_effort_text",
+        response_status,
+        response_id,
+    );
+    let raw_text = anthropic_message_text(&value)?;
+    let suggestions = parse_provider_suggestions(
+        "anthropic",
+        &raw_text,
+        context.width,
+        context.height,
+        &diagnostics,
+    )?;
+    Ok(ProviderExecutionSuccess {
+        suggestions,
+        metadata: diagnostics,
+    })
 }
 
 fn selected_provider(
@@ -779,19 +1113,38 @@ pub fn generate_suggestions_with_retry(
     openai_key: Option<&str>,
     anthropic_key: Option<&str>,
     timeout_ms: Option<u64>,
-) -> Result<SuggestionResponse, String> {
-    let (provider_id, provider_settings) = selected_provider(settings)?;
+) -> Result<SuggestionResponse, SuggestionGenerationError> {
+    let (provider_id, provider_settings) = selected_provider(settings)
+        .map_err(|source| generation_error(SuggestionFailureCategory::Configuration, source))?;
     let model = provider_settings.model.trim();
     if model.is_empty() {
-        return Err(format!("{provider_id} model is not configured"));
+        return Err(generation_error(
+            SuggestionFailureCategory::Configuration,
+            format!("{provider_id} model is not configured"),
+        ));
     }
 
-    let prompt = prompt_text(app)?;
-    let (image_b64, image_media_type, [width, height]) = build_face_context(dataset_root, face)?;
+    let prompt = prompt_text(app)
+        .map_err(|source| generation_error(SuggestionFailureCategory::Configuration, source))?;
+    let (image_b64, image_media_type, [width, height]) = build_face_context(dataset_root, face)
+        .map_err(|source| generation_error(SuggestionFailureCategory::Configuration, source))?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_SUGGESTION_TIMEOUT_MS));
+    let context = ProviderExecutionContext {
+        provider_id,
+        model,
+        prompt: &prompt,
+        image_b64: &image_b64,
+        image_media_type: &image_media_type,
+        timeout,
+        reasoning_preset: settings.reasoning_preset.as_str(),
+        width,
+        height,
+        tool_enabled: code_execution_enabled(),
+    };
 
     let mut attempts = 0usize;
     let mut last_error = String::new();
+    let mut last_category = SuggestionFailureCategory::Unknown;
     let keys = vec![
         openai_key.unwrap_or_default().to_owned(),
         anthropic_key.unwrap_or_default().to_owned(),
@@ -804,74 +1157,65 @@ pub fn generate_suggestions_with_retry(
         attempts += 1;
         let result = match provider_id {
             "openai" => {
-                let key =
-                    openai_key.ok_or_else(|| "OpenAI API key is not configured".to_owned())?;
-                run_openai(
-                    key,
-                    model,
-                    &prompt,
-                    &image_b64,
-                    &image_media_type,
-                    timeout,
-                    settings.reasoning_preset.as_str(),
-                )
+                let key = openai_key.ok_or_else(|| {
+                    generation_error(
+                        SuggestionFailureCategory::Configuration,
+                        "OpenAI API key is not configured",
+                    )
+                })?;
+                run_openai(key, &context)
             }
             "anthropic" => {
-                let key = anthropic_key
-                    .ok_or_else(|| "Anthropic API key is not configured".to_owned())?;
-                run_anthropic(
-                    key,
-                    model,
-                    &prompt,
-                    &image_b64,
-                    &image_media_type,
-                    timeout,
-                    settings.reasoning_preset.as_str(),
-                )
+                let key = anthropic_key.ok_or_else(|| {
+                    generation_error(
+                        SuggestionFailureCategory::Configuration,
+                        "Anthropic API key is not configured",
+                    )
+                })?;
+                run_anthropic(key, &context)
             }
-            _ => Err(format!("unsupported provider `{provider_id}`")),
+            _ => Err(generation_error(
+                SuggestionFailureCategory::Configuration,
+                format!("unsupported provider `{provider_id}`"),
+            )),
         };
 
         match result {
-            Ok(raw_text) => {
-                let suggestions = parse_json_suggestions(&raw_text, width, height)?;
+            Ok(success) => {
                 return Ok(SuggestionResponse {
                     face_id: face.face_id.clone(),
-                    provider: provider_id.to_owned(),
+                    provider: context.provider_id.to_owned(),
                     model: model.to_owned(),
-                    suggestions,
+                    suggestions: success.suggestions,
                     attempts,
+                    diagnostics: Some(success.metadata),
                 });
             }
             Err(error) => {
-                last_error = sanitize_error(&error, &keys);
-                let transport_retryable = last_error.contains("class=timeout")
-                    || last_error.contains("class=connect")
-                    || last_error.contains("class=request");
-                let lower = last_error.to_lowercase();
-                let retryable = lower.contains("timeout")
-                    || lower.contains("429")
-                    || lower.contains("rate")
-                    || lower.contains("500")
-                    || lower.contains("502")
-                    || lower.contains("503")
-                    || lower.contains("504")
-                    || transport_retryable;
-                if !retryable {
+                last_category = error.category;
+                last_error = sanitize_error(&error.message, &keys);
+                if !error.category.is_retryable() {
                     break;
                 }
             }
         }
     }
 
-    Err(format!(
-        "suggestion request failed after {attempts} attempt(s): {last_error}"
+    Err(generation_error(
+        last_category,
+        format!(
+            "suggestion request failed after {attempts} attempt(s): {last_error}"
+        ),
     ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_openai_response_body, parse_json_suggestions, SuggestionQueue};
+    use super::{
+        anthropic_message_text, build_openai_response_body, openai_message_text,
+        parse_json_suggestions, value_to_output_text, ProviderExecutionContext,
+        SuggestionFailureCategory, SuggestionQueue,
+    };
     use std::time::Duration;
 
     fn response_has_code_interpreter_output(value: &serde_json::Value) -> bool {
@@ -1099,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_openai_text_accepts_structured_json_payloads() {
+    fn openai_message_text_accepts_structured_json_payloads() {
         let response = serde_json::json!({
             "output": [
                 {
@@ -1116,9 +1460,57 @@ mod tests {
                 }
             ]
         });
-        let text = super::extract_openai_text(&response).expect("structured text expected");
+        let (payload, mode) = openai_message_text(&response).expect("structured payload expected");
+        assert_eq!(mode, "structured_output");
+        let text = value_to_output_text(
+            payload,
+            SuggestionFailureCategory::ProviderContract,
+            "openai",
+        )
+        .expect("structured text expected");
         assert!(text.contains("\"boxes\":[]"));
         assert!(text.contains("\"width\":1"));
+    }
+
+    #[test]
+    fn openai_message_text_rejects_refusals() {
+        let response = serde_json::json!({
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "refusal",
+                    "refusal": "I can't help with that"
+                }]
+            }]
+        });
+        let err = openai_message_text(&response).expect_err("refusal should fail");
+        assert_eq!(err.category, SuggestionFailureCategory::Refusal);
+        assert!(err.message.contains("refused"));
+    }
+
+    #[test]
+    fn openai_message_text_rejects_incomplete_states() {
+        let response = serde_json::json!({
+            "status": "incomplete",
+            "incomplete_details": { "reason": "max_output_tokens" },
+            "output": []
+        });
+        let err = openai_message_text(&response).expect_err("incomplete response should fail");
+        assert_eq!(err.category, SuggestionFailureCategory::ProviderContract);
+        assert!(err.message.contains("incomplete"));
+    }
+
+    #[test]
+    fn openai_message_text_rejects_error_payloads() {
+        let response = serde_json::json!({
+            "status": "completed",
+            "error": { "message": "boom" },
+            "output": []
+        });
+        let err = openai_message_text(&response).expect_err("error payload should fail");
+        assert_eq!(err.category, SuggestionFailureCategory::ProviderContract);
+        assert!(err.message.contains("error payload"));
     }
 
     #[test]
@@ -1150,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_anthropic_text_prefers_json_block() {
+    fn anthropic_message_text_prefers_json_block() {
         let response = serde_json::json!({
             "content": [
                 {"type": "tool_use", "id": "tool_1"},
@@ -1158,8 +1550,22 @@ mod tests {
                 {"type": "text", "text": "{\"boxes\":[],\"image_size\":{\"width\":1,\"height\":1}}"}
             ]
         });
-        let text = super::extract_anthropic_text(&response).expect("text expected");
+        let text = anthropic_message_text(&response).expect("text expected");
         assert!(text.contains("\"boxes\""));
+    }
+
+    #[test]
+    fn anthropic_message_text_reports_non_json_chatter() {
+        let response = serde_json::json!({
+            "content": [
+                {"type": "tool_use", "id": "tool_1"},
+                {"type": "text", "text": "thinking..."},
+                {"type": "text", "text": "maybe there is a defect near the seam"}
+            ]
+        });
+        let err = anthropic_message_text(&response).expect_err("non-json text should fail");
+        assert_eq!(err.category, SuggestionFailureCategory::ProviderContract);
+        assert!(err.message.contains("did not contain JSON suggestion text"));
     }
 
     #[test]
@@ -1229,25 +1635,34 @@ mod tests {
         let image_path = std::env::var("ANTHROPIC_SMOKE_IMAGE_PATH")
             .expect("ANTHROPIC_SMOKE_IMAGE_PATH must be set to a local image path");
         let image_bytes = std::fs::read(&image_path).expect("image path should be readable");
+        let dimensions = image::image_dimensions(&image_path).expect("image dimensions available");
+        let media_type = match image::guess_format(&image_bytes).expect("image format detected") {
+            image::ImageFormat::Png => "image/png",
+            image::ImageFormat::Jpeg => "image/jpeg",
+            image::ImageFormat::Gif => "image/gif",
+            image::ImageFormat::WebP => "image/webp",
+            other => panic!("unsupported smoke-test image format: {other:?}"),
+        };
         use base64::Engine;
         let image_b64 = base64::engine::general_purpose::STANDARD.encode(image_bytes);
 
         let prompt = r#"Return strict JSON only in this exact shape:
 {"boxes":[{"x":0,"y":0,"w":0,"h":0}],"image_size":{"width":0,"height":0}}
 Find a single obvious object and provide exactly one bounding box. You may use the code_execution tool to validate that IoU((0,0,10,10),(0,0,5,5)) = 0.25."#;
-        let text = super::run_anthropic(
-            &api_key,
-            "claude-sonnet-4-6",
+        let context = ProviderExecutionContext {
+            provider_id: "anthropic",
+            model: "claude-sonnet-4-6",
             prompt,
-            &image_b64,
-            "image/png",
-            Duration::from_secs(45),
-            "low",
-        )
-        .expect("anthropic request should succeed");
-        println!("raw anthropic response text: {text}");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&text).expect("response should parse as json");
-        println!("parsed anthropic json: {parsed}");
+            image_b64: &image_b64,
+            image_media_type: media_type,
+            timeout: Duration::from_secs(45),
+            reasoning_preset: "low",
+            width: dimensions.0 as f64,
+            height: dimensions.1 as f64,
+            tool_enabled: true,
+        };
+        let response =
+            super::run_anthropic(&api_key, &context).expect("anthropic request should succeed");
+        println!("parsed anthropic suggestions: {:?}", response.suggestions);
     }
 }

@@ -17,7 +17,8 @@ mod suggestion_signature;
 mod suggestion_store;
 
 use llm::{
-    generate_suggestions_with_retry, QueueStateResponse, SuggestionQueue,
+    generate_suggestions_with_retry, suggestion_tool_settings, QueueStateResponse,
+    SuggestionFailureCategory, SuggestionGenerationError, SuggestionQueue,
     SuggestionQueuePrefetchRequest, SuggestionRequest, SuggestionResponse,
 };
 use settings::{
@@ -1361,26 +1362,26 @@ fn get_face_by_id(dataset_root: &str, face_id: &str) -> Result<FaceView, String>
         .ok_or_else(|| format!("unknown face_id: {face_id}"))
 }
 
-fn active_provider_model(settings: &LlmSettings) -> Result<String, String> {
+fn active_provider_config(settings: &LlmSettings) -> Result<(&'static str, String), String> {
     if settings.openai.enabled {
-        return Ok(settings.openai.model.trim().to_owned());
+        return Ok(("openai", settings.openai.model.trim().to_owned()));
     }
     if settings.anthropic.enabled {
-        return Ok(settings.anthropic.model.trim().to_owned());
+        return Ok(("anthropic", settings.anthropic.model.trim().to_owned()));
     }
     Err("no LLM provider is enabled in settings".to_owned())
 }
 
 fn suggestion_signature_from_settings(settings: &LlmSettings) -> Result<String, String> {
-    let model_id = active_provider_model(settings)?;
+    let (provider_id, model_id) = active_provider_config(settings)?;
     compute_suggestion_signature(&SuggestionSignatureInput {
+        provider_id: provider_id.to_owned(),
         model_id,
         prompt_template_version: "suggest_boxes_v1".to_owned(),
         preprocessing_version: "face_manifest_v1".to_owned(),
         generation_params: serde_json::json!({
             "reasoningPreset": settings.reasoning_preset,
-            "prefetchBufferSize": settings.prefetch_buffer_size,
-            "editorWarmupThresholdRatio": settings.editor_warmup_threshold_ratio,
+            "toolSettings": suggestion_tool_settings(provider_id),
         }),
     })
 }
@@ -1598,26 +1599,11 @@ fn suggestion_worker_loop(app_for_thread: &AppHandle) {
             Some(job.suggestion_signature.as_str()),
         );
         match result {
-            Ok(response) => {
-                if let Ok(payload) = serde_json::to_string(&response) {
-                    let _ = upsert_suggestion_ready(
-                        app_for_thread,
-                        &job.dataset_id,
-                        &job.frame_id,
-                        &job.suggestion_signature,
-                        &payload,
-                    );
-                }
+            Ok(_response) => {
                 let _ = complete_job(app_for_thread, &job.job_id, JOB_STATUS_DONE, None);
                 let _ = app_for_thread.emit("suggestion-job-complete", &job.frame_id);
             }
             Err(error) => {
-                let _ = mark_suggestion_failed(
-                    app_for_thread,
-                    &job.dataset_id,
-                    &job.frame_id,
-                    &job.suggestion_signature,
-                );
                 let _ = complete_job(app_for_thread, &job.job_id, JOB_STATUS_FAILED, Some(&error));
                 if let Ok(mut queue) = state.suggestion_queue.lock() {
                     queue.states.insert(
@@ -1744,19 +1730,36 @@ fn generate_and_cache_suggestion(
         );
     }
 
-    let generated = (|| {
-        let face = get_face_by_id(&request.dataset_root, &request.face_id)?;
+    let generated = (|| -> Result<SuggestionResponse, SuggestionGenerationError> {
+        let face = get_face_by_id(&request.dataset_root, &request.face_id).map_err(|source| {
+            SuggestionGenerationError {
+                category: SuggestionFailureCategory::Configuration,
+                message: source,
+            }
+        })?;
 
         let (openai_api_key, anthropic_api_key) = if settings.openai.enabled {
-            let key = openai_key()?;
+            let key = openai_key().map_err(|source| SuggestionGenerationError {
+                category: SuggestionFailureCategory::Configuration,
+                message: source,
+            })?;
             if key.is_none() {
-                return Err("No API key configured for OpenAI. Add it in Settings.".to_owned());
+                return Err(SuggestionGenerationError {
+                    category: SuggestionFailureCategory::Configuration,
+                    message: "No API key configured for OpenAI. Add it in Settings.".to_owned(),
+                });
             }
             (key, None)
         } else if settings.anthropic.enabled {
-            let key = anthropic_key()?;
+            let key = anthropic_key().map_err(|source| SuggestionGenerationError {
+                category: SuggestionFailureCategory::Configuration,
+                message: source,
+            })?;
             if key.is_none() {
-                return Err("No API key configured for Anthropic. Add it in Settings.".to_owned());
+                return Err(SuggestionGenerationError {
+                    category: SuggestionFailureCategory::Configuration,
+                    message: "No API key configured for Anthropic. Add it in Settings.".to_owned(),
+                });
             }
             (None, key)
         } else {
@@ -1776,6 +1779,39 @@ fn generate_and_cache_suggestion(
 
     match generated {
         Ok(response) => {
+            let payload = match serde_json::to_string(&response) {
+                Ok(value) => value,
+                Err(source) => {
+                    state
+                        .suggestion_queue
+                        .lock()
+                        .map_err(|_| "suggestion queue lock poisoned".to_owned())?
+                        .states
+                        .insert(
+                            suggestion_queue_key(&request.dataset_root, &request.face_id),
+                            "failed".to_owned(),
+                        );
+                    return Err(format!("failed to serialize suggestion payload: {source}"));
+                }
+            };
+            if let Err(source) = upsert_suggestion_ready(
+                app,
+                &request.dataset_root,
+                &request.face_id,
+                &signature,
+                &payload,
+            ) {
+                state
+                    .suggestion_queue
+                    .lock()
+                    .map_err(|_| "suggestion queue lock poisoned".to_owned())?
+                    .states
+                    .insert(
+                        suggestion_queue_key(&request.dataset_root, &request.face_id),
+                        "failed".to_owned(),
+                    );
+                return Err(source);
+            }
             state
                 .suggestion_cache
                 .lock()
@@ -1793,6 +1829,17 @@ fn generate_and_cache_suggestion(
             Ok(response)
         }
         Err(error) => {
+            let mut persist_failure_error: Option<String> = None;
+            if error.category.should_persist_failure() {
+                if let Err(source) =
+                    mark_suggestion_failed(app, &request.dataset_root, &request.face_id, &signature)
+                {
+                    persist_failure_error = Some(format!(
+                        "{}; additionally failed to persist suggestion failure state: {source}",
+                        error.message
+                    ));
+                }
+            }
             state
                 .suggestion_queue
                 .lock()
@@ -1802,7 +1849,7 @@ fn generate_and_cache_suggestion(
                     suggestion_queue_key(&request.dataset_root, &request.face_id),
                     "failed".to_owned(),
                 );
-            Err(error)
+            Err(persist_failure_error.unwrap_or(error.message))
         }
     }
 }
@@ -2166,10 +2213,12 @@ fn main() {
 mod tests {
     use super::{
         cleanup_registered_staging_workspaces_by_registry_path, copy_dir_recursive,
-        stage_dropped_inputs_inner, validate_face_image_paths, validate_manifest_request,
-        worker_suggestion_request, ImportStageRequest, SetAnnotationsRequest,
+        stage_dropped_inputs_inner, suggestion_signature_from_settings, validate_face_image_paths,
+        validate_manifest_request, worker_suggestion_request, ImportStageRequest,
+        SetAnnotationsRequest,
         StageDroppedInputsRequest, STAGING_WORKSPACE_MARKER_FILE,
     };
+    use crate::settings::{LlmProviderSettings, LlmSettings};
     use crate::suggestion_store::LeasedJob;
     use engine::FaceView;
     use std::fs;
@@ -2206,6 +2255,71 @@ mod tests {
         assert_eq!(request.dataset_root, "/tmp/dataset");
         assert_eq!(request.face_id, "face-1");
         assert_eq!(request.timeout_ms, None);
+    }
+
+    #[test]
+    fn suggestion_signature_ignores_prefetch_and_warmup_ui_settings() {
+        let left = LlmSettings {
+            llm_suggestions_enabled: true,
+            reasoning_preset: "high".to_owned(),
+            prefetch_buffer_size: 4,
+            editor_warmup_threshold_ratio: 0.2,
+            editor_warmup_timeout_ms: 10_000,
+            openai: LlmProviderSettings {
+                enabled: true,
+                model: "gpt-5.4".to_owned(),
+            },
+            anthropic: LlmProviderSettings {
+                enabled: false,
+                model: "claude-sonnet-4-6".to_owned(),
+            },
+        };
+        let right = LlmSettings {
+            prefetch_buffer_size: 24,
+            editor_warmup_threshold_ratio: 0.9,
+            editor_warmup_timeout_ms: 45_000,
+            ..left.clone()
+        };
+
+        let left_signature = suggestion_signature_from_settings(&left).expect("left signature");
+        let right_signature = suggestion_signature_from_settings(&right).expect("right signature");
+        assert_eq!(left_signature, right_signature);
+    }
+
+    #[test]
+    fn suggestion_signature_changes_when_provider_changes() {
+        let openai = LlmSettings {
+            llm_suggestions_enabled: true,
+            reasoning_preset: "high".to_owned(),
+            prefetch_buffer_size: 12,
+            editor_warmup_threshold_ratio: 0.4,
+            editor_warmup_timeout_ms: 15_000,
+            openai: LlmProviderSettings {
+                enabled: true,
+                model: "shared-model-name".to_owned(),
+            },
+            anthropic: LlmProviderSettings {
+                enabled: false,
+                model: "shared-model-name".to_owned(),
+            },
+        };
+        let anthropic = LlmSettings {
+            openai: LlmProviderSettings {
+                enabled: false,
+                model: "shared-model-name".to_owned(),
+            },
+            anthropic: LlmProviderSettings {
+                enabled: true,
+                model: "shared-model-name".to_owned(),
+            },
+            ..openai.clone()
+        };
+
+        let openai_signature =
+            suggestion_signature_from_settings(&openai).expect("openai signature");
+        let anthropic_signature =
+            suggestion_signature_from_settings(&anthropic).expect("anthropic signature");
+        assert_ne!(openai_signature, anthropic_signature);
     }
 
     #[test]

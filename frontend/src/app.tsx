@@ -910,9 +910,12 @@ export function App() {
         const response = await getSuggestions(datasetRoot, faceId);
         if (cancelled) return;
         setSuggestionsByFace((prev) => ({ ...prev, [cacheKey]: response.suggestions }));
+        const diagnosticsMetadata = response.diagnostics
+          ? `, tools=${response.diagnostics.toolEnabled}, outputMode=${response.diagnostics.outputMode}, providerStatus=${response.diagnostics.providerStatus}`
+          : "";
         updateDiagnostics("Suggestion fetch complete", "", {
           scope: "suggestion-fetch",
-          metadata: `faceId=${faceId}, provider=${response.provider}, model=${response.model}, attempts=${response.attempts}, suggestions=${response.suggestions.length}`,
+          metadata: `faceId=${faceId}, provider=${response.provider}, model=${response.model}, attempts=${response.attempts}, suggestions=${response.suggestions.length}${diagnosticsMetadata}`,
         });
       } catch (cause) {
         if (cancelled) return;
