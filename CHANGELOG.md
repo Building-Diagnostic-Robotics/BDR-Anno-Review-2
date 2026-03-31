@@ -18,6 +18,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Preserved JSON quoting when OpenAI structured outputs return the schema string branch (for example, `"No defects detected"`) so valid negative-case responses continue to parse and cache successfully.
 - Removed a Clippy `let_and_return` violation in OpenAI tool-choice env parsing to restore `Rust checks` CI stability.
 - Hardened the settings modal smoke test to target either provider key label/button text so frontend CI no longer fails when the active provider defaults to Anthropic instead of OpenAI.
+- Narrowed selected-provider card lookup in `frontend/src/main.test.tsx` to `HTMLElement` so TypeScript build checks pass when querying within the active provider panel.
 
 ## [1.3.3] - 2026-03-12
 

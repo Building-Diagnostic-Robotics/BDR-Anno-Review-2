@@ -253,7 +253,7 @@ describe("settings modal", () => {
       throw new Error("Expected selected provider heading to be OpenAI or Anthropic.");
     }
     const selectedProviderCard = selectedProviderButton.closest(".ring-2");
-    if (!selectedProviderCard) {
+    if (!(selectedProviderCard instanceof HTMLElement)) {
       throw new Error("Expected selected provider card.");
     }
 
