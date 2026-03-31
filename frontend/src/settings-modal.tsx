@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { LlmProviderId, LlmSettingsResponse, ReasoningPreset, SaveLlmSettingsRequest } from "./types";
-import { Button, Field, inputClassName, modalOverlayClassName } from "./ui-primitives";
+import { Alert, Button, Card, Field, Pill, SegmentedControl, SectionHeading, inputClassName, modalOverlayClassName } from "./ui-primitives";
 
 type Props = {
   initial: LlmSettingsResponse | null;
@@ -9,6 +9,98 @@ type Props = {
   onSetProviderKey: (provider: LlmProviderId, apiKey: string) => Promise<void>;
   onClearProviderKey: (provider: LlmProviderId) => Promise<void>;
 };
+
+type ProviderSelection = "openai" | "anthropic" | "none";
+
+type ProviderCardProps = {
+  provider: "openai" | "anthropic";
+  title: string;
+  selected: boolean;
+  hasKey: boolean;
+  model: string;
+  keyValue: string;
+  disabled: boolean;
+  modelOptions: string[];
+  onSelect: () => void;
+  onModelChange: (value: string) => void;
+  onKeyValueChange: (value: string) => void;
+  onUpdateKey: () => void;
+  onClearKey: () => void;
+};
+
+function ProviderCard({
+  provider,
+  title,
+  selected,
+  hasKey,
+  model,
+  keyValue,
+  disabled,
+  modelOptions,
+  onSelect,
+  onModelChange,
+  onKeyValueChange,
+  onUpdateKey,
+  onClearKey,
+}: ProviderCardProps) {
+  const providerLabel = provider === "openai" ? "OpenAI" : "Anthropic";
+
+  return (
+    <Card tone={selected ? "raised" : "soft"} className={selected ? "ring-2 ring-anno-primary/40" : ""}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-xl font-semibold tracking-[-0.03em] text-anno-text-main">{title}</h4>
+            <Pill tone={selected ? "success" : "neutral"}>{selected ? "Active" : "Available"}</Pill>
+          </div>
+          <p className="mt-2 text-sm text-anno-text-muted">
+            {provider === "openai"
+              ? "Balanced default with the current studio preset."
+              : "Alternative provider for teams standardizing on Anthropic."}
+          </p>
+        </div>
+        <Button variant={selected ? "filled" : "outlined"} onClick={onSelect} disabled={disabled}>
+          {selected ? "Selected" : `Use ${providerLabel}`}
+        </Button>
+      </div>
+
+      <div className="mt-5 space-y-4">
+        <Field label={`${providerLabel} model`}>
+          <select className={inputClassName} value={model} onChange={(event) => onModelChange(event.target.value)}>
+            {modelOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field
+          label={`${providerLabel} API key`}
+          hint={hasKey ? "A key is already stored. Enter a new value only when rotating credentials." : "Enter and store a key for this provider."}
+        >
+          <input
+            className={inputClassName}
+            type="password"
+            value={keyValue}
+            onChange={(event) => onKeyValueChange(event.target.value)}
+            placeholder={hasKey ? "Stored securely. Paste a new key to replace it." : "Paste API key"}
+          />
+        </Field>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Pill tone={hasKey ? "success" : "neutral"}>{hasKey ? "Key stored" : "Key missing"}</Pill>
+          <Button variant="secondary" onClick={onUpdateKey} disabled={disabled}>
+            Update {providerLabel} key
+          </Button>
+          <Button variant="outlined" onClick={onClearKey} disabled={disabled || !hasKey}>
+            Clear {providerLabel} key
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, onClearProviderKey }: Props) {
   const seed = useMemo(
@@ -37,9 +129,11 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
   const [saveError, setSaveError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUpdatingKey, setIsUpdatingKey] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<"openai" | "anthropic" | "none">(
+  const [selectedProvider, setSelectedProvider] = useState<ProviderSelection>(
     seed.openai.enabled ? "openai" : seed.anthropic.enabled ? "anthropic" : "none"
   );
+  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
+  const [anthropicKeyInput, setAnthropicKeyInput] = useState("");
 
   const modalRef = useRef<HTMLDivElement | null>(null);
   const firstControlRef = useRef<HTMLInputElement | null>(null);
@@ -84,6 +178,8 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
     setSaveError("");
     setIsSaving(false);
     setIsUpdatingKey(false);
+    setOpenaiKeyInput("");
+    setAnthropicKeyInput("");
     setSelectedProvider(seed.openai.enabled ? "openai" : seed.anthropic.enabled ? "anthropic" : "none");
   }, [seed]);
 
@@ -139,25 +235,40 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
     };
   }, [onClose]);
 
-  const runKeyUpdate = async (provider: LlmProviderId, action: "set" | "clear") => {
+  const setProviderKey = async (provider: LlmProviderId, rawValue: string) => {
+    const providerLabel = provider === "openai" ? "OpenAI" : "Anthropic";
+    const apiKey = rawValue.trim();
+
+    setSaveFeedback("");
+    setSaveError("");
+    if (!apiKey) {
+      setSaveError(`${providerLabel} key was not updated.`);
+      return;
+    }
+
+    setIsUpdatingKey(true);
+    try {
+      await onSetProviderKey(provider, apiKey);
+      setSaveFeedback(`${providerLabel} API key updated.`);
+      if (provider === "openai") {
+        setOpenaiKeyInput("");
+      } else {
+        setAnthropicKeyInput("");
+      }
+    } catch (cause) {
+      setSaveError(String(cause));
+    } finally {
+      setIsUpdatingKey(false);
+    }
+  };
+
+  const clearProviderKey = async (provider: LlmProviderId) => {
     setSaveFeedback("");
     setSaveError("");
     setIsUpdatingKey(true);
     try {
-      if (action === "set") {
-        const providerLabel = provider === "openai" ? "OpenAI" : "Anthropic";
-        const entered = window.prompt(`Enter ${providerLabel} API key:`) ?? "";
-        const apiKey = entered.trim();
-        if (!apiKey) {
-          setSaveError(`${providerLabel} key was not updated.`);
-          return;
-        }
-        await onSetProviderKey(provider, apiKey);
-        setSaveFeedback(`${providerLabel} API key updated.`);
-      } else {
-        await onClearProviderKey(provider);
-        setSaveFeedback(`${provider === "openai" ? "OpenAI" : "Anthropic"} API key cleared.`);
-      }
+      await onClearProviderKey(provider);
+      setSaveFeedback(`${provider === "openai" ? "OpenAI" : "Anthropic"} API key cleared.`);
     } catch (cause) {
       setSaveError(String(cause));
     } finally {
@@ -167,136 +278,225 @@ export function LlmSettingsModal({ initial, onClose, onSave, onSetProviderKey, o
 
   return (
     <div className={modalOverlayClassName} role="dialog" aria-modal="true" aria-label="LLM settings">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-anno-surface-med p-6 ring-1 ring-white/5 shadow-2xl shadow-black/60" ref={modalRef}>
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <h3 className="text-xl font-semibold text-anno-text-main">LLM settings</h3>
+      <div
+        className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-[32px] bg-[#f5efe6] p-6 shadow-2xl shadow-stone-900/20 ring-1 ring-anno-line/80 md:p-7"
+        ref={modalRef}
+      >
+        <div className="flex flex-col gap-4 border-b border-anno-line/80 pb-5 md:flex-row md:items-start md:justify-between">
+          <SectionHeading
+            title="Suggestion Studio Settings"
+            subtitle="Tune how review suggestions enter the workspace without changing the backend behavior or project contracts."
+          />
           <Button variant="outlined" onClick={onClose} aria-label="Close LLM settings">
             Close
           </Button>
         </div>
-        <p className="mb-5 text-sm text-anno-text-muted">Default behavior is optimized for low-friction suggestions. Use Advanced only when tuning is needed.</p>
 
-        <section className="mb-5 space-y-4 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
-          <h4 className="text-base font-semibold">General</h4>
-          <label className="flex items-center justify-between gap-2 text-sm text-anno-text-main">
-            <span>Enable suggestions</span>
-            <input
-              ref={firstControlRef}
-              type="checkbox"
-              checked={llmSuggestionsEnabled}
-              onChange={(e) => setLlmSuggestionsEnabled(e.target.checked)}
-              className="h-5 w-5 rounded border-0 bg-anno-surface-high text-anno-primary focus:ring-anno-primary"
-            />
-          </label>
-
-          <Field label="Provider">
-            <select className={inputClassName} value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as "openai" | "anthropic" | "none") }>
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="none">Disabled</option>
-            </select>
-          </Field>
-
-          <Field label="Preset" hint="Fast prioritizes speed, Quality prioritizes accuracy.">
-            <div className="flex flex-wrap gap-2">
-              <Button variant={preset === "Fast" ? "filled" : "outlined"} onClick={() => applyPreset("Fast")}>Fast</Button>
-              <Button variant={preset === "Balanced" ? "filled" : "outlined"} onClick={() => applyPreset("Balanced")}>Balanced</Button>
-              <Button variant={preset === "Quality" ? "filled" : "outlined"} onClick={() => applyPreset("Quality")}>Quality</Button>
+        <div className="mt-6 space-y-6">
+          <Card tone="soft">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+              <div className="max-w-2xl">
+                <h4 className="text-xl font-semibold tracking-[-0.03em] text-anno-text-main">General behavior</h4>
+                <p className="mt-2 text-sm text-anno-text-muted">Default behavior is tuned for mixed operators: low friction by default, with room to increase quality when a session needs it.</p>
+              </div>
+              <label className="flex items-center gap-3 rounded-full bg-white/75 px-4 py-2 ring-1 ring-anno-line/70">
+                <input
+                  ref={firstControlRef}
+                  type="checkbox"
+                  checked={llmSuggestionsEnabled}
+                  onChange={(event) => setLlmSuggestionsEnabled(event.target.checked)}
+                  className="h-4 w-4 rounded border-anno-line text-anno-primary focus:ring-anno-primary"
+                />
+                <span className="text-sm font-semibold text-anno-text-main">Enable suggestions</span>
+              </label>
             </div>
-          </Field>
-        </section>
 
-        <section className="mb-5 space-y-3 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
-          <h4 className="text-base font-semibold">Credentials</h4>
-          <Field label="OpenAI model">
-            <select className={inputClassName} value={openaiModel} onChange={(e) => setOpenaiModel(e.target.value)}>
-              <option value="gpt-5.4">gpt-5.4</option>
-            </select>
-          </Field>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs text-anno-text-muted">OpenAI key: {seed.openai.hasKey ? "Present" : "Not set"}</p>
-            <Button variant="tonal" onClick={() => void runKeyUpdate("openai", "set")} disabled={isUpdatingKey}>Set key</Button>
-            <Button variant="outlined" onClick={() => void runKeyUpdate("openai", "clear")} disabled={isUpdatingKey}>Clear key</Button>
-          </div>
+            <div className="mt-5">
+              <SegmentedControl
+                label="Preset"
+                value={preset}
+                onChange={applyPreset}
+                options={[
+                  { id: "Fast", label: "Fast", detail: "Low reasoning with a small buffer." },
+                  { id: "Balanced", label: "Balanced", detail: "Steady response time for most sessions." },
+                  { id: "Quality", label: "Quality", detail: "Higher reasoning with a larger suggestion buffer." },
+                ]}
+              />
+            </div>
 
-          <Field label="Anthropic model">
-            <select className={inputClassName} value={anthropicModel} onChange={(e) => setAnthropicModel(e.target.value)}>
-              <option value="claude-opus-4-6">claude-opus-4-6</option>
-              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-            </select>
-          </Field>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs text-anno-text-muted">Anthropic key: {seed.anthropic.hasKey ? "Present" : "Not set"}</p>
-            <Button variant="tonal" onClick={() => void runKeyUpdate("anthropic", "set")} disabled={isUpdatingKey}>Set key</Button>
-            <Button variant="outlined" onClick={() => void runKeyUpdate("anthropic", "clear")} disabled={isUpdatingKey}>Clear key</Button>
-          </div>
-        </section>
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <div className="rounded-[22px] bg-white/75 px-4 py-3 ring-1 ring-anno-line/70">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-anno-text-subtle">Current profile</p>
+                <p className="mt-1 text-lg font-semibold tracking-[-0.02em] text-anno-text-main">{preset}</p>
+              </div>
+              <div className="rounded-[22px] bg-white/75 px-4 py-3 ring-1 ring-anno-line/70">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-anno-text-subtle">Reasoning</p>
+                <p className="mt-1 text-lg font-semibold tracking-[-0.02em] capitalize text-anno-text-main">{reasoningPreset}</p>
+              </div>
+              <div className="rounded-[22px] bg-white/75 px-4 py-3 ring-1 ring-anno-line/70">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-anno-text-subtle">Prefetch buffer</p>
+                <p className="mt-1 text-lg font-semibold tracking-[-0.02em] text-anno-text-main">{prefetchBufferSize} faces</p>
+              </div>
+            </div>
+          </Card>
 
-        <section className="mb-5 space-y-3 rounded-2xl bg-anno-surface-low p-4 ring-1 ring-white/5">
-          <h4 className="text-base font-semibold">Advanced</h4>
-          <button className="text-sm text-anno-secondary transition hover:text-purple-300" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide" : "Show"} advanced settings</button>
-          {showAdvanced ? (
-            <>
-              <Field label="Reasoning preset">
-                <select className={inputClassName} value={reasoningPreset} onChange={(e) => setReasoningPreset(e.target.value as ReasoningPreset)}>
-                  <option value="high">High</option>
-                  <option value="balanced">Balanced</option>
-                  <option value="low">Low</option>
-                </select>
-              </Field>
+          <section aria-labelledby="provider-heading">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <h4 id="provider-heading" className="text-xl font-semibold tracking-[-0.03em] text-anno-text-main">
+                Provider cards
+              </h4>
+              <Pill tone="info">Current selection: {selectedProvider === "none" ? "Disabled" : selectedProvider}</Pill>
+            </div>
 
-              <Field label="Prefetch buffer size">
-                <input className={inputClassName} type="number" min={1} max={32} value={prefetchBufferSize} onChange={(e) => setPrefetchBufferSize(Number(e.target.value))} />
-              </Field>
+            <div className="mb-4 flex flex-wrap gap-2">
+              <Button variant={selectedProvider === "openai" ? "filled" : "outlined"} onClick={() => setSelectedProvider("openai")}>
+                Use OpenAI
+              </Button>
+              <Button variant={selectedProvider === "anthropic" ? "filled" : "outlined"} onClick={() => setSelectedProvider("anthropic")}>
+                Use Anthropic
+              </Button>
+              <Button variant={selectedProvider === "none" ? "danger" : "outlined"} onClick={() => setSelectedProvider("none")}>
+                Disable provider
+              </Button>
+            </div>
 
-              <Field label="Editor warmup threshold ratio" hint="Fraction of prefetched faces that must be ready before auto-entering editor.">
-                <input className={inputClassName} type="number" min={0.1} max={1} step={0.1} value={editorWarmupThresholdRatio} onChange={(e) => setEditorWarmupThresholdRatio(Number(e.target.value))} />
-              </Field>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <ProviderCard
+                provider="openai"
+                title="OpenAI"
+                selected={selectedProvider === "openai"}
+                hasKey={seed.openai.hasKey}
+                model={openaiModel}
+                keyValue={openaiKeyInput}
+                disabled={isUpdatingKey}
+                modelOptions={["gpt-5.4"]}
+                onSelect={() => setSelectedProvider("openai")}
+                onModelChange={setOpenaiModel}
+                onKeyValueChange={setOpenaiKeyInput}
+                onUpdateKey={() => void setProviderKey("openai", openaiKeyInput)}
+                onClearKey={() => void clearProviderKey("openai")}
+              />
+              <ProviderCard
+                provider="anthropic"
+                title="Anthropic"
+                selected={selectedProvider === "anthropic"}
+                hasKey={seed.anthropic.hasKey}
+                model={anthropicModel}
+                keyValue={anthropicKeyInput}
+                disabled={isUpdatingKey}
+                modelOptions={["claude-opus-4-6", "claude-sonnet-4-6"]}
+                onSelect={() => setSelectedProvider("anthropic")}
+                onModelChange={setAnthropicModel}
+                onKeyValueChange={setAnthropicKeyInput}
+                onUpdateKey={() => void setProviderKey("anthropic", anthropicKeyInput)}
+                onClearKey={() => void clearProviderKey("anthropic")}
+              />
+            </div>
+          </section>
 
-              <Field label="Editor warmup timeout (ms)" hint="Base timeout; extended briefly when ready-count increases.">
-                <input className={inputClassName} type="number" min={2000} max={60000} step={500} value={editorWarmupTimeoutMs} onChange={(e) => setEditorWarmupTimeoutMs(Number(e.target.value))} />
-              </Field>
-            </>
-          ) : null}
-        </section>
+          <Card tone="inset">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className="text-xl font-semibold tracking-[-0.03em] text-anno-text-main">Advanced controls</h4>
+                <p className="mt-2 text-sm text-anno-text-muted">Use these only when you need to tune startup pacing or long-running suggestion behavior.</p>
+              </div>
+              <Button variant="quiet" onClick={() => setShowAdvanced((value) => !value)}>
+                {showAdvanced ? "Hide advanced settings" : "Show advanced settings"}
+              </Button>
+            </div>
 
-        {providerValidation ? <p className="mb-3 text-sm text-rose-300">{providerValidation}</p> : null}
+            {showAdvanced ? (
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <Field label="Reasoning preset">
+                  <select className={inputClassName} value={reasoningPreset} onChange={(event) => setReasoningPreset(event.target.value as ReasoningPreset)}>
+                    <option value="high">High</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="low">Low</option>
+                  </select>
+                </Field>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            onClick={() => {
-              setIsSaving(true);
-              setSaveError("");
-              void onSave({
-                llmSuggestionsEnabled,
-                reasoningPreset,
-                prefetchBufferSize,
-                editorWarmupThresholdRatio,
-                editorWarmupTimeoutMs,
-                openai: { enabled: selectedProvider === "openai", model: openaiModel },
-                anthropic: { enabled: selectedProvider === "anthropic", model: anthropicModel },
-              })
-                .then(() => {
-                  setSaveFeedback("Settings saved.");
+                <Field label="Prefetch buffer size">
+                  <input
+                    className={inputClassName}
+                    type="number"
+                    min={1}
+                    max={32}
+                    value={prefetchBufferSize}
+                    onChange={(event) => setPrefetchBufferSize(Number(event.target.value))}
+                  />
+                </Field>
+
+                <Field label="Editor warmup threshold ratio" hint="Fraction of prefetched faces that must be ready before entering the editor automatically.">
+                  <input
+                    className={inputClassName}
+                    type="number"
+                    min={0.1}
+                    max={1}
+                    step={0.1}
+                    value={editorWarmupThresholdRatio}
+                    onChange={(event) => setEditorWarmupThresholdRatio(Number(event.target.value))}
+                  />
+                </Field>
+
+                <Field label="Editor warmup timeout (ms)" hint="Base timeout, extended briefly when progress continues.">
+                  <input
+                    className={inputClassName}
+                    type="number"
+                    min={2000}
+                    max={60000}
+                    step={500}
+                    value={editorWarmupTimeoutMs}
+                    onChange={(event) => setEditorWarmupTimeoutMs(Number(event.target.value))}
+                  />
+                </Field>
+              </div>
+            ) : null}
+          </Card>
+
+          {providerValidation ? <Alert tone="danger">{providerValidation}</Alert> : null}
+          {saveFeedback ? <Alert tone="success">{saveFeedback}</Alert> : null}
+          {saveError ? <Alert tone="danger">Failed to update settings: {saveError}</Alert> : null}
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-anno-line/80 pt-5">
+            <p className="text-sm text-anno-text-muted">
+              Effective config: {llmSuggestionsEnabled ? "Suggestions enabled" : "Suggestions disabled"}, {preset} profile.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => {
+                  setIsSaving(true);
                   setSaveError("");
-                })
-                .catch((cause) => {
-                  setSaveFeedback("");
-                  setSaveError(String(cause));
-                })
-                .finally(() => {
-                  setIsSaving(false);
-                });
-            }}
-            disabled={Boolean(providerValidation) || isSaving || isUpdatingKey}
-          >
-            {isSaving ? "Saving…" : "Save"}
-          </Button>
-          <Button variant="outlined" onClick={onClose}>Close</Button>
+                  void onSave({
+                    llmSuggestionsEnabled,
+                    reasoningPreset,
+                    prefetchBufferSize,
+                    editorWarmupThresholdRatio,
+                    editorWarmupTimeoutMs,
+                    openai: { enabled: selectedProvider === "openai", model: openaiModel },
+                    anthropic: { enabled: selectedProvider === "anthropic", model: anthropicModel },
+                  })
+                    .then(() => {
+                      setSaveFeedback("Settings saved.");
+                      setSaveError("");
+                    })
+                    .catch((cause) => {
+                      setSaveFeedback("");
+                      setSaveError(String(cause));
+                    })
+                    .finally(() => {
+                      setIsSaving(false);
+                    });
+                }}
+                disabled={Boolean(providerValidation) || isSaving || isUpdatingKey}
+              >
+                {isSaving ? "Saving…" : "Save"}
+              </Button>
+              <Button variant="outlined" onClick={onClose}>
+                Close
+              </Button>
+            </div>
+          </div>
         </div>
-        {saveFeedback ? <p className="mt-3 text-xs text-emerald-300">{saveFeedback}</p> : null}
-        {saveError ? <p className="mt-3 text-xs text-rose-300">Failed to update settings: {saveError}</p> : null}
-        <p className="mt-3 text-xs text-anno-text-muted">Effective config: {llmSuggestionsEnabled ? "Suggestions enabled" : "Suggestions disabled"}, {preset} profile.</p>
       </div>
     </div>
   );

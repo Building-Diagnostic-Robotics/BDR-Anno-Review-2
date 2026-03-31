@@ -5,22 +5,31 @@ module.exports = {
     extend: {
       colors: {
         anno: {
-          bg: "#0C0C0E",
+          bg: "#ece5db",
+          line: "#d7cbbd",
+          primary: "#2f7a6b",
+          "primary-strong": "#255f53",
+          accent: "#c48753",
+          warning: "#bd7a37",
+          danger: "#b45a58",
+          info: "#648395",
+          success: "#4b8363",
           surface: {
-            low: "#141417",
-            med: "#1C1C21",
-            high: "#27272A",
+            low: "#f8f3eb",
+            med: "#efe5d8",
+            high: "#e2d4c2",
+            ink: "#222a31",
           },
-          primary: "#6366F1",
-          secondary: "#A855F7",
           text: {
-            main: "#FAFAFA",
-            muted: "#A1A1AA",
+            main: "#281f18",
+            muted: "#675d56",
+            subtle: "#877b72",
+            inverse: "#f8f4ed",
           },
         },
       },
-      borderRadius: {
-        "anno-card": "1.25rem",
+      boxShadow: {
+        studio: "0 16px 40px rgba(102, 79, 51, 0.12)",
       },
     },
   },
