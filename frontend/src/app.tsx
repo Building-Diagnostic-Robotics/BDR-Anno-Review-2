@@ -11,7 +11,6 @@ import {
   getAnnotations,
   listFaces,
   openDataset,
-  runImportStage,
   setAnnotations,
   checkRuntimeDependencies,
   stageDroppedInputs,
@@ -24,7 +23,7 @@ import {
   getSuggestionsReadiness,
   topupSuggestions,
 } from "./api";
-import type { AnnotationEdit, FaceListItem, LlmSettingsResponse, ReasoningPreset, SaveLlmSettingsRequest, SuggestionBox } from "./types";
+import type { AnnotationEdit, FaceListItem, LlmSettingsResponse, SaveLlmSettingsRequest, SuggestionBox } from "./types";
 import "./styles.css";
 import {
   detectPointerIntent,
@@ -37,12 +36,25 @@ import {
   clampBboxMoveToBounds,
 } from "./editing";
 import { LlmSettingsModal } from "./settings-modal";
-import { Button, Card, Field, SectionHeading, inputClassName, modalOverlayClassName } from "./ui-primitives";
+import {
+  Alert,
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  Pill,
+  SectionHeading,
+  SectionTabs,
+  SegmentedControl,
+  StatTile,
+  inputClassName,
+  modalOverlayClassName,
+} from "./ui-primitives";
 import { defaultScheduler, sleep } from "./orchestration";
+import { DiagnosticsDrawer, WorkspaceStatusRail, WorkspaceTopBar, type WorkspaceStep } from "./workspace-shell";
 
 const nowIso = () => new Date().toISOString();
 const AUTOSAVE_DEBOUNCE_MS = 1000;
-const TUTORIAL_STORAGE_KEY = "bdr.editor.tutorialCollapsed";
 const EDITOR_WARMUP_THRESHOLD_RATIO = 0.4;
 const EDITOR_WARMUP_TIMEOUT_MS = 15000;
 const EDITOR_WARMUP_POLL_MS = 300;
@@ -59,9 +71,12 @@ type ImageViewport = {
 type PointerMode = "idle" | "draw" | "move" | "resize";
 type GenerationStep = "idle" | "validating" | "dependencies" | "extracting" | "generating" | "aborting" | "done";
 type AppPage = "home" | "editor" | "export";
+type IntakeMode = "create" | "open";
+type EditorInspectorTab = "annotations" | "suggestions" | "help";
 type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type DiagnosticLevel = "info" | "warn" | "error";
 type DiagnosticScope = "general" | "warmup" | "prefetch" | "suggestion-fetch" | "save" | "generation";
+type DiagnosticsPanelState = "collapsed" | "expanded";
 
 type DiagnosticLogEntry = {
   timestamp: string;
@@ -105,6 +120,9 @@ const summaryFromReadiness = (readiness: { readyCount: number; queuedCount: numb
 
 export function App() {
   const [page, setPage] = useState<AppPage>("home");
+  const [intakeMode, setIntakeMode] = useState<IntakeMode>("create");
+  const [inspectorTab, setInspectorTab] = useState<EditorInspectorTab>("annotations");
+  const [faceSearchQuery, setFaceSearchQuery] = useState("");
 
   const [datasetRoot, setDatasetRoot] = useState("");
   const [cocoJsonPath, setCocoJsonPath] = useState("");
@@ -138,7 +156,7 @@ export function App() {
   const [isFaceLoading, setIsFaceLoading] = useState(false);
   const [showGenerationSpinner, setShowGenerationSpinner] = useState(false);
   const [noticeMessage, setNoticeMessage] = useState("");
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnosticsPanelState, setDiagnosticsPanelState] = useState<DiagnosticsPanelState>("collapsed");
   const [diagnosticsLog, setDiagnosticsLog] = useState<DiagnosticLogEntry[]>([
     {
       timestamp: nowIso(),
@@ -147,13 +165,6 @@ export function App() {
       message: "Application started.",
     },
   ]);
-
-  const [tutorialCollapsed, setTutorialCollapsed] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-    return window.localStorage.getItem(TUTORIAL_STORAGE_KEY) === "true";
-  });
 
   const imageRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -219,6 +230,7 @@ export function App() {
   const isEditorBusy = isImporting || isExporting;
   const isHomeBusy = isGenerating || isImporting;
   const isExportBusy = isExporting;
+  const diagnosticsOpen = diagnosticsPanelState === "expanded";
 
 
   const selectedIndex = useMemo(
@@ -250,6 +262,32 @@ export function App() {
   const selectedFace = selectedIndex < 0 ? undefined : faces[selectedIndex];
   const selectedFaceImagePath = selectedFace ? resolveFaceImagePath(datasetRoot, selectedFace.imagePath) : "";
   const imageSrc = selectedFace ? convertFileSrc(selectedFaceImagePath) : "";
+  const filteredFaces = useMemo(() => {
+    const query = faceSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return faces;
+    }
+    return faces.filter((face) => face.faceId.toLowerCase().includes(query) || face.face.toLowerCase().includes(query));
+  }, [faceSearchQuery, faces]);
+  const readySuggestionCount = useMemo(
+    () =>
+      faces.reduce((count, face) => {
+        const ready = (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, face.faceId)]?.length ?? 0) > 0;
+        return count + (ready ? 1 : 0);
+      }, 0),
+    [faces, suggestionScopeKey, suggestionsByFace]
+  );
+  const totalInitialBoxCount = useMemo(
+    () => faces.reduce((count, face) => count + face.initialBoxCount, 0),
+    [faces]
+  );
+  const workspaceStep: WorkspaceStep = page === "home" ? "setup" : page === "editor" ? "review" : "export";
+  const workspaceContextLabel = datasetRoot
+    ? datasetRoot.split(/[\\/]/).filter(Boolean).pop() ?? datasetRoot
+    : "No workspace selected";
+  const workspaceContextDetail = datasetRoot
+    ? datasetRoot
+    : "Choose a project directory to create a new review set or reopen an existing one.";
 
   const progress = faces.length === 0 ? 0 : ((selectedIndex + 1) / faces.length) * 100;
 
@@ -895,6 +933,10 @@ export function App() {
   }, [selectedFaceId]);
 
   useEffect(() => {
+    setInspectorTab("annotations");
+  }, [selectedFaceId]);
+
+  useEffect(() => {
     const faceId = selectedFaceId;
     if (!faceId || !datasetRoot || !llmSettings?.llmSuggestionsEnabled) {
       return;
@@ -1349,17 +1391,34 @@ export function App() {
     }
   };
 
-  const toggleTutorial = () => {
-    setTutorialCollapsed((previous) => {
-      const next = !previous;
-      window.localStorage.setItem(TUTORIAL_STORAGE_KEY, String(next));
-      return next;
-    });
-  };
-
   const goHome = async () => {
     await flushAutosave();
     setPage("home");
+  };
+
+  const getSuggestionPillForFace = (faceId: string): { label: string; tone: "neutral" | "accent" | "success" | "info" } => {
+    if (!llmSettings?.llmSuggestionsEnabled) {
+      return { label: "Manual", tone: "neutral" };
+    }
+
+    const suggestionCount = suggestionsByFace[suggestionEntryKey(suggestionScopeKey, faceId)]?.length ?? 0;
+    if (suggestionCount > 0) {
+      return { label: `${suggestionCount} ready`, tone: "success" };
+    }
+
+    if (faceId === selectedFaceId && isFaceBusy) {
+      return { label: "Loading", tone: "info" };
+    }
+
+    return { label: "Queued", tone: "accent" };
+  };
+
+  const copyDiagnostics = async () => {
+    try {
+      await navigator.clipboard?.writeText(diagnosticsText);
+    } catch (cause) {
+      updateDiagnostics("Copy diagnostics failed", String(cause));
+    }
   };
 
   const latestDiagnosticEntry = diagnosticsLog[diagnosticsLog.length - 1] ?? null;
@@ -1371,278 +1430,637 @@ export function App() {
     return `${entry.timestamp} ${level} ${scope} ${entry.message}${metadata}`;
   })].join("\n");
   const saveStateClassName: Record<SaveState, string> = {
-    idle: "bg-anno-surface-high text-anno-text-muted",
-    dirty: "bg-amber-500/20 text-amber-200",
-    saving: "bg-sky-500/20 text-sky-200",
-    saved: "bg-emerald-500/20 text-emerald-200",
-    error: "bg-rose-500/20 text-rose-200",
+    idle: "bg-anno-surface-med text-anno-text-muted ring-1 ring-anno-line/70",
+    dirty: "bg-amber-100 text-amber-900 ring-1 ring-amber-300/70",
+    saving: "bg-sky-100 text-sky-900 ring-1 ring-sky-300/70",
+    saved: "bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300/70",
+    error: "bg-rose-100 text-rose-900 ring-1 ring-rose-300/70",
   };
 
   const coord = (value: number) => (Number.isFinite(value) ? Number(value.toFixed(2)) : value);
+  const selectedSuggestions = selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)] ?? []) : [];
+  const statusRailItems = [
+    { label: "Workspace", value: workspaceContextLabel },
+    {
+      label: "Save",
+      value: page === "editor" ? saveStateMessage : "Waiting for edits",
+    },
+    {
+      label: "Suggestions",
+      value: llmSettings?.llmSuggestionsEnabled ? `${readySuggestionCount}/${faces.length || 0} ready` : "Disabled",
+    },
+    {
+      label: "Diagnostics",
+      value: hasDiagnosticError ? "Needs attention" : "Healthy",
+    },
+  ];
 
   return (
-    <main className="relative min-h-screen bg-anno-bg px-4 pb-28 pt-6 text-anno-text-main md:px-8">
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(99,102,241,0.10),transparent_42%)]" />
-      <div className="relative mx-auto flex w-full max-w-[1480px] items-center justify-between gap-3 pb-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Anno Review Workspace</h1>
-          <p className="text-xs text-zinc-500">Refined annotation tooling with layered surfaces and focused flow.</p>
-        </div>
-        <Button aria-label="Open settings" variant="tonal" onClick={() => setSettingsOpen(true)} disabled={isHomeBusy || isFaceBusy || isExportBusy}>⚙ Settings</Button>
-      </div>
+    <>
+      <main className="min-h-screen pb-40">
+        <WorkspaceTopBar
+          currentStep={workspaceStep}
+          contextLabel={workspaceContextLabel}
+          contextDetail={workspaceContextDetail}
+          onOpenSettings={() => setSettingsOpen(true)}
+          settingsDisabled={isHomeBusy || isFaceBusy || isExportBusy}
+        />
 
-      {page === "home" ? (
-        <section className="relative mx-auto grid w-full max-w-[1200px] gap-5 lg:grid-cols-[1.45fr_1fr]">
-          <Card elevated className="min-h-[540px] rounded-2xl bg-anno-surface-low">
-            <SectionHeading title="Create new dataset" subtitle="Create a new review-ready dataset through a unified import wizard." />
-            <Field label="Project directory" hint="Where Anno stores project metadata and generated assets.">
-              <div className="flex gap-2">
-                <input className={inputClassName} aria-label="Dataset root" value={datasetRoot} placeholder="Choose project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
-                <Button variant="ghost" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
-              </div>
-            </Field>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <Field label="Import COCO" hint="Select your instances JSON file.">
-                <div className="flex gap-2">
-                  <input className={inputClassName} aria-label="COCO JSON" value={cocoJsonPath} placeholder="Choose COCO annotations (.json)" onChange={(event) => setCocoJsonPath(event.target.value)} />
-                  <Button variant="ghost" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>Browse</Button>
+        <div className="mx-auto w-full max-w-[1600px] px-4 py-6 md:px-8">
+          {page === "home" ? (
+            <section className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_380px]">
+              <Card elevated tone="raised">
+                <div className="flex flex-col gap-5 border-b border-anno-line/80 pb-5">
+                  <SectionHeading
+                    title="Start a review workspace"
+                    subtitle="Keep the familiar setup flow, but move through it from a single calm intake surface."
+                  />
+                  <SegmentedControl
+                    label="Workspace mode"
+                    value={intakeMode}
+                    onChange={setIntakeMode}
+                    options={[
+                      {
+                        id: "create",
+                        label: "Create dataset",
+                        detail: "Import COCO + MP4, check inputs, and generate a review-ready dataset.",
+                      },
+                      {
+                        id: "open",
+                        label: "Open existing",
+                        detail: "Resume directly from an existing dataset root.",
+                      },
+                    ]}
+                  />
                 </div>
-              </Field>
 
-              <Field label="Import MP4/frames" hint="Pick the source video (.mp4) used for frame generation.">
-                <div className="flex gap-2">
-                  <input className={inputClassName} aria-label="Source MP4" value={mp4Path} placeholder="Choose source video (.mp4)" onChange={(event) => setMp4Path(event.target.value)} />
-                  <Button variant="ghost" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>Browse</Button>
+                {intakeMode === "create" ? (
+                  <div className="mt-6 space-y-5">
+                    <Field label="Project directory" hint="Where the workspace metadata and generated assets will be stored.">
+                      <div className="flex flex-col gap-2 md:flex-row">
+                        <input
+                          className={inputClassName}
+                          aria-label="Project directory"
+                          value={datasetRoot}
+                          placeholder="Choose project directory"
+                          onChange={(event) => setDatasetRoot(event.target.value)}
+                        />
+                        <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>
+                          Browse
+                        </Button>
+                      </div>
+                    </Field>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="COCO JSON" hint="Primary MVP input. Use the source `instances_default.json` file.">
+                        <div className="flex flex-col gap-2 md:flex-row">
+                          <input
+                            className={inputClassName}
+                            aria-label="COCO JSON"
+                            value={cocoJsonPath}
+                            placeholder="Choose COCO annotations (.json)"
+                            onChange={(event) => setCocoJsonPath(event.target.value)}
+                          />
+                          <Button variant="outlined" onClick={() => void pickFile(setCocoJsonPath, [{ name: "JSON", extensions: ["json"] }])} disabled={isHomeBusy}>
+                            Browse
+                          </Button>
+                        </div>
+                      </Field>
+
+                      <Field label="Source MP4" hint="Preferred video input for deterministic frame extraction.">
+                        <div className="flex flex-col gap-2 md:flex-row">
+                          <input
+                            className={inputClassName}
+                            aria-label="Source MP4"
+                            value={mp4Path}
+                            placeholder="Choose source video (.mp4)"
+                            onChange={(event) => setMp4Path(event.target.value)}
+                          />
+                          <Button variant="outlined" onClick={() => void pickFile(setMp4Path, [{ name: "MP4", extensions: ["mp4"] }])} disabled={isHomeBusy}>
+                            Browse
+                          </Button>
+                        </div>
+                      </Field>
+                    </div>
+
+                    <Field label="Source frames directory (auto-managed)" hint="Derived during generation. This remains automatic unless the backend workflow changes.">
+                      <input className={inputClassName} aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
+                    </Field>
+
+                    {importInputError ? <Alert tone="danger">{importInputError}</Alert> : null}
+
+                    <div className="rounded-[28px] bg-anno-surface-med p-4 ring-1 ring-anno-line/70">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-anno-text-main">Generation progress</p>
+                          <p className="mt-1 text-xs text-anno-text-muted">
+                            Step: {generationStep} · {generationDetail} · {generationHeartbeat}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>
+                            {isGenerating ? "Generating…" : "Generate review dataset"}
+                          </Button>
+                          <Button variant="outlined" onClick={() => void handleAbortGeneration()} disabled={!isGenerating || !generationJobId}>
+                            Abort
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/80" aria-label="generation progress">
+                        <span className="block h-full rounded-full bg-anno-primary transition-all duration-300" style={{ width: `${generationPercent}%` }} />
+                      </div>
+                      {showGenerationSpinner ? (
+                        <div className="mt-3 flex items-center gap-2 text-xs text-anno-text-muted">
+                          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-anno-primary border-t-transparent" aria-label="Generation in progress" />
+                          Generation is running in the background.
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-6 space-y-5">
+                    <Field label="Existing project directory" hint="Resume from a dataset root that already contains the review manifest and generated faces.">
+                      <div className="flex flex-col gap-2 md:flex-row">
+                        <input
+                          className={inputClassName}
+                          aria-label="Existing project directory"
+                          value={datasetRoot}
+                          placeholder="Choose existing project directory"
+                          onChange={(event) => setDatasetRoot(event.target.value)}
+                        />
+                        <Button variant="outlined" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>
+                          Browse
+                        </Button>
+                      </div>
+                    </Field>
+
+                    {datasetRootError ? <Alert tone="danger">{datasetRootError}</Alert> : null}
+
+                    <div className="rounded-[28px] bg-anno-surface-med p-5 ring-1 ring-anno-line/70">
+                      <p className="text-lg font-semibold tracking-[-0.02em] text-anno-text-main">Resume directly into review</p>
+                      <p className="mt-2 text-sm text-anno-text-muted">This keeps the current backend open flow intact, while bringing it into the calmer workspace shell.</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Button onClick={handleOpen} disabled={isHomeBusy || !!datasetRootError}>
+                          Open dataset
+                        </Button>
+                        <Button variant="secondary" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>
+                          Open drop instructions
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </Card>
+
+              <div className="space-y-6">
+                <Card tone="soft">
+                  <SectionHeading title="Preflight checklist" subtitle="Keep validation explicit before the backend pipeline starts." />
+                  <div className="grid gap-3">
+                    <StatTile label="Project directory" value={datasetRoot.trim() ? "Ready" : "Needed"} detail={datasetRoot || "Required for both create and open flows."} />
+                    <StatTile label="COCO input" value={cocoJsonPath.trim() ? "Ready" : "Needed"} detail={cocoJsonPath || "Required when creating a new dataset."} />
+                    <StatTile label="MP4 input" value={mp4Path.trim() ? "Ready" : "Needed"} detail={mp4Path || "Required when creating a new dataset."} />
+                    <StatTile label="Suggestion profile" value={llmSettings?.llmSuggestionsEnabled ? "Enabled" : "Manual"} detail={llmSettings?.llmSuggestionsEnabled ? "Suggestions will warm up before editor entry when possible." : "Pure manual editing mode."} />
+                  </div>
+                </Card>
+
+                <Card tone="soft">
+                  <SectionHeading title="Workspace notes" subtitle="A small side panel for context, not a second workflow." />
+                  <div className="space-y-4">
+                    <Alert tone="info">
+                      Drag-and-drop still works anywhere in the window for dataset directories, COCO JSON, and MP4 files.
+                    </Alert>
+                    <div className="rounded-[24px] border border-dashed border-anno-line bg-white/65 px-4 py-5">
+                      <p className="text-sm font-semibold text-anno-text-main">Drop zone</p>
+                      <p className="mt-2 text-sm text-anno-text-muted">Use this when a teammate hands you a folder or loose input files and you want the app to stage them quickly.</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Button variant="outlined" onClick={() => setDropModalOpen(true)}>
+                          Show drop instructions
+                        </Button>
+                        <Button variant="quiet" onClick={() => setSettingsOpen(true)}>
+                          Adjust studio settings
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+            </section>
+          ) : null}
+
+          {page === "editor" ? (
+            <section className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)_360px]">
+              <Card tone="soft" className="studio-scrollbar max-h-[calc(100vh-250px)] overflow-auto">
+                <SectionHeading title="Face queue" subtitle="Search, skim progress, and move through the review line without losing context." />
+                <Field label="Search faces" hint="Filter by face id or cube face label.">
+                  <input
+                    className={inputClassName}
+                    aria-label="Search faces"
+                    value={faceSearchQuery}
+                    placeholder="Search face id or face label"
+                    onChange={(event) => setFaceSearchQuery(event.target.value)}
+                  />
+                </Field>
+
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
+                  <StatTile label="Faces" value={faces.length} detail={`${Math.round(progress)}% through the queue`} />
+                  <StatTile label="Suggestions ready" value={readySuggestionCount} detail={llmSettings?.llmSuggestionsEnabled ? "Cached suggestion sets available." : "Suggestions disabled."} />
                 </div>
-              </Field>
-            </div>
 
-            <Field label="Source frames directory (auto-managed)">
-              <input className={inputClassName} aria-label="Source frames directory (auto-managed)" value={sourceFramesDir} readOnly />
-            </Field>
-
-            {importInputError ? (
-              <div className="mb-3 inline-flex items-center gap-1.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200">
-                <span aria-hidden="true" className="text-rose-300">ⓘ</span>
-                <span>{importInputError}</span>
-              </div>
-            ) : null}
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button className="shadow-indigo-500/20 shadow-lg hover:scale-[1.02]" onClick={handleGenerate} disabled={isHomeBusy || !!importInputError}>{isGenerating ? "Generating…" : "Generate"}</Button>
-              {showGenerationSpinner ? <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-anno-primary border-t-transparent" aria-label="Generation in progress" /> : null}
-              <Button variant="outlined" onClick={() => void handleAbortGeneration()} disabled={!isGenerating || !generationJobId}>Abort</Button>
-            </div>
-            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-anno-surface-high" aria-label="generation progress">
-              <span className="block h-full rounded-full bg-anno-primary transition-all duration-300" style={{ width: `${generationPercent}%` }} />
-            </div>
-            <p className="mt-2 text-xs text-anno-text-muted">Step: {generationStep} • {generationDetail} • {generationHeartbeat}</p>
-          </Card>
-
-          <Card className="min-h-[540px] rounded-2xl bg-anno-surface-low p-6">
-            <SectionHeading title="Resume existing dataset" subtitle="Jump straight into annotation review." />
-            <Field label="Open project directory" hint="Resume from an existing dataset root.">
-              <div className="flex gap-2">
-                <input className={inputClassName} aria-label="Resume dataset directory" value={datasetRoot} placeholder="Choose existing project directory" onChange={(event) => setDatasetRoot(event.target.value)} />
-                <Button variant="ghost" onClick={() => void pickDirectory(setDatasetRoot)} disabled={isHomeBusy}>Browse</Button>
-              </div>
-            </Field>
-            {datasetRootError ? <div className="mb-3 inline-flex items-center gap-1.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200"><span aria-hidden="true" className="text-rose-300">ⓘ</span><span>{datasetRootError}</span></div> : null}
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={handleOpen} disabled={isHomeBusy || !!datasetRootError}>Open dataset</Button>
-              <Button variant="tonal" onClick={() => setDropModalOpen(true)} disabled={isHomeBusy}>Drop input</Button>
-            </div>
-          </Card>
-        </section>
-      ) : null}
-
-      {page === "editor" ? (
-        <section className="mx-auto grid w-full max-w-[1480px] gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-          <div className="space-y-4">
-            <Card elevated className="bg-anno-surface-low">
-              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-xl font-semibold">Editing: {selectedFace?.faceId ?? "(none)"}</h2>
-                  <p className="text-sm text-anno-text-muted">Progress {Math.max(0, selectedIndex + 1)}/{faces.length} ({Math.round(progress)}%)</p>
+                <div className="studio-scrollbar mt-5 space-y-2 overflow-auto pr-1">
+                  {filteredFaces.length === 0 ? (
+                    <EmptyState title="No matching faces" description="Adjust the search term to see the review queue again." />
+                  ) : (
+                    filteredFaces.map((face, index) => {
+                      const active = face.faceId === selectedFaceId;
+                      const suggestionPill = getSuggestionPillForFace(face.faceId);
+                      return (
+                        <button
+                          key={face.faceId}
+                          type="button"
+                          className={`w-full rounded-[24px] px-4 py-4 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-anno-primary ${
+                            active
+                              ? "bg-white shadow-md shadow-stone-200/60 ring-2 ring-anno-primary/25"
+                              : "bg-anno-surface-med ring-1 ring-anno-line/70 hover:bg-white/80"
+                          }`}
+                          onClick={() => void navigateToFace(face.faceId)}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-anno-text-subtle">
+                                {String(index + 1).padStart(2, "0")} · {face.face}
+                              </p>
+                              <p className="mt-1 text-base font-semibold tracking-[-0.02em] text-anno-text-main">{face.faceId}</p>
+                              <p className="mt-1 text-xs text-anno-text-muted">Seed boxes: {face.initialBoxCount}</p>
+                            </div>
+                            <Pill tone={suggestionPill.tone}>{suggestionPill.label}</Pill>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className={`rounded-full px-3 py-1 text-xs font-medium ${saveStateClassName[saveState]}`}>{saveStateMessage}{lastSavedAt ? ` (${lastSavedAt})` : ""}</span>
-                  <Button variant="tonal" onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Save now</Button>
-                  <Button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Finish & export</Button>
-                </div>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-anno-surface-high" aria-label="review progress">
-                <span className="block h-full rounded-full bg-anno-primary transition-all duration-300" style={{ width: `${progress}%` }} />
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex <= 0}>Previous</Button>
-                <Button variant="outlined" onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")} disabled={isFaceBusy || isEditorBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}>Next</Button>
-                <Button variant="text" onClick={() => void goHome()} disabled={isFaceBusy || isEditorBusy}>Return home</Button>
-              </div>
-            </Card>
+              </Card>
 
-            {warmupTimedOut ? (
-              <Card className="bg-anno-surface-med">
-                <div className="rounded-2xl border border-amber-300/30 bg-amber-400/10 p-3 text-sm text-amber-100">
-                  <p className="font-medium">Suggestions still loading in background.</p>
-                  <p className="mt-1 text-xs text-amber-200">{queueSummaryText(warmupQueueSummary)}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()}>Retry warmup for current buffer</Button>
-                    <Button variant="text" onClick={() => setWarmupTimedOut(false)}>Continue immediately</Button>
+              <div className="space-y-5">
+                <Card elevated tone="raised">
+                  <div className="flex flex-col gap-4 border-b border-anno-line/80 pb-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Pill tone="accent">Review stage</Pill>
+                        <Pill tone="neutral">{selectedFace?.face ?? "No face selected"}</Pill>
+                      </div>
+                      <h2 className="mt-3 text-[2rem] font-semibold tracking-[-0.04em] text-anno-text-main">
+                        {selectedFace ? `Editing ${selectedFace.faceId}` : "Select a face to begin"}
+                      </h2>
+                      <p className="mt-2 text-sm text-anno-text-muted">
+                        Progress {Math.max(0, selectedIndex + 1)}/{faces.length} ({Math.round(progress)}%)
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-full px-3 py-2 text-xs font-semibold ${saveStateClassName[saveState]}`}>
+                        {saveStateMessage}
+                        {lastSavedAt ? ` · ${lastSavedAt}` : ""}
+                      </span>
+                      <Button variant="secondary" onClick={handleSave} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>
+                        Save now
+                      </Button>
+                      <Button onClick={() => setPage("export")} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>
+                        Finish and export
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      variant="outlined"
+                      onClick={() => void navigateToFace(faces[Math.max(selectedIndex - 1, 0)]?.faceId ?? "")}
+                      disabled={isFaceBusy || isEditorBusy || selectedIndex <= 0}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      onClick={() => void navigateToFace(faces[Math.min(selectedIndex + 1, faces.length - 1)]?.faceId ?? "")}
+                      disabled={isFaceBusy || isEditorBusy || selectedIndex < 0 || selectedIndex >= faces.length - 1}
+                    >
+                      Next
+                    </Button>
+                    <Button variant="quiet" onClick={() => void goHome()} disabled={isFaceBusy || isEditorBusy}>
+                      Return home
+                    </Button>
+                  </div>
+                </Card>
+
+                {warmupTimedOut ? (
+                  <Alert tone="warning" title="Suggestions are still warming up.">
+                    <p>{queueSummaryText(warmupQueueSummary)}</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()}>
+                        Retry warmup
+                      </Button>
+                      <Button variant="quiet" onClick={() => setWarmupTimedOut(false)}>
+                        Continue immediately
+                      </Button>
+                    </div>
+                  </Alert>
+                ) : null}
+
+                <Card tone="dark" className="overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-600/70 px-5 py-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-300">Canvas stage</p>
+                      <p className="mt-1 text-base font-semibold tracking-[-0.02em] text-anno-text-inverse">Dark review focus for image checks and box placement</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Pill tone="dark">Editable boxes: {edits.length}</Pill>
+                      <Pill tone="dark">Suggestions: {selectedSuggestions.length}</Pill>
+                    </div>
+                  </div>
+
+                  <div className="relative bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.05),transparent_28%),linear-gradient(180deg,#1f262d_0%,#151a20_100%)] p-5">
+                    {selectedFace ? (
+                      <div className="relative rounded-[30px] border border-slate-600/70 bg-[#151a20] p-4 shadow-2xl shadow-slate-950/25">
+                        <img
+                          ref={imageRef}
+                          className="face-preview"
+                          src={imageSrc}
+                          alt={`Face preview for ${selectedFace.faceId}`}
+                          onLoad={(event) => {
+                            setPreviewError("");
+                            setImageViewport({
+                              naturalWidth: event.currentTarget.naturalWidth,
+                              naturalHeight: event.currentTarget.naturalHeight,
+                              displayWidth: event.currentTarget.clientWidth,
+                              displayHeight: event.currentTarget.clientHeight,
+                            });
+                          }}
+                          onError={() => {
+                            setPreviewError(
+                              `Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}. Resolved src: ${imageSrc}. Dataset root: ${
+                                datasetRoot || "(empty)"
+                              }.`
+                            );
+                          }}
+                        />
+                        <canvas
+                          ref={canvasRef}
+                          className="bbox-canvas"
+                          aria-label="Bounding box canvas"
+                          onPointerDown={handleCanvasPointerDown}
+                          onPointerMove={handleCanvasPointerMove}
+                          onPointerUp={handleCanvasPointerUp}
+                          onPointerLeave={handleCanvasPointerUp}
+                          style={{ cursor: canvasCursor }}
+                        />
+                      </div>
+                    ) : (
+                      <EmptyState
+                        title="No face selected"
+                        description="Open a dataset and choose a face from the left rail to begin reviewing boxes."
+                      />
+                    )}
+                  </div>
+                  {previewError ? <p className="border-t border-slate-600/70 px-5 py-4 text-sm text-rose-200">{previewError}</p> : null}
+                </Card>
+              </div>
+
+              <Card tone="soft" className="studio-scrollbar max-h-[calc(100vh-250px)] overflow-auto">
+                <div className="flex flex-col gap-4 border-b border-anno-line/80 pb-4">
+                  <SectionHeading title="Inspector" subtitle="Keep annotations, suggestions, and guidance close without crowding the image stage." />
+                  <SectionTabs
+                    tabs={[
+                      { id: "annotations", label: "Annotations", detail: String(edits.length) },
+                      { id: "suggestions", label: "Suggestions", detail: String(selectedSuggestions.length) },
+                      { id: "help", label: "Help" },
+                    ]}
+                    value={inspectorTab}
+                    onChange={setInspectorTab}
+                  />
+                </div>
+
+                {inspectorTab === "annotations" ? (
+                  <div className="mt-5 space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <StatTile label="Editable boxes" value={edits.length} detail="Confirmed annotations for the active face." />
+                      <StatTile label="Seed boxes" value={selectedFace?.initialBoxCount ?? 0} detail="Original incoming boxes from the dataset." />
+                    </div>
+
+                    {editValidationError ? <Alert tone="danger">Invalid edits: {editValidationError}</Alert> : null}
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="secondary" onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>
+                        Add box
+                      </Button>
+                      <Button variant="outlined" onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>
+                        Delete active box
+                      </Button>
+                    </div>
+
+                    <div className="studio-scrollbar max-h-[48vh] space-y-3 overflow-auto pr-1">
+                      {edits.length === 0 ? (
+                        <EmptyState title="No editable boxes yet" description="Draw on the canvas or add a box from the controls above." />
+                      ) : (
+                        edits.map((edit, index) => (
+                          <div
+                            className={`bbox-editor rounded-[24px] px-4 py-4 transition ${
+                              activeBoxIndex === index ? "bg-white shadow-md shadow-stone-200/60 ring-2 ring-anno-primary/25" : "bg-anno-surface-med ring-1 ring-anno-line/70"
+                            }`}
+                            key={`${selectedFaceId}-${index}`}
+                            onMouseEnter={() => setActiveBoxIndex(index)}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-anno-text-main">Box {index + 1}</p>
+                                <p className="mt-1 text-xs text-anno-text-muted">{edit.bbox.map(coord).join(", ")}</p>
+                              </div>
+                              <Pill tone={activeBoxIndex === index ? "success" : "neutral"}>
+                                {activeBoxIndex === index ? "Active" : "Available"}
+                              </Pill>
+                            </div>
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                              {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
+                                <label key={axis} className="text-xs font-medium uppercase tracking-[0.08em] text-anno-text-subtle">
+                                  {axis}
+                                  <input
+                                    className={`${inputClassName} mt-1`}
+                                    aria-label={axis}
+                                    value={edit.bbox[axisIndex]}
+                                    onChange={(event) => handleEditChange(index, axisIndex, event.target.value)}
+                                  />
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+
+                {inspectorTab === "suggestions" ? (
+                  <div className="mt-5 space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <StatTile label="Suggestions ready" value={selectedSuggestions.length} detail="Current cached suggestions for the active face." />
+                      <StatTile label="Warmup queue" value={queueSummaryText(warmupQueueSummary)} detail="Background readiness summary for the suggestion buffer." />
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="secondary" onClick={applyAllSuggestionsToEdits} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || selectedSuggestions.length === 0}>
+                        Apply all suggestions
+                      </Button>
+                      <Button variant="outlined" onClick={replaceEditsWithSuggestions} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || selectedSuggestions.length === 0}>
+                        Replace edits with suggestions
+                      </Button>
+                    </div>
+
+                    <div className="studio-scrollbar max-h-[48vh] space-y-3 overflow-auto pr-1">
+                      {selectedSuggestions.length === 0 ? (
+                        <EmptyState
+                          title="No suggestions ready"
+                          description={llmSettings?.llmSuggestionsEnabled ? "Suggestions are still queueing or warming up for this face." : "Suggestions are disabled in studio settings."}
+                        />
+                      ) : (
+                        selectedSuggestions.map((suggestion, index) => (
+                          <div
+                            key={`suggestion-${selectedFaceId}-${index}`}
+                            className={`rounded-[24px] px-4 py-4 ring-1 transition ${
+                              selectedSuggestionIndex === index ? "bg-white ring-anno-primary/30 shadow-md shadow-stone-200/60" : "bg-anno-surface-med ring-anno-line/70"
+                            }`}
+                            onMouseEnter={() => setSelectedSuggestionIndex(index)}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-semibold text-anno-text-main">Suggestion {index + 1}</p>
+                                <p className="mt-1 text-xs text-anno-text-muted">{suggestion.bbox.map(coord).join(", ")}</p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Pill tone="info">{suggestion.source}</Pill>
+                                {typeof suggestion.confidence === "number" ? <Pill tone="accent">conf {coord(suggestion.confidence)}</Pill> : null}
+                              </div>
+                            </div>
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              <Button variant="quiet" onClick={() => addSuggestionToEdits(suggestion)} disabled={isFaceBusy || isEditorBusy}>
+                                Add suggestion as new box
+                              </Button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+
+                {inspectorTab === "help" ? (
+                  <div className="mt-5 space-y-4">
+                    <Alert tone="info" title="Editing guide">
+                      <ul className="list-disc space-y-1 pl-5 text-sm">
+                        <li>Click and drag to draw a box.</li>
+                        <li>Drag the center to move the active box.</li>
+                        <li>Drag corners or edges to resize from any handle.</li>
+                        <li>Use Delete or Backspace to remove the active box.</li>
+                        <li>Use Left and Right arrow keys, or the Previous and Next buttons, to move between faces.</li>
+                      </ul>
+                    </Alert>
+
+                    <Card tone="inset">
+                      <p className="text-lg font-semibold tracking-[-0.02em] text-anno-text-main">Review notes</p>
+                      <div className="mt-3 space-y-2 text-sm text-anno-text-muted">
+                        <p>Autosave runs after valid edits settle, but the Save button remains available whenever you want an explicit checkpoint.</p>
+                        <p>Diagnostics stay visible through the bottom rail, and the full console can be expanded without leaving the editor.</p>
+                        <p>Suggestion warmup tries to front-load likely next faces so mixed operators can keep momentum once they enter the review stage.</p>
+                      </div>
+                    </Card>
+                  </div>
+                ) : null}
+              </Card>
+            </section>
+          ) : null}
+
+          {page === "export" ? (
+            <section className="mx-auto max-w-[980px]">
+              <Card elevated tone="raised">
+                <SectionHeading
+                  title="Export final annotations"
+                  subtitle="Confirm the destination, review the current session summary, and write deterministic COCO output."
+                />
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  <StatTile label="Faces in workspace" value={faces.length} detail="Loaded from the current dataset manifest." />
+                  <StatTile label="Seed boxes" value={totalInitialBoxCount} detail="Incoming boxes before review changes." />
+                  <StatTile label="Current face edits" value={edits.length} detail={selectedFace ? `Active face: ${selectedFace.faceId}` : "No active face selected."} />
+                </div>
+
+                <div className="mt-6 rounded-[28px] bg-anno-surface-med p-5 ring-1 ring-anno-line/70">
+                  <Field label="Export destination" hint="Choose the JSON file path for the final COCO export.">
+                    <div className="flex flex-col gap-2 md:flex-row">
+                      <input
+                        className={inputClassName}
+                        aria-label="Export destination"
+                        value={outputPath}
+                        placeholder="Select export .json output"
+                        onChange={(event) => setOutputPath(event.target.value)}
+                      />
+                      <Button variant="outlined" onClick={() => void pickSaveFile()} disabled={isExportBusy}>
+                        Browse
+                      </Button>
+                    </div>
+                  </Field>
+
+                  {outputPathError ? <Alert tone="danger">{outputPathError}</Alert> : null}
+
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <Button onClick={handleExport} disabled={isExportBusy}>
+                      Export COCO
+                    </Button>
+                    <Button variant="outlined" onClick={() => setPage("editor")} disabled={isExportBusy}>
+                      Continue editing
+                    </Button>
+                    <Button variant="quiet" onClick={() => void goHome()} disabled={isExportBusy}>
+                      Return home
+                    </Button>
                   </div>
                 </div>
               </Card>
-            ) : null}
-
-            <Card className="bg-anno-surface-med">
-              <div className="relative rounded-2xl bg-anno-surface-low p-3 ring-1 ring-white/5">
-                {selectedFace ? (
-                  <>
-                    <img
-                      ref={imageRef}
-                      className="face-preview"
-                      src={imageSrc}
-                      alt={`Face preview for ${selectedFace.faceId}`}
-                      onLoad={(event) => {
-                        setPreviewError("");
-                        setImageViewport({
-                          naturalWidth: event.currentTarget.naturalWidth,
-                          naturalHeight: event.currentTarget.naturalHeight,
-                          displayWidth: event.currentTarget.clientWidth,
-                          displayHeight: event.currentTarget.clientHeight,
-                        });
-                      }}
-                      onError={() => {
-                        setPreviewError(`Failed to load face preview for ${selectedFace.faceId} from ${selectedFaceImagePath}. Resolved src: ${imageSrc}. Dataset root: ${datasetRoot || "(empty)"}.`);
-                      }}
-                    />
-                    <canvas
-                      ref={canvasRef}
-                      className="bbox-canvas"
-                      aria-label="Bounding box canvas"
-                      onPointerDown={handleCanvasPointerDown}
-                      onPointerMove={handleCanvasPointerMove}
-                      onPointerUp={handleCanvasPointerUp}
-                      onPointerLeave={handleCanvasPointerUp}
-                      style={{ cursor: canvasCursor }}
-                    />
-                  </>
-                ) : (
-                  <p className="py-16 text-center text-sm text-anno-text-muted">Open a dataset and select a face to start reviewing.</p>
-                )}
-              </div>
-              {previewError ? <p className="mt-2 text-sm text-rose-300">{previewError}</p> : null}
-            </Card>
-          </div>
-
-          <Card className="bg-anno-surface-low">
-            <div className="mb-4 rounded-2xl bg-anno-surface-med p-3 ring-1 ring-white/5">
-              <button className="text-sm font-medium text-anno-secondary transition hover:text-purple-300" onClick={toggleTutorial} aria-expanded={!tutorialCollapsed}>
-                {tutorialCollapsed ? "Show quick tutorial" : "Hide quick tutorial"}
-              </button>
-              {!tutorialCollapsed ? (
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-anno-text-muted">
-                  <li>Click and drag to draw a box.</li>
-                  <li>Drag center to move the active box.</li>
-                  <li>Drag corners/edges to resize from any handle.</li>
-                  <li>Use Delete/Backspace to remove the active box.</li>
-                  <li>Use ←/→ keys or Previous/Next buttons to move between faces.</li>
-                </ul>
-              ) : null}
-            </div>
-
-            <h3 className="text-lg font-semibold">Bounding boxes</h3>
-            <p className="mb-1 text-xs text-anno-text-muted">Editable boxes: {edits.length}</p>
-            <p className="mb-3 text-xs text-anno-text-muted">LLM suggestion count: {selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)]?.length ?? 0) : 0}</p>
-
-            <div className="mb-3 rounded-2xl bg-anno-surface-med p-3 ring-1 ring-white/5">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <h4 className="text-sm font-semibold">LLM suggestions</h4>
-                <div className="flex gap-2">
-                  <Button variant="tonal" onClick={applyAllSuggestionsToEdits} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)]?.length ?? 0) === 0}>Apply all suggestions to edits</Button>
-                  <Button variant="outlined" onClick={replaceEditsWithSuggestions} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)]?.length ?? 0) === 0}>Replace edits with suggestions</Button>
-                </div>
-              </div>
-              <div className="max-h-40 space-y-2 overflow-auto pr-1">
-                {(selectedFaceId ? (suggestionsByFace[suggestionEntryKey(suggestionScopeKey, selectedFaceId)] ?? []) : []).map((suggestion, index) => (
-                  <div key={`suggestion-${selectedFaceId}-${index}`} className={`rounded-xl p-2 ring-1 ${selectedSuggestionIndex === index ? "bg-anno-surface-high ring-purple-400/60" : "bg-anno-surface-low ring-teal-300/30"}`} onMouseEnter={() => setSelectedSuggestionIndex(index)}>
-                    <div className="text-xs text-anno-text-muted">Suggestion {index + 1}: {suggestion.bbox.map(coord).join(", ")}</div>
-                    <div className="mt-1 flex items-center justify-between">
-                      <span className="text-[11px] text-anno-text-muted">source: {suggestion.source}{typeof suggestion.confidence === "number" ? ` • conf=${coord(suggestion.confidence)}` : ""}</span>
-                      <Button variant="text" onClick={() => addSuggestionToEdits(suggestion)} disabled={isFaceBusy || isEditorBusy}>Add suggestion as new box</Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="max-h-[38vh] space-y-2 overflow-auto pr-1">
-              {edits.map((edit, index) => (
-                <div className={`bbox-editor rounded-2xl p-3 ring-1 transition ${activeBoxIndex === index ? "bg-anno-surface-high ring-anno-primary/40" : "bg-anno-surface-med ring-white/5"}`} key={`${selectedFaceId}-${index}`} onMouseEnter={() => setActiveBoxIndex(index)}>
-                  <div className="mb-2 text-xs text-anno-text-muted">Box {index + 1}: {edit.bbox.map(coord).join(", ")}</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(["x", "y", "w", "h"] as const).map((axis, axisIndex) => (
-                      <label key={axis} className="text-xs text-anno-text-muted">
-                        {axis}
-                        <input className={inputClassName} aria-label={axis} value={edit.bbox[axisIndex]} onChange={(event) => handleEditChange(index, axisIndex, event.target.value)} />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-            {editValidationError ? <p className="mt-2 text-sm text-rose-300">Invalid edits: {editValidationError}</p> : null}
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button variant="tonal" onClick={handleAddBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId}>Add box</Button>
-              <Button variant="outlined" onClick={handleDeleteActiveBox} disabled={isFaceBusy || isEditorBusy || !selectedFaceId || activeBoxIndex === null}>Delete active box</Button>
-            </div>
-          </Card>
-        </section>
-      ) : null}
-
-      {page === "export" ? (
-        <section className="mx-auto flex min-h-[62vh] w-full max-w-[900px] items-center justify-center">
-          <Card elevated className="w-full bg-anno-surface-low">
-            <SectionHeading title="Export final annotations" subtitle="Export reviewed annotations to COCO JSON." />
-            <div className="rounded-2xl bg-gradient-to-br from-anno-surface-med via-anno-surface-low to-anno-surface-med p-5 ring-1 ring-white/5">
-              <div className="mb-3 flex gap-2">
-                <input className={inputClassName} value={outputPath} placeholder="Select export .json output" onChange={(event) => setOutputPath(event.target.value)} />
-                <Button variant="ghost" onClick={() => void pickSaveFile()} disabled={isExportBusy}>Browse</Button>
-              </div>
-              {outputPathError ? <div className="mb-3 inline-flex items-center gap-1.5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-200"><span aria-hidden="true" className="text-rose-300">ⓘ</span><span>{outputPathError}</span></div> : null}
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={handleExport} disabled={isExportBusy}>Export COCO</Button>
-                <Button variant="outlined" onClick={() => setPage("editor")} disabled={isExportBusy}>Continue editing</Button>
-                <Button variant="text" onClick={() => void goHome()} disabled={isExportBusy}>Return home</Button>
-              </div>
-            </div>
-          </Card>
-        </section>
-      ) : null}
-
-      <section className="fixed bottom-0 left-0 right-0 z-30 border-t border-anno-surface-high bg-[#09090b]/90" aria-live="polite" aria-label="Application diagnostics terminal">
-        <div className="mx-auto flex w-full max-w-[1480px] items-center justify-between gap-3 px-4 py-2 text-xs md:px-8">
-          <button className="font-medium text-anno-text-main transition hover:text-anno-primary" onClick={() => setDiagnosticsOpen((value) => !value)}>
-            Diagnostics terminal <span className={`inline-block transition-transform duration-200 ${diagnosticsOpen ? "rotate-180" : "rotate-0"}`}>⌄</span>
-          </button>
-          <div className="flex items-center gap-2">
-            <Button variant="text" onClick={() => void navigator.clipboard.writeText(diagnosticsText)}>Copy diagnostics</Button>
-            <Button variant="text" onClick={() => setDiagnosticsLog((prev) => prev.slice(-1))}>Clear log</Button>
-            <span className={`rounded-full px-2 py-0.5 font-semibold ${hasDiagnosticError ? "bg-rose-500/20 text-rose-200" : "bg-emerald-500/20 text-emerald-200"}`}>{hasDiagnosticError ? "ERROR" : "READY"}</span>
-          </div>
+            </section>
+          ) : null}
         </div>
-        {diagnosticsOpen ? <pre className={`terminal-scrollbar max-h-56 overflow-auto bg-[#09090b] px-4 pb-3 text-xs text-anno-text-muted md:px-8 ${hasDiagnosticError ? "text-rose-200" : ""}`}>{diagnosticsText}</pre> : null}
-      </section>
+      </main>
+
+      <DiagnosticsDrawer
+        open={diagnosticsOpen}
+        diagnosticsText={diagnosticsText}
+        hasError={hasDiagnosticError}
+        onCopy={() => void copyDiagnostics()}
+        onClear={() => setDiagnosticsLog((prev) => prev.slice(-1))}
+      />
+
+      <WorkspaceStatusRail
+        diagnosticsOpen={diagnosticsOpen}
+        onToggleDiagnostics={() =>
+          setDiagnosticsPanelState((current) => (current === "expanded" ? "collapsed" : "expanded"))
+        }
+        items={statusRailItems}
+      />
 
       {noticeMessage ? (
         <div className={modalOverlayClassName} role="alertdialog" aria-modal="true" aria-label="Generation notice">
-          <div className="w-full max-w-xl rounded-2xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
-            <h3 className="text-lg font-semibold">Generation notice</h3>
-            <p className="mt-1 text-sm text-anno-text-muted">Generation could not continue. See diagnostics for details.</p>
-            <pre className="mt-3 max-h-44 overflow-auto rounded-2xl bg-anno-surface-low p-3 text-xs text-anno-text-muted">{noticeMessage}</pre>
-            <div className="mt-3 flex gap-2">
-              <Button variant="outlined" onClick={() => { setNoticeMessage(""); if (hasDiagnosticError) { clearDiagnostics("Ready."); } }}>Dismiss</Button>
+          <div className="w-full max-w-xl rounded-[30px] bg-[#f5efe6] p-6 ring-1 ring-anno-line/80 shadow-2xl shadow-stone-900/20">
+            <h3 className="text-2xl font-semibold tracking-[-0.03em] text-anno-text-main">Generation notice</h3>
+            <p className="mt-2 text-sm text-anno-text-muted">Generation could not continue. See diagnostics for the full backend detail.</p>
+            <pre className="studio-scrollbar mt-4 max-h-44 overflow-auto rounded-[22px] bg-anno-surface-med p-4 text-xs text-anno-text-muted">{noticeMessage}</pre>
+            <div className="mt-4 flex gap-2">
+              <Button
+                variant="outlined"
+                onClick={() => {
+                  setNoticeMessage("");
+                  if (hasDiagnosticError) {
+                    clearDiagnostics("Ready.");
+                  }
+                }}
+              >
+                Dismiss
+              </Button>
             </div>
           </div>
         </div>
@@ -1669,32 +2087,53 @@ export function App() {
           }}
         />
       ) : null}
+
       {isEnteringEditor ? (
         <div className={modalOverlayClassName} role="alertdialog" aria-modal="true" aria-label="Preparing suggestions">
-          <div className="w-full max-w-xl rounded-2xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
-            <h3 className="text-lg font-semibold">Preparing suggestions</h3>
-            <p className="mt-1 text-sm text-anno-text-muted">Building an initial LLM suggestion buffer before entering editor.</p>
-            <p className="mt-3 text-xs text-anno-text-muted">{editorWarmupMessage || "Preparing suggestions..."}</p>
-            <p className="mt-1 text-xs text-anno-text-muted">Targets: {editorWarmupFaceIds.length} • Required threshold ready: {Math.max(1, Math.ceil(editorWarmupFaceIds.length * (llmSettings?.editorWarmupThresholdRatio ?? EDITOR_WARMUP_THRESHOLD_RATIO)))} • Ready now: {editorWarmupReadyCount}</p>
-            <p className="mt-1 text-xs text-anno-text-muted">Queue status: {queueSummaryText(warmupQueueSummary)}</p>
-            <div className="mt-3 flex gap-2">
-              <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()} disabled={isEnteringEditor}>Retry warmup for current buffer</Button>
-              <Button variant="tonal" onClick={() => setSkipWarmupRequested(true)}>Continue immediately</Button>
+          <div className="w-full max-w-xl rounded-[30px] bg-[#f5efe6] p-6 ring-1 ring-anno-line/80 shadow-2xl shadow-stone-900/20">
+            <h3 className="text-2xl font-semibold tracking-[-0.03em] text-anno-text-main">Preparing suggestions</h3>
+            <p className="mt-2 text-sm text-anno-text-muted">Building an initial suggestion buffer before the review workspace opens.</p>
+            <div className="mt-4 space-y-2 rounded-[22px] bg-anno-surface-med p-4 ring-1 ring-anno-line/70">
+              <p className="text-sm text-anno-text-main">{editorWarmupMessage || "Preparing suggestions..."}</p>
+              <p className="text-xs text-anno-text-muted">
+                Targets: {editorWarmupFaceIds.length} · Required threshold ready:{" "}
+                {Math.max(1, Math.ceil(editorWarmupFaceIds.length * (llmSettings?.editorWarmupThresholdRatio ?? EDITOR_WARMUP_THRESHOLD_RATIO)))} · Ready now: {editorWarmupReadyCount}
+              </p>
+              <p className="text-xs text-anno-text-muted">Queue status: {queueSummaryText(warmupQueueSummary)}</p>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <Button variant="outlined" onClick={() => void retryWarmupForCurrentBuffer()} disabled={isEnteringEditor}>
+                Retry warmup
+              </Button>
+              <Button variant="secondary" onClick={() => setSkipWarmupRequested(true)}>
+                Continue immediately
+              </Button>
             </div>
           </div>
         </div>
       ) : null}
+
       {dropModalOpen ? (
         <div className={modalOverlayClassName} role="dialog" aria-modal="true" aria-label="Drop input files">
-          <div className="w-full max-w-lg rounded-2xl bg-anno-surface-med p-5 ring-1 ring-white/5 shadow-2xl shadow-black/60">
-            <h3 className="text-lg font-semibold">Drop input files</h3>
-            <p className="mt-1 text-sm text-anno-text-muted">Drop dataset directory, COCO JSON, and MP4 anywhere on this window.</p>
-            <div className="mt-3 flex gap-2">
-              <Button variant="outlined" onClick={() => setDropModalOpen(false)}>Close</Button>
+          <div className="w-full max-w-lg rounded-[30px] bg-[#f5efe6] p-6 ring-1 ring-anno-line/80 shadow-2xl shadow-stone-900/20">
+            <h3 className="text-2xl font-semibold tracking-[-0.03em] text-anno-text-main">Drop input files</h3>
+            <p className="mt-2 text-sm text-anno-text-muted">Drop a dataset directory, COCO JSON file, or MP4 anywhere on this window and the app will stage recognized inputs.</p>
+            <div className="mt-4 rounded-[22px] bg-anno-surface-med p-4 ring-1 ring-anno-line/70">
+              <p className="text-sm font-semibold text-anno-text-main">Supported drop targets</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-anno-text-muted">
+                <li>Dataset roots containing annotations and generated face data</li>
+                <li>COCO `instances_default.json` files</li>
+                <li>Source `.mp4` videos for review dataset generation</li>
+              </ul>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <Button variant="outlined" onClick={() => setDropModalOpen(false)}>
+                Close
+              </Button>
             </div>
           </div>
         </div>
       ) : null}
-    </main>
+    </>
   );
 }

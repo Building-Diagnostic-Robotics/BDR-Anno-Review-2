@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { App } from "./app";
 import type { AnnotationEdit, FaceListItem } from "./types";
 
@@ -84,6 +84,7 @@ beforeEach(() => {
       set lineWidth(_value: number) {},
       set fillStyle(_value: string) {},
       set strokeStyle(_value: string) {},
+      setLineDash: () => undefined,
     } as unknown as CanvasRenderingContext2D;
   });
   (Element.prototype as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture = () => undefined;
@@ -112,31 +113,52 @@ beforeEach(() => {
     anthropic: { enabled: false, model: "claude-sonnet-4-6", hasKey: false },
   });
 
-  const ready = { readyCount: 2, queuedCount: 0, inProgressCount: 0, failedCount: 0, targetBufferSize: 12, minReadyToStart: 1, blocked: false, candidateFaceIds: ["face-1", "face-2"], readyFaceIds: ["face-1", "face-2"] };
+  const ready = {
+    readyCount: 2,
+    queuedCount: 0,
+    inProgressCount: 0,
+    failedCount: 0,
+    targetBufferSize: 12,
+    minReadyToStart: 1,
+    blocked: false,
+    candidateFaceIds: ["face-1", "face-2"],
+    readyFaceIds: ["face-1", "face-2"],
+  };
   mocks.startEditingSession.mockResolvedValue(ready);
   mocks.getSuggestionsReadiness.mockResolvedValue(ready);
   mocks.topupSuggestions.mockResolvedValue(ready);
-
   mocks.exportCoco.mockResolvedValue({ outputPath: "/tmp/out.json", imageCount: 2, annotationCount: 2 });
 
   Object.values(mocks).forEach((fn) => fn.mockClear());
 });
 
 const openDatasetToEditor = async (datasetRoot = "/tmp/dataset") => {
-  fireEvent.change(screen.getByLabelText("Resume dataset directory"), {
+  fireEvent.click(screen.getByRole("button", { name: "Open existing" }));
+  fireEvent.change(screen.getByLabelText("Existing project directory"), {
     target: { value: datasetRoot },
   });
   fireEvent.click(screen.getByRole("button", { name: "Open dataset" }));
   await waitFor(() => {
-    expect(screen.getByText(/Editing: face-1/)).toBeTruthy();
+    expect(screen.getByText(/Editing face-1/)).toBeTruthy();
   });
 };
 
 describe("app workflow smoke", () => {
-  it("opens dataset and navigates to export page", async () => {
+  it("switches intake modes inside the setup workspace", () => {
+    render(<App />);
+    expect(screen.getByLabelText("Project directory")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open existing" }));
+    expect(screen.getByLabelText("Existing project directory")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create dataset" }));
+    expect(screen.getByLabelText("Project directory")).toBeTruthy();
+  });
+
+  it("opens dataset and navigates to export step", async () => {
     render(<App />);
     await openDatasetToEditor();
-    fireEvent.click(screen.getByRole("button", { name: "Finish & export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish and export" }));
     expect(screen.getByRole("heading", { name: "Export final annotations" })).toBeTruthy();
   });
 
@@ -154,7 +176,7 @@ describe("app workflow smoke", () => {
   it("keeps inferred paths synced until user override", async () => {
     render(<App />);
 
-    const datasetRootInput = screen.getByLabelText("Resume dataset directory");
+    const datasetRootInput = screen.getByLabelText("Project directory");
     const cocoInput = screen.getByLabelText("COCO JSON") as HTMLInputElement;
     const mp4Input = screen.getByLabelText("Source MP4") as HTMLInputElement;
 
@@ -187,10 +209,19 @@ describe("app workflow smoke", () => {
       expect(mocks.setAnnotations).toHaveBeenCalled();
     });
   });
+
+  it("opens the diagnostics drawer from the status rail", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Show diagnostics" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Diagnostics Console")).toBeTruthy();
+    });
+  });
 });
 
 describe("settings modal", () => {
-  it("disables save when suggestions are enabled and provider is none", async () => {
+  it("disables save when suggestions are enabled and provider is disabled", async () => {
     mocks.getLlmSettings.mockResolvedValueOnce({
       llmSuggestionsEnabled: true,
       reasoningPreset: "high",
@@ -203,11 +234,26 @@ describe("settings modal", () => {
 
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
-    const providerSelect = await screen.findByLabelText("Provider");
-    fireEvent.change(providerSelect, { target: { value: "none" } });
+    const dialog = await screen.findByRole("dialog", { name: "LLM settings" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disable provider" }));
 
-    expect(screen.getByText(/select an llm provider or disable suggestions/i)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(dialog).getByText(/select an llm provider or disable suggestions/i)).toBeTruthy();
+    expect((within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("updates the provider key inline", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
+    const dialog = await screen.findByRole("dialog", { name: "LLM settings" });
+
+    fireEvent.change(within(dialog).getByLabelText("OpenAI API key"), {
+      target: { value: "test-key" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Update OpenAI key" }));
+
+    await waitFor(() => {
+      expect(mocks.setLlmApiKey).toHaveBeenCalledWith({ provider: "openai", apiKey: "test-key" });
+    });
   });
 
   it("closes settings modal on Escape", async () => {

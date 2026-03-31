@@ -4,16 +4,52 @@
 
 @layer base {
   :root {
-    color-scheme: dark;
-    font-family: Inter, "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color-scheme: light;
+    --font-ui: "Aptos", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", sans-serif;
+    --font-display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   }
 
   * {
     @apply box-border;
   }
 
+  html {
+    @apply bg-anno-bg;
+  }
+
   body {
     @apply m-0 min-h-screen bg-anno-bg text-anno-text-main antialiased;
+    background-image:
+      radial-gradient(circle at top left, rgba(47, 122, 107, 0.12), transparent 28%),
+      radial-gradient(circle at top right, rgba(196, 135, 83, 0.14), transparent 22%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.4), transparent 22%);
+    font-family: var(--font-ui);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display);
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  code,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background: rgba(47, 122, 107, 0.18);
   }
 }
 
@@ -23,14 +59,33 @@
   }
 
   .face-preview {
-    @apply block h-auto max-h-[68vh] w-full rounded-2xl object-contain;
+    @apply block h-auto max-h-[72vh] w-full rounded-[26px] object-contain;
   }
 
+  .studio-scrollbar::-webkit-scrollbar,
   .terminal-scrollbar::-webkit-scrollbar {
-    width: 8px;
+    width: 10px;
+    height: 10px;
   }
 
+  .studio-scrollbar::-webkit-scrollbar-thumb,
   .terminal-scrollbar::-webkit-scrollbar-thumb {
-    @apply rounded-full bg-white/20;
+    @apply rounded-full bg-stone-400/70;
+  }
+
+  .studio-scrollbar::-webkit-scrollbar-track,
+  .terminal-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
