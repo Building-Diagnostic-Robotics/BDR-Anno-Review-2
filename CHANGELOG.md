@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-03-31
+
 ### Changed
 - Rebuilt the frontend into a calm-studio workspace shell with a persistent top bar, step navigation, bottom status rail, and expandable diagnostics drawer while preserving the existing setup, review, and export backend flows.
 - Redesigned the setup experience around a single intake surface with create/open mode switching, inline preflight feedback, and a lighter neutral visual system optimized for mixed-skill operators.
