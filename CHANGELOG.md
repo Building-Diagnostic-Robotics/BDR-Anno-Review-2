@@ -21,6 +21,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Removed a Clippy `let_and_return` violation in OpenAI tool-choice env parsing to restore `Rust checks` CI stability.
 - Hardened the settings modal smoke test to target either provider key label/button text so frontend CI no longer fails when the active provider defaults to Anthropic instead of OpenAI.
 - Narrowed selected-provider card lookup in `frontend/src/main.test.tsx` to `HTMLElement` so TypeScript build checks pass when querying within the active provider panel.
+- Switched the release tag/version parity helper to `python3` so local verification and Ubuntu release checks do not fail on systems without a legacy `python` shim.
 
 ## [1.3.3] - 2026-03-12
 

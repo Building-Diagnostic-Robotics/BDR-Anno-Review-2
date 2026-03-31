@@ -11,13 +11,13 @@ expected_version="${raw_ref#refs/tags/}"
 expected_version="${expected_version#v}"
 
 workspace_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-tauri_version="$(python - <<'PY'
+tauri_version="$(python3 - <<'PY'
 import json
 from pathlib import Path
 print(json.loads(Path('src-tauri/tauri.conf.json').read_text())['version'])
 PY
 )"
-frontend_version="$(python - <<'PY'
+frontend_version="$(python3 - <<'PY'
 import json
 from pathlib import Path
 print(json.loads(Path('frontend/package.json').read_text())['version'])
