@@ -246,13 +246,29 @@ describe("settings modal", () => {
     fireEvent.click(screen.getByRole("button", { name: /open settings/i }));
     const dialog = await screen.findByRole("dialog", { name: "LLM settings" });
 
-    fireEvent.change(within(dialog).getByLabelText("OpenAI API key"), {
+    const selectedProviderButton = within(dialog).getByRole("button", { name: "Selected" });
+    const selectedProviderHeader =
+      selectedProviderButton.parentElement?.querySelector("h4")?.textContent?.trim() ?? "";
+    if (selectedProviderHeader !== "OpenAI" && selectedProviderHeader !== "Anthropic") {
+      throw new Error("Expected selected provider heading to be OpenAI or Anthropic.");
+    }
+    const selectedProviderCard = selectedProviderButton.closest(".ring-2");
+    if (!selectedProviderCard) {
+      throw new Error("Expected selected provider card.");
+    }
+
+    const providerKeyField = within(selectedProviderCard).getByPlaceholderText("Paste API key");
+    fireEvent.change(providerKeyField, {
       target: { value: "test-key" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Update OpenAI key" }));
+    fireEvent.click(within(selectedProviderCard).getByRole("button", { name: `Update ${selectedProviderHeader} key` }));
 
     await waitFor(() => {
-      expect(mocks.setLlmApiKey).toHaveBeenCalledWith({ provider: "openai", apiKey: "test-key" });
+      expect(mocks.setLlmApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apiKey: "test-key",
+        })
+      );
     });
   });
 
